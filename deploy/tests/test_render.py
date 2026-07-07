@@ -369,6 +369,47 @@ def test_write_tree_sets_executable_on_sh():
         shutil.rmtree(tmpdir)
 
 
+def test_resolve_targets_comma_list():
+    """--target accepts a comma-separated list; whitespace is tolerated and
+    duplicates are dropped."""
+    adapters = {"claude": {}, "zcode": {}}
+    stc = {}
+    assert D._resolve_targets("claude", adapters, stc) == ["claude"]
+    assert D._resolve_targets("claude,zcode", adapters, stc) == ["claude", "zcode"]
+    assert D._resolve_targets("claude, zcode", adapters, stc) == ["claude", "zcode"]
+    assert D._resolve_targets("claude,claude,zcode", adapters, stc) == ["claude", "zcode"]
+    # empty tokens dropped
+    assert D._resolve_targets(",claude,,zcode,", adapters, stc) == ["claude", "zcode"]
+
+
+def test_resolve_targets_falls_back_to_stc_yaml():
+    """When --target is absent/empty, fall back to stc.yaml deploy.targets."""
+    adapters = {"claude": {}, "zcode": {}}
+    stc = {"deploy": {"targets": ["claude", "zcode"]}}
+    assert D._resolve_targets("", adapters, stc) == ["claude", "zcode"]
+    assert D._resolve_targets(None, adapters, stc) == ["claude", "zcode"]
+
+
+def test_resolve_targets_fail_fast_on_unknown():
+    """An unknown target name must abort (SystemExit) with the list of available
+    adapters — a typo must not silently pass. Mix of known+unknown also fails."""
+    adapters = {"claude": {}, "zcode": {}}
+    stc = {}
+    # single unknown
+    try:
+        D._resolve_targets("foo", adapters, stc)
+        assert False, "expected SystemExit for unknown target 'foo'"
+    except SystemExit as e:
+        assert "foo" in str(e)
+        assert "claude" in str(e)
+    # mix of known + unknown — still fails (fail fast, all-or-nothing)
+    try:
+        D._resolve_targets("claude,bar", adapters, stc)
+        assert False, "expected SystemExit for mixed known+unknown"
+    except SystemExit as e:
+        assert "bar" in str(e)
+
+
 # ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------

@@ -297,16 +297,23 @@ cp user/secrets.env.example user/secrets.env  # add tokens (GITHUB_*, GRAPHIFY_C
 
 # 2. Preview what deploy would write (no live writes)
 python3 deploy/deploy.py check
-python3 deploy/deploy.py render --target claude --dry-run   # or zcode
+python3 deploy/deploy.py render --target claude --dry-run
+python3 deploy/deploy.py render --target claude,zcode --dry-run   # both at once
 
-# 3. Deploy into a harness (writes ~/.stc/ + the native dir; backs up first)
-python3 deploy/deploy.py apply --target claude    # → ~/.claude
-# python3 deploy/deploy.py apply --target zcode   # → ~/.zcode (as a plugin)
+# 3. Deploy into one or many harnesses (writes ~/.stc/ + the native dir; backs up first)
+python3 deploy/deploy.py apply --target claude          # → ~/.claude
+python3 deploy/deploy.py apply --target zcode           # → ~/.zcode (as a plugin)
+python3 deploy/deploy.py apply --target claude,zcode    # both
+python3 deploy/deploy.py apply                          # all targets from stc.yaml
 
 # Roll back a deploy if it went wrong:
 python3 deploy/deploy.py restore <backup-id>      # id printed by apply
 python3 deploy/deploy.py uninstall --target claude
 ```
+
+`--target` accepts one harness id or a comma-separated list. Unknown names fail
+fast with the list of available adapters — a typo never silently deploys. When
+`--target` is absent, all targets from `stc.yaml deploy.targets` are used.
 
 ## Testing
 

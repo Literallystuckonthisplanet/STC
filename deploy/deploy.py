@@ -8,13 +8,17 @@ the stc-* namespace; the ONLY user file touched is the always-context file,
 via one marker @import line.
 
 Commands:
-  render   --target <h> [--dry-run]   render into deploy/_rendered/<h>/ (no live writes)
-  apply    --target <h> [--overwrite] [--skip-collisions]
-                                     render + write to ~/.stc/ + the native dir
-                                     (REFUSES on JSON collisions unless a flag is given)
-  uninstall --target <h>              remove *.stc.md, the marker block, stc-* JSON keys
+  render   --target <h[,...]> [--dry-run]   render into deploy/_rendered/<h>/ (no live writes)
+  apply    --target <h[,...]> [--overwrite] [--skip-collisions]
+                                            render + write to ~/.stc/ + the native dir
+                                            (REFUSES on JSON collisions unless a flag is given)
+  uninstall --target <h[,...]>              remove *.stc.md, the marker block, stc-* JSON keys
   check                              validate config without writing
   restore  <backup-id>               roll back JSON from a backup snapshot
+
+  --target accepts one harness id OR a comma-separated list (claude,zcode).
+  Unknown names fail fast with the list of available adapters. When --target
+  is absent, all targets from stc.yaml deploy.targets are used.
 
 Defaults: dry-run / preview everywhere; ~/.claude and ~/.zcode are never
 written until the Stage 5/6 consent gate. apply writes to ~/.stc/ + the native
@@ -22,6 +26,8 @@ dir only when invoked explicitly.
 
 Usage:
   python3 deploy/deploy.py render --target claude --dry-run
+  python3 deploy/deploy.py render --target claude,zcode --dry-run
+  python3 deploy/deploy.py apply --target claude
   python3 deploy/deploy.py check
 """
 
@@ -51,10 +57,45 @@ MANIFEST = os.path.join(REPO, "deploy", "_manifest.json")
 # config loading
 # ---------------------------------------------------------------------------
 
+def _resolve_targets(arg_target, adapters, stc):
+    """Resolve the deploy target list from --target (one or many, comma-
+    separated) or fall back to stc.yaml deploy.targets.
+
+    --target accepts a single value OR a comma-separated list:
+        --target claude
+        --target claude,zcode
+    Whitespace around commas is tolerated; empty tokens are dropped. When the
+    flag is absent, all targets from stc.yaml deploy.targets are used.
+
+    Validation is FAIL-FAST: every named target must have an adapter, else the
+    deploy aborts with the bad name(s) and the list of available adapters — an
+    unknown name is almost always a typo and must not silently pass.
+    """
+    if arg_target:
+        # split on comma, strip whitespace, drop empties, dedupe preserving order
+        seen, targets = set(), []
+        for tok in str(arg_target).split(","):
+            t = tok.strip()
+            if t and t not in seen:
+                seen.add(t)
+                targets.append(t)
+    else:
+        targets = list(stc.get("deploy", {}).get("targets", []))
+    unknown = [t for t in targets if t not in adapters]
+    if unknown:
+        avail = ", ".join(sorted(adapters))
+        raise SystemExit(
+            f"✗ unknown target(s): {', '.join(unknown)}\n"
+            f"  available adapters: {avail}"
+        )
+    return targets
+
+
 def _load_targets(adapters, args):
+    # deprecated shim — kept for any external caller; _resolve_targets is the
+    # current path. Returns the stc.yaml fallback only (no validation).
     if getattr(args, "target", None):
         return [args.target]
-    # fall back to stc.yaml deploy.targets
     try:
         stc = R._load_yaml(STC_YAML)
         return stc.get("deploy", {}).get("targets", [])
@@ -272,10 +313,8 @@ def _unregister_plugin(native_dir):
 
 def cmd_render(args):
     stc, registry, adapters, _ = _gather()
-    targets = _load_targets(adapters, args) if args.target else stc.get("deploy", {}).get("targets", [])
+    targets = _resolve_targets(args.target, adapters, stc)
     for t in targets:
-        if t not in adapters:
-            print(f"✗ no adapter for target '{t}'"); continue
         provider = R.provider_for(stc, t, REPO)
         rr = R.render_harness(stc, registry, provider, adapters[t], CORE, REPO)
         out = os.path.join(RENDERED_ROOT, t)
@@ -297,11 +336,9 @@ def cmd_apply(args):
     # sessions (the 'Folder not found' condition). Printed, never blocks deploy.
     for w in C.session_path_warnings(stc):
         print("   ⚠ " + w)
-    targets = [args.target] if args.target else stc.get("deploy", {}).get("targets", [])
+    targets = _resolve_targets(args.target, adapters, stc)
     for t in targets:
-        if t not in adapters:
-            print(f"✗ no adapter for '{t}'"); continue
-        adapter = adapters[t]
+        adapter = adapters[t]  # _resolve_targets already validated t ∈ adapters
         native_dir = adapter["native_dir"].replace("${HOME}", os.path.expanduser("~"))
         provider = R.provider_for(stc, t, REPO)
         rr = R.render_harness(stc, registry, provider, adapter, CORE, REPO)
@@ -355,9 +392,41 @@ def cmd_uninstall(args):
         manifest = json.load(open(MANIFEST, encoding="utf-8"))
     except json.JSONDecodeError:
         print(f"✗ manifest at {MANIFEST} is corrupt; remove it manually."); return 1
-    target = args.target
-    if target not in manifest:
-        print(f"✗ no manifest entry for '{target}'"); return 1
+    # --target accepts a single value OR comma-separated list (e.g. "claude,zcode").
+    # Every name must have a recorded manifest entry, else fail fast — uninstall
+    # is destructive and a typo must not silently pass.
+    raw = str(args.target)
+    seen, targets = set(), []
+    for tok in raw.split(","):
+        t = tok.strip()
+        if t and t not in seen:
+            seen.add(t); targets.append(t)
+    unknown = [t for t in targets if t not in manifest]
+    if unknown:
+        avail = ", ".join(sorted(manifest))
+        print(f"✗ no manifest entry for: {', '.join(unknown)}")
+        if avail:
+            print(f"  installed targets: {avail}")
+        return 1
+    for target in targets:
+        manifest = _uninstall_one(target, manifest)
+    # ~/.stc/core/ is shared across harnesses — only remove it when the LAST
+    # harness is uninstalled, so a partial uninstall keeps core for the rest.
+    if not manifest:
+        _purge_stc_home()
+        print(f"✓ uninstalled {', '.join(targets)} (last harness(es) — "
+              f"~/.stc/core/ removed; user content + backup snapshots retained)")
+    else:
+        print(f"✓ uninstalled {', '.join(targets)} (user content preserved; "
+              f"~/.stc/core/ kept — still in use by: {', '.join(manifest)})")
+    return 0
+
+
+def _uninstall_one(target, manifest):
+    """Remove a single target's STC artifacts (recorded in the manifest) from
+    its native dir. Returns the updated manifest (target deleted). The caller
+    decides when to purge the shared ~/.stc/core/ (only when manifest is empty).
+    """
     entry = manifest[target]
     native_dir = entry["native_dir"]
     # detect plugin-delivery from the file paths the manifest recorded (any path
@@ -429,16 +498,7 @@ def cmd_uninstall(args):
         json.dump(live, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
     del manifest[target]
     json.dump(manifest, open(MANIFEST, "w", encoding="utf-8"), indent=2)
-    # 4. ~/.stc/core/ is shared across harnesses — only remove it when the LAST
-    #    harness is uninstalled, so a partial uninstall keeps core for the rest.
-    if not manifest:  # no harnesses left
-        _purge_stc_home()
-        print(f"✓ uninstalled {target} (last harness — ~/.stc/core/ removed; "
-              f"user content + backup snapshots retained)")
-    else:
-        print(f"✓ uninstalled {target} (user content preserved; ~/.stc/core/ kept — "
-              f"still in use by: {', '.join(manifest)})")
-    return 0
+    return manifest
 
 
 def _purge_stc_home():
@@ -588,19 +648,21 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="deploy.py", description="STC deploy orchestrator")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    _target_help = ("one or more harness ids, comma-separated (e.g. claude or "
+                    "claude,zcode); default: stc.yaml deploy.targets")
     pr = sub.add_parser("render", help="render into deploy/_rendered/ (no live writes)")
-    pr.add_argument("--target", help="harness id (default: stc.yaml deploy.targets)")
+    pr.add_argument("--target", help=_target_help)
     pr.add_argument("--dry-run", action="store_true")
     pr.set_defaults(func=cmd_render)
 
     pa = sub.add_parser("apply", help="render + write to ~/.stc/ + native dir")
-    pa.add_argument("--target", required=False)
+    pa.add_argument("--target", required=False, help=_target_help)
     pa.add_argument("--overwrite", action="store_true", help="back up + let STC take precedence on JSON collisions")
     pa.add_argument("--skip-collisions", action="store_true", help="keep user config; STC capability absent there")
     pa.set_defaults(func=cmd_apply)
 
-    pu = sub.add_parser("uninstall", help="remove STC artifacts from a harness")
-    pu.add_argument("--target", required=True)
+    pu = sub.add_parser("uninstall", help="remove STC artifacts from one or more harnesses")
+    pu.add_argument("--target", required=True, help=_target_help)
     pu.set_defaults(func=cmd_uninstall)
 
     pc = sub.add_parser("check", help="validate config without writing")

@@ -1,0 +1,55 @@
+# =========================
+# STC — secrets & user data
+# =========================
+# Never commit real user data / secrets. Templates (the *.example.* files)
+# ARE committed so the repo is usable; the real files they spawn are ignored.
+#
+# Ignoring by exact filename (not the whole user/projects/ dir) so the
+# template user/projects/example.example.md stays tracked.
+stc.yaml
+user/profile.md
+user/secrets.env
+user/.state/
+user/projects/*
+!user/projects/example.example.md
+
+# =========================
+# Deploy output
+# =========================
+# Rendered config is generated; source of truth is STC repo
+deploy/_rendered/
+*.rendered.json
+*.rendered.md
+deploy/_manifest.json
+
+# Doc-backend state (incremental hashes per harness)
+deploy/doc_backend/.state/
+*.infra-content-state*.json
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# =========================
+# OS / editor
+# =========================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# =========================
+# Logs
+# =========================
+*.log
+tmp/

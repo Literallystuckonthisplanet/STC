@@ -1,0 +1,106 @@
+# ============================================================
+# STC — Standard Template Construct pipeline
+# User configuration template.
+#
+# Copy this file to stc.yaml and edit. stc.yaml is gitignored.
+# Deploy reads stc.yaml + user/profile.md + user/secrets.env.
+# ============================================================
+
+schema_version: 1
+
+# ------------------------------------------------------------
+# User identity (rendered into core rules as ${USER_NAME} etc.)
+# ------------------------------------------------------------
+user:
+  name: "Your Name"            # how rules/commands address you
+  role: "developer"            # developer | designer | BA/PO | student | ...
+  language: "en"               # interface language (en | ru | ...); agent talks to you in this
+  timezone: "UTC"              # for handoff dates, audit cadence
+  git:
+    name: "Your Git Name"
+    email: "you@example.com"
+
+# ------------------------------------------------------------
+# Model provider (the MODEL axis).
+# Each harness speaks ONE model family — Claude Code on an Anthropic
+# subscription resolves only sonnet/haiku/opus (glm-* ids make typed
+# sub-agents silently fail to dispatch); ZCode maps Anthropic names onto
+# GLM ids. So the provider follows the harness, not a single global choice.
+#   provider  — default (back-compat, used when a target has no override)
+#   <target>  — per-harness override (takes precedence for that target)
+# ------------------------------------------------------------
+models:
+  provider: glm              # default (must match a core/models/<x>.yaml)
+  # Optional per-target overrides. Example: Claude Code on an Anthropic
+  # subscription, ZCode on GLM:
+  #   claude:  claude
+  #   zcode:   glm
+
+# ------------------------------------------------------------
+# Workspace
+# ------------------------------------------------------------
+workspace:
+  root: "${HOME}/projects"     # where your projects live; agents resolve project memory relative to this
+  dev_ports: [3000, 3001, 3002]  # ports scanned by the stop-services hook on session end
+  handoffs_dir: "${workspace.root}/.handoffs"  # where handoff docs are written
+
+# ------------------------------------------------------------
+# Deploy options
+# ------------------------------------------------------------
+deploy:
+  # Token economy on inter-agent traffic: main agent instructs research/review
+  # sub-agents to answer in caveman (terse) style. Set to `none` for full prose.
+  subagent_compression: caveman    # caveman | none
+
+  # Documentation backend. Where specs/tasks and the infra mirror live.
+  #   markdown — write .md files under doc_backend.root (no external service; default)
+  #   none     — no doc backend; to-spec/to-tasks are inert
+  doc_backend: markdown            # markdown | none
+
+  # Harnesses to deploy into. `deploy.py --target X` overrides this for a single run.
+  targets: [claude, zcode]
+
+# ------------------------------------------------------------
+# Doc backend (only used if deploy.doc_backend != none)
+# ------------------------------------------------------------
+doc_backend:
+  root: "${workspace.root}/.stc-docs"  # where specs/, tasks/, infra/ live
+  # Local-first. STC is neutral to the store; the source of truth is always
+  # the .md file, the backend is a view. A markdown editor (e.g. Obsidian in
+  # vault mode over this root) reads the same files without extra config.
+
+# ------------------------------------------------------------
+# MCP servers (rendered into the target's .mcp.json / mcpServers)
+# Secrets referenced by env var name, NOT inline.
+#
+# CORE capabilities (required by STC's own agents/hooks — enable these):
+#   playwright — browser-driven e2e (H02 hook + e2e agent)
+#   context7   — docs-first contract (docs agent + integration-docs-gate H16)
+# graphify is a REQUIRED capability but runs as a STANDALONE CLI (safishamsi/
+# graphify), not an MCP server — configured via the graphify block below.
+#
+# USER-SPECIFIC servers (github, gsheets, etc.) belong in YOUR stc.yaml, not
+# here: they are not referenced by core/ and are personal tooling. The adapter
+# still supports them; this public default ships only what the framework needs.
+# ------------------------------------------------------------
+mcp:
+  playwright:
+    enabled: true               # CORE — browser-driven e2e (REQUIRED)
+    # Connects to a browser you already launched with --remote-debugging-port=<cdp_port>
+    cdp_port: 9222
+    output_dir: "tmp/.playwright-mcp"
+  context7:
+    enabled: true               # CORE — docs-first contract (REQUIRED by H16 + docs agent)
+    api_key_env: "CONTEXT7_API_KEY"
+
+# ------------------------------------------------------------
+# graphify (standalone CLI — REQUIRED core capability, NOT an MCP server)
+# Safishamsi/graphify runs as a skill/CLI, discovered via GRAPHIFY_CLI.
+# Install: `uv tool install "graphifyy[mcp]"` (note the package is "graphifyy").
+# The path below is resolved by hooks/skills as ${GRAPHIFY_CLI:-graphify}.
+# For headless LLM-backed labeling, graphify reads ANTHROPIC_API_KEY (its
+# "claude" backend reaches Anthropic-compatible endpoints like GLM's).
+# ------------------------------------------------------------
+graphify:
+  cli_env: "GRAPHIFY_CLI"        # env var holding the binary path
+  api_key_env: "ANTHROPIC_API_KEY"

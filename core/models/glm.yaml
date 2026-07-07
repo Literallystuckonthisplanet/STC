@@ -1,0 +1,54 @@
+# ============================================================
+# STC model provider — GLM (Zhipu / BigModel)
+#
+# The MODEL axis, independent of the harness axis. A harness (claude,
+# zcode, ...) defines the live FORM (file layout, dispatch, hook wiring);
+# a model provider defines the ENGINE (concrete model ids per tier,
+# context windows, transport). STC composes them: the adapter gives the
+# form, this file gives the model id, registry.yaml gives the tier an
+# agent needs — tier × provider = the concrete id deploy.py renders.
+#
+# One provider can be used across multiple harnesses (e.g. GLM behind the
+# Anthropic-compatible endpoint in Claude Code), and one harness can host
+# multiple providers. The two axes are orthogonal by design.
+# ============================================================
+
+provider: glm
+display_name: "GLM (Zhipu / BigModel)"
+
+# ------------------------------------------------------------
+# Transport. GLM exposes an Anthropic-compatible Messages endpoint,
+# so it mounts into ANY harness that speaks the Anthropic protocol
+# (Claude Code via baseURL, ZCode natively).
+# ------------------------------------------------------------
+api:
+  kind: anthropic                          # anthropic | openai | native
+  base_url: "https://open.bigmodel.cn/api/anthropic"
+  auth: bearer                             # x-api-key | bearer
+  key_env: "ANTHROPIC_API_KEY"             # env var name (NOT the value)
+
+# ------------------------------------------------------------
+# Tier → concrete model id. registry.yaml gives each STC agent a
+# model_tier (fast | mid | heavy); deploy.py resolves the tier here.
+# A tier may map to the same id as another (no opus-class on GLM).
+# ------------------------------------------------------------
+tiers:
+  fast:  "glm-5-turbo"
+  mid:   "glm-5.2"
+  heavy: "glm-5.2"                         # no opus-class; heavy maps to mid
+
+# ------------------------------------------------------------
+# Context window per tier (tokens). Drives statusline + compact cadence.
+# ------------------------------------------------------------
+context:
+  fast:  200000
+  mid:   1000000
+  heavy: 1000000
+
+# ------------------------------------------------------------
+# Capability notes (informational; deploy/hook behaviour may consult).
+# ------------------------------------------------------------
+capabilities:
+  reasoning: true                          # GLM-5-Turbo has a reasoning variant
+  tool_use: true
+  vision: false

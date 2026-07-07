@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+"""deploy.py — the STC deploy orchestrator (CLI).
+
+Consumes the Stage-3 contracts (adapter.yaml × core/models × registry.yaml ×
+stc.yaml) and renders the harness form. Non-destructive: every markdown
+artifact is *.stc.md (collision-proof); settings/.mcp JSON are merged under
+the stc-* namespace; the ONLY user file touched is the always-context file,
+via one marker @import line.
+
+Commands:
+  render   --target <h> [--dry-run]   render into deploy/_rendered/<h>/ (no live writes)
+  apply    --target <h> [--overwrite] [--skip-collisions]
+                                     render + write to ~/.stc/ + the native dir
+                                     (REFUSES on JSON collisions unless a flag is given)
+  uninstall --target <h>              remove *.stc.md, the marker block, stc-* JSON keys
+  check                              validate config without writing
+  restore  <backup-id>               roll back JSON from a backup snapshot
+
+Defaults: dry-run / preview everywhere; ~/.claude and ~/.zcode are never
+written until the Stage 5/6 consent gate. apply writes to ~/.stc/ + the native
+dir only when invoked explicitly.
+
+Usage:
+  python3 deploy/deploy.py render --target claude --dry-run
+  python3 deploy/deploy.py check
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+
+# make the sibling modules importable when run as a script
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import render as R          # noqa: E402
+import checks as C          # noqa: E402
+import stc_block as B       # noqa: E402
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+CORE = os.path.join(REPO, "core")
+STC_YAML = os.path.join(REPO, "stc.yaml")
+STC_EXAMPLE = os.path.join(REPO, "stc.example.yaml")
+RENDERED_ROOT = os.path.join(REPO, "deploy", "_rendered")
+STC_HOME = os.path.join(os.path.expanduser("~"), ".stc")
+BACKUPS = os.path.join(STC_HOME, "backups")
+MANIFEST = os.path.join(REPO, "deploy", "_manifest.json")
+
+
+# ---------------------------------------------------------------------------
+# config loading
+# ---------------------------------------------------------------------------
+
+def _load_targets(adapters, args):
+    if getattr(args, "target", None):
+        return [args.target]
+    # fall back to stc.yaml deploy.targets
+    try:
+        stc = R._load_yaml(STC_YAML)
+        return stc.get("deploy", {}).get("targets", [])
+    except FileNotFoundError:
+        return []
+
+
+def _gather():
+    """Load stc.yaml (or the example if real one absent) + all adapters.
+
+    Provider is NOT loaded here — it is per-target now (a harness speaks one
+    model family). Callers resolve it via R.provider_for(stc, target, REPO)
+    inside the per-target loop. See render.provider_for for the rationale.
+    """
+    stc_path = STC_YAML if os.path.exists(STC_YAML) else STC_EXAMPLE
+    stc, registry, _ = R.load_inputs(stc_path, CORE, REPO)
+    adapter_dirs = os.path.join(REPO, "adapters")
+    adapters = {}
+    for d in os.listdir(adapter_dirs):
+        ap = os.path.join(adapter_dirs, d, "adapter.yaml")
+        if os.path.isfile(ap) and d != "_template":
+            adapters[d] = R.load_adapter(REPO, d)
+    return stc, registry, adapters, stc_path
+
+
+# ---------------------------------------------------------------------------
+# write helpers
+# ---------------------------------------------------------------------------
+
+def _write_tree(base, files, native_dir=None):
+    """Write {relpath: text} under base/, substituting $NATIVE_DIR / $<native_dir>.
+
+    Shell scripts (.sh / .stc.sh) are written with the executable bit set:
+    hook scripts carry a shebang and Claude Code executes them directly, so a
+    rw-r--r-- file (the default umask for open()) silently fails to run.
+    """
+    for rel, text in files.items():
+        body = text
+        if native_dir:
+            body = body.replace("$NATIVE_DIR", native_dir)
+        path = os.path.join(base, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        if rel.endswith(".sh"):
+            # rwxr-xr-x: user-read-write-execute, group/other read-execute.
+            # Hook scripts are executed, not sourced — they must be +x.
+            cur = os.stat(path).st_mode
+            os.chmod(path, cur | 0o111)
+
+
+def _merge_settings_patch(patch, native_dir, overwrite, skip_collisions):
+    """Merge the STC settings patch into the live settings.json (idempotent).
+
+    Before adding each STC entry, drop any prior entry that is STC-owned:
+      (a) tagged entries (_stc_managed + _stc_cap match) — the idempotent update
+          path when re-deploying over an already-managed settings.json;
+      (b) UNTAGGED legacy entries whose hook command basename matches THIS
+          entry's hook filename (with or without the .stc.sh suffix). This
+          catches hooks from a pre-namespace deploy — they carry no tag, so
+          without this check they'd survive as "user" entries and fire twice.
+    The basename match is SCOPED TO THIS ENTRY ONLY (not a global set): each
+    patch entry is one capability with its own script, so matching must compare
+    against that entry's basename, else all Bash-matcher groups would collapse.
+    Genuine user hooks never match STC hook filenames and are preserved verbatim.
+    """
+    path = os.path.join(native_dir, "settings.json")
+    live = C._load_json(path) or {}
+    # resolve $NATIVE_DIR in every hook command BEFORE merge. Render emits
+    # "$NATIVE_DIR/hooks/foo.stc.sh" (disk-agnostic, testable); Claude Code does
+    # NOT expand $NATIVE_DIR — it is not a standard env var — so an unresolved
+    # placeholder produces an empty path and the hook script is never found.
+    # Substituting the absolute native_dir here keeps render disk-agnostic and
+    # avoids needing an `env: {NATIVE_DIR: ...}` block in settings.json.
+    for entries in patch.get("hooks", {}).values():
+        for e in entries:
+            for h in (e.get("hooks") or []):
+                if isinstance(h, dict):
+                    h["command"] = h.get("command", "").replace("$NATIVE_DIR", native_dir)
+    hooks = live.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        return  # unusual shape; skip
+
+    for event, entries in patch.get("hooks", {}).items():
+        bucket = hooks.setdefault(event, [])
+        for e in entries:
+            cap = e.get("_stc_cap")
+            # the basenames THIS entry installs (scoped, not global)
+            entry_basenames = _entry_hook_basenames(e)
+            bucket = [x for x in bucket if not _is_stc_owned(x, cap, entry_basenames)]
+            bucket.append(e)
+        hooks[event] = bucket
+    if "_stc_statusline" in patch and overwrite:
+        live["statusLine"] = {"type": "command",
+                              "command": f"{native_dir}/{patch['_stc_statusline']}"}
+    # permissions.deny — STC static read-guards. Merged into the user's existing
+    # deny list (dedup), never replacing user rules. Tagged so uninstall strips
+    # only the STC-contributed ones.
+    stc_deny = patch.get("permissions", {}).get("_stc_deny")
+    if stc_deny:
+        perms = live.setdefault("permissions", {})
+        user_deny = [d for d in perms.get("deny", []) if d not in stc_deny]
+        perms["deny"] = user_deny + stc_deny
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(live, fh, indent=2, ensure_ascii=False)
+
+
+def _entry_hook_basenames(entry):
+    """Basenames of the hook scripts a patch entry installs, plus the legacy
+    .sh form (so 'block-dangerous-git.stc.sh' also matches 'block-dangerous-git.sh').
+    """
+    out = set()
+    if not isinstance(entry, dict):
+        return out
+    for h in entry.get("hooks", []):
+        cmd = h.get("command", "") if isinstance(h, dict) else ""
+        b = os.path.basename(cmd)
+        if b:
+            out.add(b)
+            out.add(re.sub(r"\.stc\.sh$", ".sh", b))
+    return out
+
+
+def _is_stc_owned(entry, cap, entry_basenames):
+    """True if a live hook entry belongs to STC and should be replaced/updated.
+
+    Recognises two shapes:
+      - tagged:   _stc_managed is True AND _stc_cap matches (idempotent re-deploy)
+      - legacy:   untagged, but its hook command basename matches one of THIS
+                  entry's hook scripts (with or without .stc.sh). Catches
+                  pre-namespace deploys where entries carry no tag.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("_stc_managed") is True and entry.get("_stc_cap") == cap:
+        return True
+    if entry_basenames:
+        for h in entry.get("hooks", []):
+            cmd = h.get("command", "") if isinstance(h, dict) else ""
+            if os.path.basename(cmd) in entry_basenames:
+                return True
+    return False
+
+
+def _merge_mcp_patch(patch, native_dir):
+    path = os.path.join(native_dir, ".mcp.json")
+    live = C._load_json(path) or {}
+    servers = live.setdefault("mcpServers", {})
+    for name, cfg in (patch.get("mcpServers") or {}).items():
+        servers[name] = cfg  # stc-* names → update in place (idempotent)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(live, fh, indent=2, ensure_ascii=False)
+
+
+def _register_plugin(native_dir):
+    """Register the STC plugin so a plugin-delivery harness discovers it.
+
+    Dropping files into cli/plugins/cache/<mkt>/<plugin>/<ver>/ is NOT enough —
+    the harness also requires the plugin enabled in cli/config.json and the
+    marketplace present in known_marketplaces.json. Without both, the plugin is
+    invisible (the bug this fixes). Idempotent: re-apply is a no-op.
+    """
+    mp = R.PLUGIN_MARKETPLACE
+    pn = R.PLUGIN_NAME
+    plugin_id = f"{pn}@{mp}"
+    # 1. enable the plugin in cli/config.json
+    cfg_path = os.path.join(native_dir, "cli", "config.json")
+    cfg = C._load_json(cfg_path) or {}
+    plugins = cfg.setdefault("plugins", {})
+    enabled = plugins.setdefault("enabledPlugins", {})
+    if enabled.get(plugin_id) is not True:
+        enabled[plugin_id] = True
+        os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2, ensure_ascii=False)
+    # 2. register the filesystem marketplace in known_marketplaces.json
+    km_path = os.path.join(native_dir, "cli", "plugins", "known_marketplaces.json")
+    km = C._load_json(km_path) or {"version": 1, "marketplaces": []}
+    marketplaces = km.setdefault("marketplaces", [])
+    if not any(m.get("id") == mp for m in marketplaces):
+        marketplaces.append({
+            "id": mp,
+            "source": {"source": "filesystem", "path": f"cli/plugins/cache/{mp}"},
+            "name": mp,
+            "description": "STC Core — local filesystem marketplace",
+        })
+        os.makedirs(os.path.dirname(km_path), exist_ok=True)
+        with open(km_path, "w", encoding="utf-8") as fh:
+            json.dump(km, fh, indent=2, ensure_ascii=False)
+
+
+def _unregister_plugin(native_dir):
+    """Reverse _register_plugin on uninstall (idempotent)."""
+    mp = R.PLUGIN_MARKETPLACE
+    pn = R.PLUGIN_NAME
+    plugin_id = f"{pn}@{mp}"
+    cfg_path = os.path.join(native_dir, "cli", "config.json")
+    cfg = C._load_json(cfg_path) or {}
+    enabled = (cfg.get("plugins") or {}).get("enabledPlugins") or {}
+    if plugin_id in enabled:
+        del enabled[plugin_id]
+        (cfg.setdefault("plugins", {}))["enabledPlugins"] = enabled
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2, ensure_ascii=False)
+    km_path = os.path.join(native_dir, "cli", "plugins", "known_marketplaces.json")
+    km = C._load_json(km_path) or {"version": 1, "marketplaces": []}
+    km["marketplaces"] = [m for m in km.get("marketplaces", []) if m.get("id") != mp]
+    with open(km_path, "w", encoding="utf-8") as fh:
+        json.dump(km, fh, indent=2, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+def cmd_render(args):
+    stc, registry, adapters, _ = _gather()
+    targets = _load_targets(adapters, args) if args.target else stc.get("deploy", {}).get("targets", [])
+    for t in targets:
+        if t not in adapters:
+            print(f"✗ no adapter for target '{t}'"); continue
+        provider = R.provider_for(stc, t, REPO)
+        rr = R.render_harness(stc, registry, provider, adapters[t], CORE, REPO)
+        out = os.path.join(RENDERED_ROOT, t)
+        _write_tree(out, rr.files)
+        # also dump the json patches for inspection
+        for jn, jp in rr.json_patches.items():
+            with open(os.path.join(out, jn + ".stc.patch.json"), "w", encoding="utf-8") as fh:
+                json.dump(jp, fh, indent=2, ensure_ascii=False)
+        print(f"✓ rendered {t} → deploy/_rendered/{t}/ "
+              f"({len(rr.files)} files, {len(rr.json_patches)} JSON patches)")
+
+
+def cmd_apply(args):
+    stc, registry, adapters, _ = _gather()
+    errs = C.precheck(stc, registry, None, adapters, CORE)
+    if errs:
+        print("✗ precheck failed:"); [print("   " + e) for e in errs]; return 1
+    # non-blocking warnings: session-path drift can orphan project memory and
+    # sessions (the 'Folder not found' condition). Printed, never blocks deploy.
+    for w in C.session_path_warnings(stc):
+        print("   ⚠ " + w)
+    targets = [args.target] if args.target else stc.get("deploy", {}).get("targets", [])
+    for t in targets:
+        if t not in adapters:
+            print(f"✗ no adapter for '{t}'"); continue
+        adapter = adapters[t]
+        native_dir = adapter["native_dir"].replace("${HOME}", os.path.expanduser("~"))
+        provider = R.provider_for(stc, t, REPO)
+        rr = R.render_harness(stc, registry, provider, adapter, CORE, REPO)
+
+        collisions = C.detect_collisions(rr, native_dir, t)
+        if collisions and not args.overwrite and not args.skip_collisions:
+            C.report_collisions(collisions); return 1
+
+        # backup JSON we are about to touch
+        json_files = list(rr.json_patches.keys())
+        if json_files and os.path.isdir(native_dir):
+            ts, dest, saved = C.backup_snapshot(native_dir, json_files, BACKUPS)
+            if saved:
+                _record_backup(ts, t, native_dir, saved)
+                print(f"✓ backup {ts} → {dest}/ (target={t}; restore: deploy.py restore {ts})")
+
+        # 1. ~/.stc/core/ (the shared, harness-neutral source — one update, all harnesses)
+        _sync_stc_home()
+        # 2. *.stc.md + hook scripts into the native dir
+        _write_tree(native_dir, rr.files, native_dir=native_dir)
+        # 2b. plugin-delivery harnesses need the plugin REGISTERED to be visible:
+        #     the cache dir alone is not discovered. enable in cli/config.json and
+        #     add the filesystem marketplace to known_marketplaces.json (idempotent).
+        delivery = adapter.get("harness_facts", {}).get("capability_delivery", "files")
+        if delivery == "plugin":
+            _register_plugin(native_dir)
+        # 3. JSON merges
+        for jn, jp in rr.json_patches.items():
+            if jn == "settings.json":
+                _merge_settings_patch(jp, native_dir, args.overwrite, args.skip_collisions)
+            elif jn == ".mcp.json":
+                _merge_mcp_patch(jp, native_dir)
+        # 4. the single marker @import into the user's always-context file.
+        # Render owns the marker content (single source of truth); here we just
+        # resolve the $NATIVE_DIR placeholder and inject it.
+        ac_file, marker_line = _marker_for(rr, native_dir)
+        B.inject_block(os.path.join(native_dir, ac_file), marker_line, create=True)
+
+        _write_manifest(rr, t, native_dir)
+        warns = C.postcheck(rr)
+        for w in warns:
+            print("   ⚠ " + w)
+        print(f"✓ applied {t} → {native_dir} + ~/.stc/")
+    return 0
+
+
+def cmd_uninstall(args):
+    if not os.path.exists(MANIFEST):
+        print("✗ no manifest — nothing STC recorded to uninstall."); return 1
+    try:
+        manifest = json.load(open(MANIFEST, encoding="utf-8"))
+    except json.JSONDecodeError:
+        print(f"✗ manifest at {MANIFEST} is corrupt; remove it manually."); return 1
+    target = args.target
+    if target not in manifest:
+        print(f"✗ no manifest entry for '{target}'"); return 1
+    entry = manifest[target]
+    native_dir = entry["native_dir"]
+    # detect plugin-delivery from the file paths the manifest recorded (any path
+    # under cli/plugins/cache/<mkt>/ means plugin form)
+    is_plugin = any("/plugins/cache/" in rel for rel in entry.get("files", []))
+    # 1. remove *.stc.md / *.stc.sh files listed in the manifest for THIS target
+    for rel in entry.get("files", []):
+        p = os.path.join(native_dir, rel)
+        if os.path.exists(p):
+            os.remove(p)
+    # 1b. plugin-delivery: unregister (config.json + known_marketplaces) and
+    #     remove the versioned plugin dir entirely (manifest lists individual
+    #     files, but plugin dirs may also hold harness-generated state).
+    if is_plugin:
+        _unregister_plugin(native_dir)
+        import shutil
+        plugin_dir = os.path.join(native_dir, R.PLUGIN_DIR)
+        if os.path.isdir(plugin_dir):
+            shutil.rmtree(plugin_dir)
+    # 2. remove the marker block from the always-context file
+    ac_file = entry.get("always_context", "CLAUDE.md")
+    B.remove_block(os.path.join(native_dir, ac_file))
+    # 3. strip stc-* keys from JSON (use the JSON list the manifest recorded,
+    #    so new patch types added later are cleaned too — not a hardcoded list)
+    for jn in entry.get("json", ("settings.json", ".mcp.json")):
+        p = os.path.join(native_dir, jn)
+        live = C._load_json(p)
+        if not live:
+            continue
+        if jn == "settings.json" and isinstance(live.get("hooks"), dict):
+            # build the set of STC hook basenames the manifest recorded, so a
+            # legacy untagged entry pointing at the same script is also stripped.
+            stc_basenames = set()
+            for rel in entry.get("files", []):
+                b = os.path.basename(rel)
+                stc_basenames.add(b)
+                stc_basenames.add(re.sub(r"\.stc\.sh$", ".sh", b))
+            for ev in list(live["hooks"]):
+                kept = []
+                for x in live["hooks"][ev]:
+                    drop = False
+                    if isinstance(x, dict):
+                        if x.get("_stc_managed") is True:
+                            drop = True
+                        else:
+                            for h in x.get("hooks", []):
+                                cmd = h.get("command", "") if isinstance(h, dict) else ""
+                                if os.path.basename(cmd) in stc_basenames:
+                                    drop = True; break
+                    kept.append(x) if not drop else None
+                live["hooks"][ev] = kept
+                if not kept:
+                    del live["hooks"][ev]
+            if not live["hooks"]:
+                del live["hooks"]
+        # strip STC-contributed permissions.deny rules (user's own stay)
+        if jn == "settings.json" and isinstance(live.get("permissions"), dict):
+            stc_deny = set(entry.get("permissions_deny") or [])
+            if live["permissions"].get("deny"):
+                live["permissions"]["deny"] = [d for d in live["permissions"]["deny"] if d not in stc_deny]
+                if not live["permissions"]["deny"]:
+                    del live["permissions"]["deny"]
+            if not live["permissions"]:
+                del live["permissions"]
+        if jn == ".mcp.json" and live.get("mcpServers"):
+            live["mcpServers"] = {k: v for k, v in live["mcpServers"].items() if not k.startswith("stc-")}
+            if not live["mcpServers"]:
+                del live["mcpServers"]
+        json.dump(live, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    del manifest[target]
+    json.dump(manifest, open(MANIFEST, "w", encoding="utf-8"), indent=2)
+    # 4. ~/.stc/core/ is shared across harnesses — only remove it when the LAST
+    #    harness is uninstalled, so a partial uninstall keeps core for the rest.
+    if not manifest:  # no harnesses left
+        _purge_stc_home()
+        print(f"✓ uninstalled {target} (last harness — ~/.stc/core/ removed; "
+              f"user content + backup snapshots retained)")
+    else:
+        print(f"✓ uninstalled {target} (user content preserved; ~/.stc/core/ kept — "
+              f"still in use by: {', '.join(manifest)})")
+    return 0
+
+
+def _purge_stc_home():
+    """Remove ~/.stc/core/ (the shared mirror). Guarded like _sync_stc_home."""
+    import shutil
+    dst = os.path.join(STC_HOME, "core")
+    if os.path.islink(dst) or (os.path.exists(dst) and not os.path.realpath(dst).startswith(os.path.realpath(STC_HOME))):
+        raise RuntimeError(f"refusing to remove {dst}: outside STC_HOME or a symlink")
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    return 0
+
+
+def cmd_check(args):
+    if not C.onboarding(os.path.exists(STC_YAML)):
+        return 1
+    stc, registry, adapters, _ = _gather()
+    errs = C.precheck(stc, registry, None, adapters, CORE)
+    if errs:
+        print("✗ config problems:"); [print("   " + e) for e in errs]; return 1
+    print("✓ config valid")
+    for w in C.session_path_warnings(stc):
+        print("   ⚠ " + w)
+    for t in stc.get("deploy", {}).get("targets", []):
+        adapter = adapters.get(t)
+        if not adapter:
+            continue
+        native_dir = adapter["native_dir"].replace("${HOME}", os.path.expanduser("~"))
+        provider = R.provider_for(stc, t, REPO)
+        rr = R.render_harness(stc, registry, provider, adapter, CORE, REPO)
+        cols = C.detect_collisions(rr, native_dir, t)
+        n = len(rr.files)
+        print(f"   {t}: {n} files, {len(rr.json_patches)} JSON patches, {len(cols)} collision(s)")
+        for c in cols:
+            print(f"      ⚠ {c}")
+    return 0
+
+
+def cmd_restore(args):
+    """Restore a backup snapshot into the SAME native_dir it came from.
+
+    The backup id is tied to a target via the backup ledger (~/.stc/backups/
+    _ledger.json), so restore knows where to put files — never guesses ~/.
+    """
+    native_dir = _native_dir_for_backup(args.backup_id)
+    if not native_dir:
+        print(f"✗ backup '{args.backup_id}' not found in ledger ({BACKUPS}/_ledger.json)")
+        return 1
+    C.restore(args.backup_id, native_dir, BACKUPS)
+    print(f"✓ restored {args.backup_id} → {native_dir}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# internal helpers
+# ---------------------------------------------------------------------------
+
+def _sync_stc_home():
+    """Mirror core/ into ~/.stc/core/ so all harnesses share one source.
+
+    Guarded: only ever removes a path INSIDE STC_HOME, and refuses to follow a
+    symlink (rmtree on a symlinked dir would destroy the link target).
+    """
+    import shutil
+    dst = os.path.join(STC_HOME, "core")
+    # safety: dst must be strictly under STC_HOME, and not a symlink target
+    if os.path.islink(dst) or (os.path.exists(dst) and not os.path.realpath(dst).startswith(os.path.realpath(STC_HOME))):
+        raise RuntimeError(f"refusing to remove {dst}: outside STC_HOME or a symlink")
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(CORE, dst)
+
+
+def _marker_for(rr, native_dir):
+    """Resolve the render-produced marker into (ac_file, @import line).
+
+    result.marker is { <ac_file>: <@import line with $NATIVE_DIR placeholder> }.
+    We substitute the placeholder and return the single (file, line) pair.
+    """
+    if not rr.marker:
+        ac = "CLAUDE.md"
+        return ac, f"@{native_dir}/{re.sub(r'.md$', '.stc.md', ac)}"
+    ac_file, line = next(iter(rr.marker.items()))
+    return ac_file, line.replace("$NATIVE_DIR", native_dir)
+
+
+def _record_backup(ts, target, native_dir, files):
+    """Append a backup entry to the ledger so restore knows its target.
+
+    The ledger ties a backup id (timestamp) to the target harness + native_dir
+    it came from — restore reads it instead of guessing (the D9 bug).
+    """
+    os.makedirs(BACKUPS, exist_ok=True)
+    ledger_path = os.path.join(BACKUPS, "_ledger.json")
+    ledger = {}
+    if os.path.exists(ledger_path):
+        try:
+            ledger = json.load(open(ledger_path, encoding="utf-8"))
+        except json.JSONDecodeError:
+            ledger = {}
+    ledger[ts] = {"target": target, "native_dir": native_dir, "files": files}
+    json.dump(ledger, open(ledger_path, "w", encoding="utf-8"), indent=2)
+
+
+def _native_dir_for_backup(ts):
+    ledger_path = os.path.join(BACKUPS, "_ledger.json")
+    if not os.path.exists(ledger_path):
+        return None
+    try:
+        ledger = json.load(open(ledger_path, encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return (ledger.get(ts) or {}).get("native_dir")
+
+
+def _write_manifest(rr, target, native_dir):
+    """Record what deploy created, so uninstall is precise + idempotent.
+
+    Reads the marker contract directly (ac_file is the marker key); never
+    calls .get() on a string (the old crash, D8).
+    """
+    manifest = {}
+    if os.path.exists(MANIFEST):
+        try:
+            manifest = json.load(open(MANIFEST, encoding="utf-8"))
+        except json.JSONDecodeError:
+            manifest = {}  # corrupt manifest → start fresh rather than crash
+    ac_file, _ = _marker_for(rr, native_dir)
+    # the STC deny rules we contributed, so uninstall can strip exactly those
+    # (not the user's own deny rules).
+    stc_deny = (rr.json_patches.get("settings.json", {}).get("permissions", {}) or {}).get("_stc_deny") or []
+    manifest[target] = {
+        "native_dir": native_dir,
+        "files": list(rr.files.keys()),
+        "json": list(rr.json_patches.keys()),
+        "always_context": ac_file,
+        "permissions_deny": stc_deny,
+    }
+    json.dump(manifest, open(MANIFEST, "w", encoding="utf-8"), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="deploy.py", description="STC deploy orchestrator")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pr = sub.add_parser("render", help="render into deploy/_rendered/ (no live writes)")
+    pr.add_argument("--target", help="harness id (default: stc.yaml deploy.targets)")
+    pr.add_argument("--dry-run", action="store_true")
+    pr.set_defaults(func=cmd_render)
+
+    pa = sub.add_parser("apply", help="render + write to ~/.stc/ + native dir")
+    pa.add_argument("--target", required=False)
+    pa.add_argument("--overwrite", action="store_true", help="back up + let STC take precedence on JSON collisions")
+    pa.add_argument("--skip-collisions", action="store_true", help="keep user config; STC capability absent there")
+    pa.set_defaults(func=cmd_apply)
+
+    pu = sub.add_parser("uninstall", help="remove STC artifacts from a harness")
+    pu.add_argument("--target", required=True)
+    pu.set_defaults(func=cmd_uninstall)
+
+    pc = sub.add_parser("check", help="validate config without writing")
+    pc.set_defaults(func=cmd_check)
+
+    pst = sub.add_parser("restore", help="roll back JSON from a backup snapshot")
+    pst.add_argument("backup_id")
+    pst.set_defaults(func=cmd_restore)
+
+    args = p.parse_args(argv)
+    rc = args.func(args)
+    return rc or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

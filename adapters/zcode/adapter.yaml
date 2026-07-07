@@ -1,0 +1,256 @@
+# ============================================================
+# STC adapter — ZCode
+#
+# ZCode is a general-purpose-only harness: it exposes two sub-agent
+# types — `general-purpose` and `Explore` — and NO typed agents. Per
+# the capability≠realisation principle, STC's 9 typed agents do NOT
+# disappear here; they DEGRADE to "the matching core/skills/<name>
+# methodology loaded into a general-purpose dispatch instruction".
+# The know-how travels via the skill; only the native type is lost.
+#
+# Always-context uses AGENTS.md (harness-native). Native @import is
+# attempted if the harness supports it; H06 JIT-inject is the fallback.
+# Capabilities are delivered as a plugin (.zcode-plugin-seed.json +
+# skills/ + hooks/hooks.json), the harness's native extension form.
+# ============================================================
+
+schema_version: 1
+harness: zcode
+canonical_home: "${HOME}/.stc"
+native_dir:     "${HOME}/.zcode"
+
+# ------------------------------------------------------------
+# Harness-level facts
+# ------------------------------------------------------------
+harness_facts:
+  always_context_file: "AGENTS.md"            # project-root + user-level, harness-native
+  supports_native_import: "unverified"        # @import may not be supported; H06 is the safety net
+  import_syntax: "@<path>"                     # tried; if unsupported, fallback to H06 inject
+  supports_typed_subagents: false              # ONLY general-purpose + Explore are exposed
+  exposed_subagent_types: [general-purpose, Explore]
+  subagent_dispatch_tool: "Agent"             # untyped dispatch (no per-type frontmatter)
+  hook_config_file: "plugin hooks.json"        # delivered inside the plugin, not settings.json
+  hook_event_names:                            # ZCode supports the same hook-event names as Claude
+    - PreToolUse
+    - PostToolUse
+    - UserPromptSubmit
+    - SessionStart
+    - SessionEnd
+    - Stop
+  mcp_config_file: ".mcp.json"                 # mcpServers block, same shape as Claude
+  statusline:
+    enabled: false                             # no statusLine equivalent confirmed on ZCode
+  # NOTE: model ids live on the MODEL axis (core/models/<provider>.yaml),
+  # NOT here. ZCode (the harness) is commonly paired with GLM, but that is a
+  # stc.yaml choice (models.provider), not a property of the harness.
+  capability_delivery: "plugin"                # skills+hooks ship as a zcode plugin, not loose files
+
+# ------------------------------------------------------------
+# Render-time variables this adapter contributes
+# ------------------------------------------------------------
+vars:
+  HARNESS_DIR:   "${HOME}/.zcode"
+  HARNESS_NAME:  "zcode"
+  MEMORY_DIR:    "${workspace.root}/.stc-memory"  # ZCode has no ~/.claude; project-scoped memory
+  COMPACT_CMD:   "/save-and-compact"              # rendered command (same name, harness-neutral)
+  SECRETS_ENV:   "${HOME}/.stc/secrets.env"
+  RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
+
+# ============================================================
+# LAYER 1 — always_context
+# ============================================================
+always_context:
+  realization: "AGENTS.md (harness-native). @import of core/memory/MEMORY.md is tried; H06 JIT-injects if unsupported."
+  native_path: "${workspace.root}/AGENTS.md  (+ ~/.stc/AGENTS.md user-level)"
+  import_syntax: "@<path>  (if supported; else H06 inject fallback)"
+  capabilities:
+    memory:
+      supported: degrade
+      native: "@${canonical_home}/core/memory/MEMORY.md into AGENTS.md"
+      fallback: "H06 session-start-context.sh JIT-inject on SessionStart (ALSO post-compact recovery). Used whenever @import is unsupported."
+      binding:
+        files: [core/memory/MEMORY.md, core/memory/playbook.md, core/memory/code_standard.md]
+
+# ============================================================
+# LAYER 2 — rules
+# Same as claude — rules live once in core/, inlined/injected.
+# ============================================================
+rules:
+  realization: "keepers @imported into AGENTS.md; the rest enforced by hooks H14/H15/H16"
+  native_path: "inlined into AGENTS.md or JIT-injected"
+  capabilities:
+    behavior:      { supported: true, native: "@core/rules/behavior.md (keepers)" }
+    pev:           { supported: true, native: "@core/rules/pev.md" }
+    project_docs:  { supported: true, native: "@core/rules/project_docs.md" }
+    session:       { supported: true, native: "@core/rules/session.md" }
+
+# ============================================================
+# LAYER 3 — hooks
+# Same 16 guards; wired into plugin hooks.json instead of settings.json.
+# ============================================================
+hooks:
+  realization: "16 .sh guards wired into the plugin's hooks/hooks.json (same matcher groups as claude)"
+  native_path: "${native_dir}/cli/plugins/cache/stc/<ver>/hooks/*.sh"
+  import_syntax: "none (hooks.json command pointers)"
+  capabilities:
+    H01_block_dangerous_git:   { supported: true, matcher: ["Bash"],                                  binding: { file: block-dangerous-git.sh } }
+    H02_playwright_reminder:   { supported: true, matcher: ["mcp__playwright__browser"],              binding: { file: playwright_reminder.sh } }
+    H03_stop_services:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: stop_services_reminder.sh } }
+    H04_agent_reuse_contract:  { supported: degrade, matcher: ["Agent"],                              binding: { file: agent-reuse-contract.sh }, note: "matcher is Agent (untyped), not Task" }
+    H05_secret_scan_memory:    { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: secret-scan-memory.sh } }
+    H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",              binding: { file: session-start-context.sh } }
+    H07_dirty_tree_guard:      { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: dirty-tree-guard.sh } }
+    H08_link_integrity:        { supported: true, matcher: ["*"], event: "Stop",                      binding: { file: link-integrity-guard.sh } }
+    H09_memory_guard:          { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: memory-guard.sh } }
+    H10_read_first_router:     { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: read-first-router.sh } }
+    H11_output_hygiene:        { supported: true, matcher: ["Bash"],                                  binding: { file: output-hygiene-guard.sh } }
+    H12_acquire_dedup:         { supported: true, matcher: ["Read|Grep|Glob|Bash"],                   binding: { file: acquire-dedup-guard.sh } }
+    H13_web_route:             { supported: true, matcher: ["WebSearch|WebFetch"],                    binding: { file: web-route-guard.sh } }
+    H14_buy_vs_build:          { supported: true, matcher: ["EnterPlanMode","Write|Edit|MultiEdit"],  binding: { file: buy-vs-build-reminder.sh } }
+    H15_exec_offload:          { supported: true, matcher: ["Bash"],                                  binding: { file: exec-offload-guard.sh } }
+    H16_integration_docs_gate: { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: integration-docs-gate.sh } }
+    H17_secret_read_guard:     { supported: true, matcher: ["Read|Glob|Grep"],                         binding: { file: secret-read-guard.sh } }   # L8 read-side — ZCode has no permissions.deny engine, so THIS hook is the only read-guard for secrets here
+
+# ============================================================
+# LAYER 4 — commands
+# ZCode renders commands as slash commands inside the plugin.
+# ============================================================
+commands:
+  realization: "markdown command files shipped inside the plugin; body is the core/ source verbatim"
+  native_path: "${native_dir}/cli/plugins/cache/stc/<ver>/commands/*.md"
+  import_syntax: "copy"
+  capabilities:
+    git-guardrails:                { supported: true, binding: { source: core/commands/git-guardrails.md } }
+    grill-me:                      { supported: true, binding: { source: core/commands/grill-me.md } }
+    handoff:                       { supported: true, binding: { source: core/commands/handoff.md } }
+    improve-codebase-architecture: { supported: true, binding: { source: core/commands/improve-codebase-architecture.md } }
+    install-mcp:                   { supported: true, binding: { source: core/commands/install-mcp.md } }
+    prototype:                     { supported: true, binding: { source: core/commands/prototype.md } }
+    save-and-compact:              { supported: true, binding: { source: core/commands/save-and-compact.md } }
+    to-spec:                       { supported: true, binding: { source: core/commands/to-spec.md } }
+    to-tasks:                      { supported: true, binding: { source: core/commands/to-tasks.md } }
+    zoom-out:                      { supported: true, binding: { source: core/commands/zoom-out.md } }
+
+# ============================================================
+# LAYER 5 — subagents  (THE DEGRADE LAYER)
+# ZCode exposes only general-purpose + Explore. Every typed STC agent
+# DEGRADES to: skill(<name>) loaded as the dispatch instruction +
+# general-purpose as the carrier. The methodology travels; the type does not.
+# ============================================================
+subagents:
+  realization: "untyped — only general-purpose + Explore are exposed. Typed agents degrade to skill + general-purpose dispatch."
+  native_path: "no typed agent files (rendered dispatch instructions instead)"
+  import_syntax: "render skill(core/<name>) as the Agent-tool instruction"
+  capabilities:
+    # the two natively-exposed types
+    general-purpose: { supported: true,  native: "Agent tool, no type — the carrier for degraded typed agents" }
+    Explore:         { supported: true,  native: "read-only fan-out search agent" }
+
+    # all 9 typed STC agents → degrade
+    code-reviewer:
+      supported: degrade
+      native: "general-purpose Agent dispatch"
+      fallback: "skill(code-reviewer) loaded as the dispatch instruction"
+      binding: { model_tier: mid, skill_link: code-reviewer }
+    security-arch:
+      supported: degrade
+      native: "general-purpose Agent dispatch"
+      fallback: "skill(security-arch) loaded as the dispatch instruction"
+      binding: { model_tier: mid, skill_link: security-arch }
+    qa:
+      supported: degrade
+      native: "general-purpose Agent dispatch"
+      fallback: "skill(qa) loaded as the dispatch instruction"
+      binding: { model_tier: mid, skill_link: qa }
+    security-deps:
+      supported: degrade
+      native: "general-purpose Agent dispatch"
+      fallback: "skill(security-deps) loaded as the dispatch instruction"
+      binding: { model_tier: fast, skill_link: security-deps }
+    e2e:
+      supported: degrade
+      native: "general-purpose Agent dispatch"
+      fallback: "skill(e2e) loaded as the dispatch instruction"
+      binding: { model_tier: mid, skill_link: e2e }
+    cleanup:
+      supported: degrade
+      native: "general-purpose Agent dispatch"
+      fallback: "handed-list applied by the main agent (no separate methodology skill)"
+      binding: { model_tier: fast, skill_link: null }
+    research:
+      supported: degrade
+      native: "general-purpose Agent dispatch (with web access)"
+      fallback: "skill(research) loaded as the dispatch instruction"
+      binding: { model_tier: mid, skill_link: research }
+    docs:
+      supported: degrade
+      native: "general-purpose Agent dispatch"
+      fallback: "skill(docs) loaded as the dispatch instruction"
+      binding: { model_tier: fast, skill_link: docs }
+    # vendor-specific — INERT off its harness
+    harness-docs:
+      supported: false
+      native: "none — claude-specific capability (answers about Claude Code)"
+      fallback: "none"
+
+# ============================================================
+# LAYER 6 — skills
+# The degrade mechanism depends on these skills being present and loadable.
+# Same 15 skills as claude; ship inside the plugin.
+# ============================================================
+skills:
+  realization: "skill folders shipped inside the plugin; ALSO the realisation path for degraded subagents"
+  native_path: "${native_dir}/cli/plugins/cache/stc/<ver>/skills/<name>/SKILL.md"
+  import_syntax: "copy"
+  capabilities:
+    code-reviewer:  { supported: true }
+    security-arch:  { supported: true }
+    qa:             { supported: true }
+    security-deps:  { supported: true }
+    e2e:            { supported: true }
+    research:       { supported: true }
+    docs:           { supported: true }
+    caveman:        { supported: true }
+    council:        { supported: true }
+    diagnose:       { supported: true }
+    infra-audit:    { supported: true }
+    tdd:            { supported: true }
+    worktree:       { supported: true }
+    code-graph:     { supported: true, binding: { required: true } }   # S18 — REQUIRED
+    llm-wiki:       { supported: true }                                # S19
+
+# ============================================================
+# LAYER 8 — permissions
+# ZCode does not expose a settings.json permissions.deny layer like Claude
+# Code. Secret read-protection here is therefore delivered by HOOK, not by a
+# native deny engine: H17_secret_read_guard (PreToolUse Read|Glob|Grep) blocks
+# reading .env/.pem/id_rsa — the same 5 patterns Claude enforces via
+# permissions.deny. The deny list below documents the INTENT (and would become
+# active if a future ZCode build gains a permissions engine), but today the
+# hook is the live enforcement. See core/hooks/secret-read-guard.sh.
+# ============================================================
+permissions:
+  native: false   # no settings.json permissions.deny engine — enforced by H17 hook instead
+  realization: "H17_secret_read_guard hook (no native permissions.deny engine on ZCode)"
+  native_path: "hooks/secret-read-guard.stc.sh (PreToolUse Read|Glob|Grep)"
+  deny:
+    - "Read(./**/.env)"
+    - "Read(./**/.env.local)"
+    - "Read(./**/.env.*.local)"
+    - "Read(./**/*.pem)"
+    - "Read(./**/id_rsa)"
+
+# ============================================================
+# LAYER 7 — mcp
+# Same shape as claude (.mcp.json mcpServers); graphify + playwright REQUIRED.
+# ============================================================
+mcp:
+  realization: ".mcp.json mcpServers block; same shape as claude"
+  native_path: "${workspace.root}/.mcp.json"
+  import_syntax: "generate mcpServers{} from stc.yaml → mcp.*"
+  capabilities:
+    playwright: { supported: true, binding: { required: true, transport: stdio, command: "npx -y @playwright/mcp@latest" } }
+    graphify:   { supported: true, binding: { required: true, transport: stdio, command_env: GRAPHIFY_CLI } }
+    github:     { supported: true, binding: { transport: stdio, command: "npx -y @modelcontextprotocol/server-github" } }
+    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @context7/mcp" } }
+    gsheets:    { supported: true, binding: { transport: stdio, command: "npx -y mcp-gsheets@latest" } }

@@ -1,0 +1,202 @@
+# ============================================================
+# STC adapter — TEMPLATE
+#
+# Copy this to adapters/<your-harness>/adapter.yaml and fill it in.
+# Every line marked `# TODO` must be decided for the harness.
+#
+# The contract: for each STC layer, state how THIS harness realises it.
+# A capability you can't realise natively degrades (skill + dispatch) or
+# is inert (supported: false, with a fallback). The methodology never
+# changes — only the binding.
+#
+# Read adapters/README.md first for the layer model.
+# ============================================================
+
+schema_version: 1
+harness: "<your-harness>"                   # TODO — short id, e.g. "cursor"
+canonical_home: "${HOME}/.stc"              # shared, cross-harness
+native_dir:     "${HOME}/.<your-harness>"   # TODO — where rendered files live
+
+# ------------------------------------------------------------
+# Harness-level facts — answer these by inspecting the harness docs/dir.
+# ------------------------------------------------------------
+harness_facts:
+  always_context_file: "<file>"             # TODO — CLAUDE.md / AGENTS.md / .cursorrules / ...
+  supports_native_import: true|false|"unverified"   # TODO — does the always-context file support @<path>?
+  import_syntax: "@<path>"                  # TODO — or "none"
+  supports_typed_subagents: true|false      # TODO — does the harness dispatch typed agents (per-type frontmatter)?
+  exposed_subagent_types: []                # TODO — e.g. [general-purpose] if untyped
+  subagent_dispatch_tool: "<tool>"          # TODO — Task / Agent / ...
+  hook_config_file: "<file>"                # TODO — settings.json / hooks.json / ...
+  hook_event_names: []                      # TODO — which of [PreToolUse,PostToolUse,UserPromptSubmit,SessionStart,SessionEnd,Stop] are supported
+  mcp_config_file: "<file>"                 # TODO — .mcp.json / mcp.json / ...
+  statusline:
+    enabled: true|false                     # TODO
+    source: "<path or null>"                # TODO — harness glue, if any
+  # NOTE: model ids do NOT live here — they are the MODEL axis
+  # (core/models/<provider>.yaml), chosen in stc.yaml (models.provider).
+  capability_delivery: "files|plugin"       # TODO — loose files, or a plugin/extension manifest?
+
+# ------------------------------------------------------------
+# Render-time variables (see core/hooks/README.md for the full table).
+# At minimum supply HARNESS_DIR + HARNESS_NAME; the rest follow.
+# ------------------------------------------------------------
+vars:
+  HARNESS_DIR:   "${HOME}/.<your-harness>"
+  HARNESS_NAME:  "<your-harness>"
+  MEMORY_DIR:    "<where project memory lives>"
+  COMPACT_CMD:   "<harness-native compact command>"
+  SECRETS_ENV:   "<the .env file>"
+  RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
+
+# ============================================================
+# LAYER 1 — always_context
+# Native @import primary; H06 session-start-context.sh JIT-inject fallback.
+# ============================================================
+always_context:
+  realization: "<one line>"
+  native_path: "<path>"
+  import_syntax: "@<path>  (if supported; else H06 inject fallback)"
+  capabilities:
+    memory:
+      supported: true|degrade              # true if @import works, degrade if H06 must inject
+      native: "@${canonical_home}/core/memory/MEMORY.md"
+      fallback: "H06 session-start-context.sh JIT-inject"
+      binding:
+        files: [core/memory/MEMORY.md, core/memory/playbook.md, core/memory/code_standard.md]
+
+# ============================================================
+# LAYER 2 — rules
+# ============================================================
+rules:
+  realization: "keepers in always_context; the rest enforced by hooks"
+  native_path: "inlined or JIT-injected"
+  capabilities:
+    behavior:      { supported: true }
+    pev:           { supported: true }
+    project_docs:  { supported: true }
+    session:       { supported: true }
+
+# ============================================================
+# LAYER 3 — hooks
+# One entry per guard; matcher is the harness tool/event name.
+# Set supported: false for any event the harness doesn't fire.
+# ============================================================
+hooks:
+  realization: "<one line>"
+  native_path: "<path>"
+  import_syntax: "none (command pointers)"
+  capabilities:
+    H01_block_dangerous_git:   { supported: true|false, matcher: ["Bash"],                                  binding: { file: block-dangerous-git.sh } }
+    H02_playwright_reminder:   { supported: true|false, matcher: ["mcp__playwright__browser"],              binding: { file: playwright_reminder.sh } }
+    H03_stop_services:         { supported: true|false, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: stop_services_reminder.sh } }
+    H04_agent_reuse_contract:  { supported: true|false, matcher: ["<dispatch-tool>"],                       binding: { file: agent-reuse-contract.sh } }
+    H05_secret_scan_memory:    { supported: true|false, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: secret-scan-memory.sh } }
+    H06_session_start_context: { supported: true|false, matcher: ["*"], event: "SessionStart",              binding: { file: session-start-context.sh } }
+    H07_dirty_tree_guard:      { supported: true|false, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: dirty-tree-guard.sh } }
+    H08_link_integrity:        { supported: true|false, matcher: ["*"], event: "Stop",                      binding: { file: link-integrity-guard.sh } }
+    H09_memory_guard:          { supported: true|false, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: memory-guard.sh } }
+    H10_read_first_router:     { supported: true|false, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: read-first-router.sh } }
+    H11_output_hygiene:        { supported: true|false, matcher: ["Bash"],                                  binding: { file: output-hygiene-guard.sh } }
+    H12_acquire_dedup:         { supported: true|false, matcher: ["Read|Grep|Glob|Bash"],                   binding: { file: acquire-dedup-guard.sh } }
+    H13_web_route:             { supported: true|false, matcher: ["WebSearch|WebFetch"],                    binding: { file: web-route-guard.sh } }
+    H14_buy_vs_build:          { supported: true|false, matcher: ["EnterPlanMode","Write|Edit|MultiEdit"],  binding: { file: buy-vs-build-reminder.sh } }
+    H15_exec_offload:          { supported: true|false, matcher: ["Bash"],                                  binding: { file: exec-offload-guard.sh } }
+    H16_integration_docs_gate: { supported: true|false, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: integration-docs-gate.sh } }
+
+# ============================================================
+# LAYER 4 — commands
+# ============================================================
+commands:
+  realization: "<one line>"
+  native_path: "<path>"
+  import_syntax: "copy"
+  capabilities:
+    git-guardrails:                { supported: true, binding: { source: core/commands/git-guardrails.md } }
+    grill-me:                      { supported: true, binding: { source: core/commands/grill-me.md } }
+    handoff:                       { supported: true, binding: { source: core/commands/handoff.md } }
+    improve-codebase-architecture: { supported: true, binding: { source: core/commands/improve-codebase-architecture.md } }
+    install-mcp:                   { supported: true, binding: { source: core/commands/install-mcp.md } }
+    prototype:                     { supported: true, binding: { source: core/commands/prototype.md } }
+    save-and-compact:              { supported: true, binding: { source: core/commands/save-and-compact.md } }
+    to-spec:                       { supported: true, binding: { source: core/commands/to-spec.md } }
+    to-tasks:                      { supported: true, binding: { source: core/commands/to-tasks.md } }
+    zoom-out:                      { supported: true, binding: { source: core/commands/zoom-out.md } }
+
+# ============================================================
+# LAYER 5 — subagents
+# If the harness exposes typed agents → supported: true per agent.
+# If it exposes only general-purpose → every typed agent DEGRADES to
+# skill(<name>) + general-purpose dispatch (see adapters/zcode/).
+# ============================================================
+subagents:
+  realization: "<typed files | untyped dispatch>"
+  native_path: "<path or 'rendered dispatch instructions'>"
+  import_syntax: "copy + apply binding  (or render skill as instruction if degrade)"
+  capabilities:
+    code-reviewer:  { supported: true|degrade, fallback: "skill(code-reviewer) + general-purpose",  binding: { model_tier: mid,  skill_link: code-reviewer } }
+    security-arch:  { supported: true|degrade, fallback: "skill(security-arch) + general-purpose",  binding: { model_tier: mid,  skill_link: security-arch } }
+    qa:             { supported: true|degrade, fallback: "skill(qa) + general-purpose",             binding: { model_tier: mid,  skill_link: qa } }
+    security-deps:  { supported: true|degrade, fallback: "skill(security-deps) + general-purpose",   binding: { model_tier: fast, skill_link: security-deps } }
+    e2e:            { supported: true|degrade, fallback: "skill(e2e) + general-purpose",            binding: { model_tier: mid,  skill_link: e2e } }
+    cleanup:        { supported: true|degrade, fallback: "handed-list via main agent",              binding: { model_tier: fast, skill_link: null } }
+    research:       { supported: true|degrade, fallback: "skill(research) + general-purpose",       binding: { model_tier: mid,  skill_link: research } }
+    docs:           { supported: true|degrade, fallback: "skill(docs) + general-purpose",           binding: { model_tier: fast, skill_link: docs } }
+    harness-docs:   { supported: true|false,   fallback: "none (vendor-specific, inert off-claude)", binding: { model_tier: fast, affinity: claude-only } }
+
+# ============================================================
+# LAYER 6 — skills
+# Required even on typed-agent harnesses (skills back agents + are
+# loadable by the main agent). code-graph is REQUIRED (S18).
+# ============================================================
+skills:
+  realization: "<one line>"
+  native_path: "<path>"
+  import_syntax: "copy"
+  capabilities:
+    code-reviewer: { supported: true }
+    security-arch: { supported: true }
+    qa:            { supported: true }
+    security-deps: { supported: true }
+    e2e:           { supported: true }
+    research:      { supported: true }
+    docs:          { supported: true }
+    caveman:       { supported: true }
+    council:       { supported: true }
+    diagnose:      { supported: true }
+    infra-audit:   { supported: true }
+    tdd:           { supported: true }
+    worktree:      { supported: true }
+    code-graph:    { supported: true, binding: { required: true } }
+    llm-wiki:      { supported: true }
+
+# ============================================================
+# LAYER 8 — permissions
+# Static tool-permission rules (defense-in-depth on READ; secret-scan hook
+# H05 guards on WRITE). Rendered into settings.json permissions.deny if the
+# harness supports it; an empty deny list = no static read-guards.
+# ============================================================
+permissions:
+  realization: "<settings.json permissions.deny | none>"
+  native_path: "<path or n/a>"
+  deny:
+    - "Read(./**/.env)"
+    - "Read(./**/.env.local)"
+    - "Read(./**/.env.*.local)"
+    - "Read(./**/*.pem)"
+    - "Read(./**/id_rsa)"
+
+# ============================================================
+# LAYER 7 — mcp
+# playwright + graphify are REQUIRED base capabilities.
+# ============================================================
+mcp:
+  realization: "<one line>"
+  native_path: "<path>"
+  import_syntax: "generate mcpServers{} from stc.yaml → mcp.*"
+  capabilities:
+    playwright: { supported: true, binding: { required: true, transport: stdio, command: "npx -y @playwright/mcp@latest" } }
+    graphify:   { supported: true, binding: { required: true, transport: stdio, command_env: GRAPHIFY_CLI } }
+    github:     { supported: true, binding: { transport: stdio, command: "npx -y @modelcontextprotocol/server-github" } }
+    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @context7/mcp" } }
+    gsheets:    { supported: true, binding: { transport: stdio, command: "npx -y mcp-gsheets@latest" } }

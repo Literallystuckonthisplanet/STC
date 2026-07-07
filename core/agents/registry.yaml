@@ -1,0 +1,96 @@
+# ============================================================
+# STC — agent registry (neutral bindings)
+#
+# Each capability has a prompt-body in <name>.md (harness-neutral) and a
+# binding here (how a harness REALISES the capability):
+#   - model_tier   — fast (haiku-class) | mid (sonnet-class) | heavy (opus-class)
+#                    A harness maps a tier to its concrete model id at deploy.
+#   - tools        — the capability set the agent needs (harness-neutral names).
+#                    A harness maps these to its concrete tool ids at deploy.
+#   - affinity     — claude-only | any  (claude-only = vendor-specific; on a
+#                    general-purpose-only harness the capability is inert)
+#   - skill_link   — the methodology skill that holds the same know-how, used
+#                    as the realisation when typed sub-agents are unavailable
+#                    (e.g. ZCode dispatches general-purpose with this skill).
+#
+# Why a registry separate from the prompt-bodies: the body is the know-how
+# (lives once, neutral); the binding is per-harness plumbing. A harness that
+# supports typed sub-agents renders <name>.md + this binding into an agent
+# file; one that does not (general-purpose-only) skips the agents entirely
+# and routes through the skill + a general-purpose dispatch.
+# ============================================================
+
+schema_version: 1
+
+# ------------------------------------------------------------
+# Reviewer / QA pipeline (×3 + deps)
+# ------------------------------------------------------------
+agents:
+  code-reviewer:
+    model_tier: mid
+    tools: [Read, Write]
+    affinity: any
+    skill_link: code-reviewer
+    dispatches: "An unbiased code review of a fragment (no prior context of the surrounding codebase — deliberate). Correctness, readability, perf, security, error handling vs the code standard (judgment rules only). Part of the ×3 pipeline."
+
+  security-arch:
+    model_tier: mid
+    tools: [Read, Bash, WebSearch, Glob, Grep]
+    affinity: any
+    skill_link: security-arch
+    dispatches: "An architectural security audit (OWASP Top 10 + stack CVEs + secrets), with no prior project context. Verdict: PASS / NEEDS FIXES / CRITICAL STOP. Part of the ×3 pipeline."
+
+  qa:
+    model_tier: mid
+    tools: [Read, Write, Bash]
+    affinity: any
+    skill_link: qa
+    dispatches: "Generate and run tests for a code fragment (business logic + edge cases, not trivia). Does NOT modify source. Part of the ×3 pipeline + the Verify step."
+
+  security-deps:
+    model_tier: fast
+    tools: [Bash, Read, WebSearch]
+    affinity: any
+    skill_link: security-deps
+    dispatches: "A dependency CVE audit (npm/pnpm/yarn/pip audit + WebSearch for HIGH/CRITICAL). Verdict: PASS / WARNING / STOP. Run before every deploy."
+
+  e2e:
+    model_tier: mid
+    tools: [Bash, Read, Glob, playwright_browser]
+    affinity: any
+    skill_link: e2e
+    dispatches: "Drive a live app through a browser (Playwright). After meaningful changes / before a deploy. Requires a running dev server. The methodology + scenario taxonomy is the skill; CONCRETE SCENARIOS PER PROJECT live in user/projects/<name>.md. Returns a PASS/FAIL table."
+
+  cleanup:
+    model_tier: fast
+    tools: [Read, Edit, Write, Bash, Grep, Glob]
+    affinity: any
+    skill_link: null              # mechanical executor; no separate methodology skill
+    dispatches: "A mechanical/codemod executor against a clear spec (rename across repo, lint-fix batch, code-standard cleanup). Does NOT decide what to change — applies a handed list and verifies by static checks."
+
+  # ------------------------------------------------------------
+  # Investigation
+  # ------------------------------------------------------------
+  research:
+    model_tier: mid
+    tools: [Read, Glob, Grep, WebSearch, WebFetch]
+    affinity: any
+    skill_link: research
+    dispatches: "Broad investigation: strategy, technologies, market, architecture options, legal. The ONLY agent with web access in the main pipeline; all others route web work through it. Answer comes back caveman-compressed if subagent_compression is on."
+
+  docs:
+    model_tier: fast
+    tools: [context7_resolve, context7_query]
+    affinity: any
+    skill_link: docs
+    dispatches: "Look up current library/framework documentation through Context7 — a global, vendor-neutral knowledge base. API, code examples, usage for a library. Cheap."
+
+  # ------------------------------------------------------------
+  # Vendor-specific (harness knowledge base)
+  # ------------------------------------------------------------
+  harness-docs:
+    model_tier: fast
+    tools: [WebFetch]
+    affinity: claude-only          # answers about Claude Code specifically
+    skill_link: null
+    dispatches: "Answer questions about the harness from its official documentation. Use proactively when the user asks how something in the harness works (skills, sub-agents, MCP, hooks, settings, commands, permissions, plugins). On non-claude harnesses this capability is inert — replaced by the harness's own docs."

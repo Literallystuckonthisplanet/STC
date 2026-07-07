@@ -1,0 +1,233 @@
+# ============================================================
+# STC adapter — Claude Code
+#
+# The live form of Claude Code as observed in the source infra
+# (~/.claude, read-only). STC's neutral core/ is realised here by:
+#   - native @import in CLAUDE.md          (always_context)
+#   - typed sub-agent files in agents/      (subagents — full type system)
+#   - hooks wired in settings.json          (hooks)
+#   - markdown command/agent/skill files    (commands, skills)
+#
+# This is the REFERENCE realisation: every STC capability has its native
+# form on Claude Code. Other adapters degrade relative to this one.
+# ============================================================
+
+schema_version: 1
+harness: claude
+canonical_home: "${HOME}/.stc"            # shared STC home, cross-harness
+native_dir:     "${HOME}/.claude"         # written only by deploy.py after consent
+
+# ------------------------------------------------------------
+# Harness-level facts (consumed by deploy.py + hooks render)
+# ------------------------------------------------------------
+harness_facts:
+  always_context_file: "CLAUDE.md"        # the file at <native_dir>/CLAUDE.md
+  supports_native_import: true            # CLAUDE.md supports @<path>
+  import_syntax: "@<path>"                # native include, primary mechanism
+  supports_typed_subagents: true          # agents/*.md carry frontmatter tools/model
+  subagent_dispatch_tool: "Task"          # the tool name that launches a typed agent
+  hook_config_file: "settings.json"       # hooks wired by matcher groups
+  hook_event_names:                       # all supported here
+    - PreToolUse
+    - PostToolUse
+    - UserPromptSubmit
+    - SessionStart
+    - SessionEnd
+    - Stop
+  mcp_config_file: ".mcp.json"            # mcpServers live here
+  statusline:
+    enabled: true
+    source: "adapters/claude/statusline.sh"   # harness glue (not derivable from yaml)
+    settings_key: "statusLine"
+  # NOTE: model ids live on the MODEL axis (core/models/<provider>.yaml),
+  # NOT here. A harness does not dictate a model — Claude Code can run GLM
+  # via the Anthropic-compatible endpoint. deploy.py composes
+  # adapter(form) × provider(model) × registry(tier).
+
+# ------------------------------------------------------------
+# Render-time variables this adapter contributes (see core/hooks/README.md)
+# ------------------------------------------------------------
+vars:
+  HARNESS_DIR:   "${HOME}/.claude"
+  HARNESS_NAME:  "claude"
+  MEMORY_DIR:    "${HOME}/.claude"         # project memory root (hooks that scan memory use this)
+  COMPACT_CMD:   "/save-and-compact"       # harness-native compact command
+  SECRETS_ENV:   "${HOME}/.claude/.env"
+  RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
+
+# ============================================================
+# LAYER 1 — always_context
+# ============================================================
+always_context:
+  realization: "CLAUDE.md with native @import of core/memory/MEMORY.md + playbook/code_standard"
+  native_path: "${native_dir}/CLAUDE.md"
+  import_syntax: "@<path>"                 # native, primary
+  capabilities:
+    memory:
+      supported: true
+      native: "@${canonical_home}/core/memory/MEMORY.md  (and @playbook, @code_standard)"
+      fallback: "H06 session-start-context.sh JIT-inject (used only if @import breaks / post-compact recovery)"
+      binding:
+        files: [core/memory/MEMORY.md, core/memory/playbook.md, core/memory/code_standard.md]
+
+# ============================================================
+# LAYER 2 — rules
+# ============================================================
+rules:
+  realization: "rules migrate to hooks at their flow point (ADR-001); only session/behavior keepers stay in always_context"
+  native_path: "inlined into CLAUDE.md via @import, or JIT-injected by a hook"
+  capabilities:
+    behavior:
+      supported: true
+      native: "@core/rules/behavior.md (keepers); the rest enforced by hooks H14/H15/H16"
+    pev:
+      supported: true
+      native: "@core/rules/pev.md (Plan→Do→Verify central process)"
+    project_docs:
+      supported: true
+      native: "@core/rules/project_docs.md (ADR, specs, tasks encoding)"
+    session:
+      supported: true
+      native: "@core/rules/session.md"
+
+# ============================================================
+# LAYER 3 — hooks
+# ============================================================
+hooks:
+  realization: "16 .sh guards wired into settings.json matcher groups (6 flow points)"
+  native_path: "${native_dir}/hooks/*.sh"
+  import_syntax: "none (settings.json command pointers)"
+  capabilities:
+    # one entry per guard; binding carries the matcher(s) deploy.py renders.
+    # PreToolUse matchers are tool-name regexes (Bash, Write|Edit|MultiEdit, ...).
+    # SessionStart/Stop/UserPromptSubmit DO NOT take a tool-name matcher — for
+    # these event hooks Claude Code only fires on a "*" matcher. A matcher
+    # equal to the event name (e.g. "SessionStart") is silently treated as a
+    # source-filter value it can never equal, so the hook never fires. See
+    # https://code.claude.com/docs/en/hooks (matcher field).
+    # `event:` decouples the event bucket from the matcher field — needed for
+    # the event hooks, where matcher="*" carries no event information.
+    H01_block_dangerous_git:   { supported: true, matcher: ["Bash"],                                  binding: { file: block-dangerous-git.sh } }
+    H02_playwright_reminder:   { supported: true, matcher: ["mcp__playwright__browser"],              binding: { file: playwright_reminder.sh } }
+    H03_stop_services:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: stop_services_reminder.sh } }
+    H04_agent_reuse_contract:  { supported: true, matcher: ["Task"],                                  binding: { file: agent-reuse-contract.sh } }
+    H05_secret_scan_memory:    { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: secret-scan-memory.sh } }
+    H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",              binding: { file: session-start-context.sh } }
+    H07_dirty_tree_guard:      { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: dirty-tree-guard.sh } }
+    H08_link_integrity:        { supported: true, matcher: ["*"], event: "Stop",                      binding: { file: link-integrity-guard.sh } }
+    H09_memory_guard:          { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: memory-guard.sh } }
+    H10_read_first_router:     { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: read-first-router.sh } }
+    H11_output_hygiene:        { supported: true, matcher: ["Bash"],                                  binding: { file: output-hygiene-guard.sh } }
+    H12_acquire_dedup:         { supported: true, matcher: ["Read|Grep|Glob|Bash"],                   binding: { file: acquire-dedup-guard.sh } }
+    H13_web_route:             { supported: true, matcher: ["WebSearch|WebFetch"],                    binding: { file: web-route-guard.sh } }
+    H14_buy_vs_build:          { supported: true, matcher: ["EnterPlanMode","Write|Edit|MultiEdit"],  binding: { file: buy-vs-build-reminder.sh } }
+    H15_exec_offload:          { supported: true, matcher: ["Bash"],                                  binding: { file: exec-offload-guard.sh } }
+    H16_integration_docs_gate: { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: integration-docs-gate.sh } }
+    H17_secret_read_guard:     { supported: true, matcher: ["Read|Glob|Grep"],                         binding: { file: secret-read-guard.sh } }   # L8 read-side; pairs with permissions.deny (claude runs BOTH — deny is faster when it short-circuits pre-tool, this hook covers any harness gap)
+
+# ============================================================
+# LAYER 4 — commands
+# ============================================================
+commands:
+  realization: "markdown command files in commands/ (slash commands); body is the core/ source verbatim"
+  native_path: "${native_dir}/commands/*.md"
+  import_syntax: "copy (no @import for commands)"
+  capabilities:
+    git-guardrails:               { supported: true, binding: { source: core/commands/git-guardrails.md } }
+    grill-me:                     { supported: true, binding: { source: core/commands/grill-me.md } }
+    handoff:                      { supported: true, binding: { source: core/commands/handoff.md } }
+    improve-codebase-architecture: { supported: true, binding: { source: core/commands/improve-codebase-architecture.md } }
+    install-mcp:                  { supported: true, binding: { source: core/commands/install-mcp.md } }
+    prototype:                    { supported: true, binding: { source: core/commands/prototype.md } }
+    save-and-compact:             { supported: true, binding: { source: core/commands/save-and-compact.md } }
+    to-spec:                      { supported: true, binding: { source: core/commands/to-spec.md } }
+    to-tasks:                     { supported: true, binding: { source: core/commands/to-tasks.md } }
+    zoom-out:                     { supported: true, binding: { source: core/commands/zoom-out.md } }
+
+# ============================================================
+# LAYER 5 — subagents
+# Claude Code is the REFERENCE: every typed STC agent realises natively.
+# ============================================================
+subagents:
+  realization: "typed agent files in agents/*.md (frontmatter name/description/tools); dispatched via Task tool"
+  native_path: "${native_dir}/agents/*.md"
+  import_syntax: "copy + apply binding (tools, model)"
+  capabilities:
+    # Reviewer / QA pipeline (×3 + deps)
+    code-reviewer:  { supported: true,  binding: { model_tier: mid,  tools: [Read, Write],                            skill_link: code-reviewer } }
+    security-arch:  { supported: true,  binding: { model_tier: mid,  tools: [Read, Bash, WebSearch, Glob, Grep],     skill_link: security-arch } }
+    qa:             { supported: true,  binding: { model_tier: mid,  tools: [Read, Write, Bash],                     skill_link: qa } }
+    security-deps:  { supported: true,  binding: { model_tier: fast, tools: [Bash, Read, WebSearch],                 skill_link: security-deps } }
+    e2e:            { supported: true,  binding: { model_tier: mid,  tools: [Bash, Read, Glob, playwright_browser],  skill_link: e2e } }
+    cleanup:        { supported: true,  binding: { model_tier: fast, tools: [Read, Edit, Write, Bash, Grep, Glob],   skill_link: null } }
+    # Investigation
+    research:       { supported: true,  binding: { model_tier: mid,  tools: [Read, Glob, Grep, WebSearch, WebFetch], skill_link: research } }
+    docs:           { supported: true,  binding: { model_tier: fast, tools: [context7_resolve, context7_query],      skill_link: docs } }
+    # Vendor-specific
+    harness-docs:   { supported: true,  binding: { model_tier: fast, tools: [WebFetch], affinity: claude-only, skill_link: null } }
+
+# ============================================================
+# LAYER 6 — skills
+# ============================================================
+skills:
+  realization: "skill folders in skills/<name>/SKILL.md; body is the core/ source verbatim"
+  native_path: "${native_dir}/skills/<name>/SKILL.md"
+  import_syntax: "copy (skills carry their own frontmatter)"
+  capabilities:
+    # methodology skills that also back a sub-agent on claude
+    code-reviewer:  { supported: true }
+    security-arch:  { supported: true }
+    qa:             { supported: true }
+    security-deps:  { supported: true }
+    e2e:            { supported: true }
+    research:       { supported: true }
+    docs:           { supported: true }
+    # skill-only (no typed agent)
+    caveman:        { supported: true }
+    council:        { supported: true }
+    diagnose:       { supported: true }
+    infra-audit:    { supported: true }
+    tdd:            { supported: true }
+    worktree:       { supported: true }
+    code-graph:     { supported: true, binding: { required: true } }   # S18 — REQUIRED capability (graphify)
+    llm-wiki:       { supported: true }                                # S19 — Karpathy pattern
+
+# ============================================================
+# LAYER 7 — mcp
+# ============================================================
+# (see below; permissions is layer 8)
+
+
+# ============================================================
+# LAYER 8 — permissions
+# Static tool-permission rules (defense-in-depth on READ; the secret-scan
+# hook H05 guards on WRITE — two different vectors, both needed). Rendered
+# into settings.json `permissions.deny`. Harness-neutral names; a harness
+# without a permissions layer ignores this (supported: false in its adapter).
+# ============================================================
+permissions:
+  native: true   # Claude Code reads settings.json permissions.deny natively
+  realization: "settings.json permissions.deny block"
+  native_path: "${native_dir}/settings.json (permissions key)"
+  import_syntax: "merge permissions{} from this list"
+  deny:
+    - "Read(./**/.env)"
+    - "Read(./**/.env.local)"
+    - "Read(./**/.env.*.local)"
+    - "Read(./**/*.pem)"
+    - "Read(./**/id_rsa)"
+
+
+# ============================================================
+# LAYER 7 — mcp
+# ============================================================
+mcp:
+  realization: ".mcp.json mcpServers block; secrets by env-var name (never inline)"
+  native_path: "${native_dir}/.mcp.json"
+  import_syntax: "generate mcpServers{} from stc.yaml → mcp.*"
+  capabilities:
+    playwright: { supported: true, binding: { required: true, transport: stdio, command: "npx -y @playwright/mcp@latest" } }
+    graphify:   { supported: true, binding: { required: true, transport: stdio, command_env: GRAPHIFY_CLI } }
+    github:     { supported: true, binding: { transport: stdio, command: "npx -y @modelcontextprotocol/server-github" } }
+    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @context7/mcp" } }
+    gsheets:    { supported: true, binding: { transport: stdio, command: "npx -y mcp-gsheets@latest" } }

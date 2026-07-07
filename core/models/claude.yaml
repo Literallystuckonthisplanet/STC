@@ -1,0 +1,39 @@
+# ============================================================
+# STC model provider — Claude (Anthropic)
+#
+# The MODEL axis, independent of the harness axis. See core/models/glm.yaml
+# for the rationale. This provider maps tiers to Anthropic model ids; it is
+# the natural pairing with the claude harness but is NOT bound to it — it
+# mounts into any harness speaking the Anthropic protocol.
+#
+# Tier ids here are the Claude Code subagent ALIASES (haiku/sonnet/opus),
+# NOT the full API ids (claude-3-5-haiku-…). Claude Code's typed sub-agent
+# frontmatter accepts only these short aliases (or `inherit`, or a full id
+# like claude-sonnet-4-6); the bare `claude-haiku` form is neither and
+# makes the subagent silently fail to dispatch. The api: block below is the
+# raw HTTP contract (full ids live in the harness, not here).
+# ============================================================
+
+provider: claude
+display_name: "Claude (Anthropic)"
+
+api:
+  kind: anthropic
+  base_url: "https://api.anthropic.com"    # default; harness/override may change
+  auth: x-api-key
+  key_env: "ANTHROPIC_API_KEY"
+
+tiers:
+  fast:  "haiku"
+  mid:   "sonnet"
+  heavy: "opus"                      # opus-class available
+
+context:
+  fast:  200000
+  mid:   200000
+  heavy: 200000
+
+capabilities:
+  reasoning: true
+  tool_use: true
+  vision: true

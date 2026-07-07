@@ -11,10 +11,37 @@ release notes.
 
 ## [Unreleased]
 
-### Added
-- Full README — the project guide (purpose, principles, abstraction layers,
-  third-party tools, the 17 hooks, the memory structure, the deployer).
-- CHANGELOG with a "Hello, World" initial-release entry.
+## [0.1.2] — 2026-07-08
+
+### Fixed — zcode plugin delivery
+Three bugs that made the STC plugin, its MCP servers, and its skills invisible
+on the zcode target (capability_delivery == "plugin"). All three stemmed from
+the zcode adapter being written by the Claude files-delivery model.
+
+- **Plugin not discovered.** ZCode enumerates plugin candidates from
+  `cache/zcode-plugins-official/` (hardcoded) and `cli/plugins/installed_plugins
+  .json` — not from `known_marketplaces.json` or any `marketplace.json` (the
+  diagnosing-plugins skill's claim did not match the runtime code). STC was
+  enabled in `config.json` but had no `installed_plugins.json` record, so
+  discovery never reached it. `_register_plugin` / `_unregister_plugin` now
+  write/remove that record; the non-functional `marketplace.json` generation is
+  removed, and the `known_marketplaces.json` entry now carries `pluginCount`
+  (without it the record was dropped by the validity filter).
+- **MCP servers not discovered.** `_render_mcp` unconditionally wrote servers
+  to a harness-global `~/.zcode/.mcp.json` patch (the Claude form). Plugin
+  delivery requires them inside the plugin root (`<pluginRoot>/.mcp.json`,
+  namespaced `plugin:<plugin>:<server>`) — the only location where `${...}`
+  secrets expand. `_render_mcp` now branches on `capability_delivery`: plugin →
+  `result.files[<plugin_root>/.mcp.json]`; files → the existing json_patches
+  path. Claude (files delivery) is unchanged.
+- **Skills not discovered.** Skills rendered as `SKILL.stc.md` (the collision-
+  proof suffix used for Claude loose files). The plugin loader expects
+  `SKILL.md` (the convention every working plugin follows); inside a plugin the
+  skill is already namespaced by `skills/<name>/`, so the `.stc.md` suffix made
+  every skill invisible. `_render_skills` now emits `SKILL.md` for plugin
+  delivery and keeps `SKILL.stc.md` for files delivery.
+- Bumped `PLUGIN_VERSION` 0.1.0 → 0.1.2 (the plugin version had lagged behind
+  the CHANGELOG). Added regression tests covering all three fixes.
 
 ## [0.1.1] — 2026-07-07
 

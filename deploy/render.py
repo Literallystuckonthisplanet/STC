@@ -36,7 +36,7 @@ import yaml
 # plugin is its machine id → "stc-core"/"stc" (not "stc"/"stc").
 PLUGIN_MARKETPLACE = "stc-core"
 PLUGIN_NAME = "stc"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.2"
 PLUGIN_DIR = f"cli/plugins/cache/{PLUGIN_MARKETPLACE}/{PLUGIN_NAME}/{PLUGIN_VERSION}"
 
 # The 13 render-time vars (ground truth from each hook's own header block).
@@ -470,6 +470,13 @@ def _render_commands(core_dir, adapter, result, native_commands_dir):
 
 def _render_skills(core_dir, adapter, result, native_skills_dir):
     caps = adapter.get("skills", {}).get("capabilities", {})
+    # plugin delivery: the harness enumerates skills expecting SKILL.md (the
+    # standard convention, as in the zcode-guide plugin). The .stc.md collision-
+    # proof suffix is a files-delivery concern (claude loose files in ~/.claude);
+    # inside a plugin the skill is already namespaced by skills/<name>/, so a
+    # non-SKILL.md filename makes it invisible to the plugin loader.
+    delivery = adapter.get("harness_facts", {}).get("capability_delivery", "files")
+    skill_file = "SKILL.md" if delivery == "plugin" else "SKILL.stc.md"
     for name, cap in caps.items():
         if cap.get("supported") is False:
             continue
@@ -478,7 +485,7 @@ def _render_skills(core_dir, adapter, result, native_skills_dir):
         if not os.path.exists(skillmd):
             continue
         body = _read(skillmd)
-        rel = os.path.join(native_skills_dir, name, "SKILL.stc.md")
+        rel = os.path.join(native_skills_dir, name, skill_file)
         result.files[rel] = body
         result.manifest.append({"path": rel, "kind": "skill", "source": f"core/skills/{name}/SKILL.md"})
 
@@ -591,7 +598,19 @@ def _render_mcp(adapter, stc, result):
             srv["args"] = args
 
         servers[f"stc-{name}"] = srv
-    if servers:
+    if not servers:
+        return
+    delivery = adapter.get("harness_facts", {}).get("capability_delivery", "files")
+    if delivery == "plugin":
+        # plugin-provided MCP lives INSIDE the plugin root (.mcp.json), namespaced
+        # by the harness as plugin:<plugin>:<server>. Template vars (${...}) expand
+        # ONLY for plugin-provided servers (config-file servers do not), so plugin
+        # delivery is also the only place secrets-via-env-var works at all. Putting
+        # this in result.files (not json_patches) keeps it out of the harness-global
+        # ~/.<native>/.mcp.json merge path — which is the Claude files-delivery form.
+        result.files[os.path.join(PLUGIN_DIR, ".mcp.json")] = \
+            _json_dump({"mcpServers": servers})
+    else:
         result.json_patches[".mcp.json"] = {"mcpServers": servers}
 
 

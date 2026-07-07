@@ -253,10 +253,14 @@ def _merge_mcp_patch(patch, native_dir):
 def _register_plugin(native_dir):
     """Register the STC plugin so a plugin-delivery harness discovers it.
 
-    Dropping files into cli/plugins/cache/<mkt>/<plugin>/<ver>/ is NOT enough —
-    the harness also requires the plugin enabled in cli/config.json and the
-    marketplace present in known_marketplaces.json. Without both, the plugin is
-    invisible (the bug this fixes). Idempotent: re-apply is a no-op.
+    ZCode's plugin discovery (resolveCandidates in the CLI) gathers candidates
+    from exactly two sources: a hardcoded scan of cache/zcode-plugins-official/,
+    and the records in cli/plugins/installed_plugins.json. A non-official plugin
+    in cache/<marketplace>/ is NEVER scanned on its own — it must have an
+    installed_plugins.json entry, else it is invisible regardless of config.json
+    enable state or known_marketplaces.json. The bug this fixes: STC was enabled
+    in config.json but had no installed_plugins.json record, so discovery never
+    reached it. Idempotent: re-apply updates the record in place.
     """
     mp = R.PLUGIN_MARKETPLACE
     pn = R.PLUGIN_NAME
@@ -271,7 +275,9 @@ def _register_plugin(native_dir):
         os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
         with open(cfg_path, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2, ensure_ascii=False)
-    # 2. register the filesystem marketplace in known_marketplaces.json
+    # 2. register the filesystem marketplace in known_marketplaces.json (kept
+    #    for the marketplace/dependency-resolution flows and GUI display; note
+    #    this file is NOT consulted by discovery — installed_plugins.json is).
     km_path = os.path.join(native_dir, "cli", "plugins", "known_marketplaces.json")
     km = C._load_json(km_path) or {"version": 1, "marketplaces": []}
     marketplaces = km.setdefault("marketplaces", [])
@@ -281,10 +287,37 @@ def _register_plugin(native_dir):
             "source": {"source": "filesystem", "path": f"cli/plugins/cache/{mp}"},
             "name": mp,
             "description": "STC Core — local filesystem marketplace",
+            "pluginCount": 1,
         })
         os.makedirs(os.path.dirname(km_path), exist_ok=True)
         with open(km_path, "w", encoding="utf-8") as fh:
             json.dump(km, fh, indent=2, ensure_ascii=False)
+    # 3. installed_plugins.json — THE discovery record. Without it the plugin
+    #    tree in cache/stc-core/ is never enumerated, and config.json's
+    #    "stc@stc-core": true has nothing to enable. installPath points at the
+    #    versioned plugin dir so the harness reads .zcode-plugin/plugin.json,
+    #    skills/, hooks/, agents/, commands/ from there.
+    ip_path = os.path.join(native_dir, "cli", "plugins", "installed_plugins.json")
+    ip = C._load_json(ip_path) or {"version": 1, "plugins": []}
+    ip.setdefault("version", 1)
+    recs = ip.setdefault("plugins", [])
+    install_path = os.path.join(native_dir, R.PLUGIN_DIR)
+    # upsert by id: replace any prior STC record (idempotent re-deploy / version bump)
+    recs = [r for r in recs if r.get("id") != plugin_id]
+    recs.append({
+        "id": plugin_id,
+        "name": pn,
+        "marketplace": mp,
+        "version": R.PLUGIN_VERSION,
+        "installPath": install_path,
+        "installedAt": "2026-07-08T00:00:00.000Z",
+        "updatedAt": "2026-07-08T00:00:00.000Z",
+        "scope": "user",
+    })
+    ip["plugins"] = recs
+    os.makedirs(os.path.dirname(ip_path), exist_ok=True)
+    with open(ip_path, "w", encoding="utf-8") as fh:
+        json.dump(ip, fh, indent=2, ensure_ascii=False)
 
 
 def _unregister_plugin(native_dir):
@@ -305,6 +338,16 @@ def _unregister_plugin(native_dir):
     km["marketplaces"] = [m for m in km.get("marketplaces", []) if m.get("id") != mp]
     with open(km_path, "w", encoding="utf-8") as fh:
         json.dump(km, fh, indent=2, ensure_ascii=False)
+    # remove the installed_plugins.json record _register_plugin wrote (mirror of
+    # step 3) — the discovery entry without which the plugin was invisible.
+    ip_path = os.path.join(native_dir, "cli", "plugins", "installed_plugins.json")
+    ip = C._load_json(ip_path)
+    if ip:
+        ip["plugins"] = [r for r in ip.get("plugins", []) if r.get("id") != plugin_id]
+        if not ip["plugins"]:
+            del ip["plugins"]
+        with open(ip_path, "w", encoding="utf-8") as fh:
+            json.dump(ip, fh, indent=2, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

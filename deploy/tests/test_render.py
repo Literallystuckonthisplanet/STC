@@ -410,6 +410,115 @@ def test_resolve_targets_fail_fast_on_unknown():
         assert "bar" in str(e)
 
 
+def test_zcode_render_puts_mcp_in_plugin_root():
+    """REGRESSION (zcode plugin-delivery): for capability_delivery=='plugin',
+    MCP servers must be emitted as a plugin-root .mcp.json (via result.files),
+    NOT as a harness-global .mcp.json patch (result.json_patches). ZCode
+    discovers plugin-provided MCP from <pluginRoot>/.mcp.json and namespaces the
+    servers as plugin:<plugin>:<server>; a harness-global ~/.zcode/.mcp.json is
+    the Claude files-delivery form and is never read for plugin delivery."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "zcode", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["zcode"], D.CORE, REPO)
+    expected = os.path.join(R.PLUGIN_DIR, ".mcp.json")
+    assert expected in rr.files, (
+        f"plugin-root .mcp.json missing from rr.files (keys: "
+        f"{[k for k in rr.files if k.endswith('.mcp.json')]})")
+    # the harness-global patch path must NOT be used for plugin delivery
+    assert ".mcp.json" not in rr.json_patches, (
+        "zcode plugin delivery must not emit a harness-global .mcp.json patch; "
+        "MCP belongs inside the plugin")
+    mcp = json.loads(rr.files[expected])
+    assert "mcpServers" in mcp and mcp["mcpServers"], "no servers in plugin .mcp.json"
+    # every server is stc-* namespaced (the convention the uninstall path strips)
+    for name in mcp["mcpServers"]:
+        assert name.startswith("stc-"), f"server {name!r} not stc-* namespaced"
+
+
+def test_claude_render_keeps_mcp_in_json_patches():
+    """REGRESSION guard (claude files-delivery): the plugin-delivery fix must
+    not change claude behaviour — claude still emits MCP as a harness-global
+    .mcp.json patch (merged into ~/.claude/.mcp.json), and does NOT put a
+    plugin-root .mcp.json anywhere."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "claude", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["claude"], D.CORE, REPO)
+    assert ".mcp.json" in rr.json_patches, "claude must keep the .mcp.json patch"
+    plugin_mcp = [k for k in rr.files if k.endswith("/.mcp.json") or k == ".mcp.json"]
+    assert not plugin_mcp, (
+        f"claude files delivery must not write a plugin-root .mcp.json: {plugin_mcp}")
+
+
+def test_register_plugin_writes_installed_plugins_json():
+    """REGRESSION (zcode plugin visibility): ZCode's plugin discovery enumerates
+    candidates from cache/zcode-plugins-official/ (hardcoded) AND from
+    cli/plugins/installed_plugins.json. A non-official plugin in cache/<mkt>/ is
+    never scanned on its own — it MUST have an installed_plugins.json record or
+    it is invisible regardless of config.json enable state. (known_marketplaces
+    .json and marketplace.json are NOT consulted by discovery — this was the
+    long-running misdiagnosis.) _register_plugin must write the record;
+    _unregister_plugin must remove it (round-trip)."""
+    import tempfile
+    import shutil as _shutil
+    tmpdir = tempfile.mkdtemp(prefix="stc_test_")
+    try:
+        D._register_plugin(tmpdir)
+        ip_path = os.path.join(tmpdir, "cli", "plugins", "installed_plugins.json")
+        assert os.path.exists(ip_path), f"installed_plugins.json not written at {ip_path}"
+        ip = json.load(open(ip_path))
+        plugin_id = f"{R.PLUGIN_NAME}@{R.PLUGIN_MARKETPLACE}"
+        recs = [r for r in ip.get("plugins", []) if r.get("id") == plugin_id]
+        assert len(recs) == 1, f"expected 1 STC record, got {len(recs)}"
+        rec = recs[0]
+        assert rec["installPath"].endswith(R.PLUGIN_DIR), (
+            f"installPath should point at the versioned plugin dir, got {rec['installPath']}")
+        assert rec["marketplace"] == R.PLUGIN_MARKETPLACE
+        # config.json enable key is also set
+        cfg = json.load(open(os.path.join(tmpdir, "cli", "config.json")))
+        assert cfg["plugins"]["enabledPlugins"][plugin_id] is True
+        # round-trip: unregister removes the record (and leaves the file clean)
+        D._unregister_plugin(tmpdir)
+        ip2 = json.load(open(ip_path))
+        assert not [r for r in ip2.get("plugins", []) if r.get("id") == plugin_id], \
+            "STC record not removed from installed_plugins.json on unregister"
+    finally:
+        _shutil.rmtree(tmpdir)
+
+
+def test_zcode_render_uses_SKILL_md_not_stc_md():
+    """REGRESSION (zcode plugin skill visibility): the plugin loader enumerates
+    skills expecting SKILL.md (the convention every working plugin follows —
+    zcode-guide, superpowers). STC's collision-proof .stc.md suffix is a files-
+    delivery concern (claude loose files in ~/.claude/); inside a plugin the
+    skill is already namespaced by skills/<name>/, so SKILL.stc.md makes it
+    invisible. For capability_delivery=='plugin' skills must render as SKILL.md."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "zcode", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["zcode"], D.CORE, REPO)
+    skill_files = [k for k in rr.files if "SKILL" in k and k.endswith(".md")]
+    assert skill_files, "no skill files rendered for zcode"
+    bad = [k for k in skill_files if k.endswith("SKILL.stc.md")]
+    assert not bad, (
+        f"plugin-delivery skills must be SKILL.md, not SKILL.stc.md (found {bad})")
+    good = [k for k in skill_files if k.endswith("/SKILL.md")]
+    assert good, f"expected SKILL.md skill files for zcode, got {skill_files}"
+
+
+def test_claude_render_keeps_SKILL_stc_md():
+    """REGRESSION guard (claude files-delivery): the plugin-delivery SKILL.md fix
+    must not change claude — claude keeps the .stc.md collision-proof suffix
+    (loose files in ~/.claude/skills/<name>/SKILL.stc.md, sharing the dir with
+    user skills)."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "claude", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["claude"], D.CORE, REPO)
+    skill_files = [k for k in rr.files if "SKILL" in k and k.endswith(".md")]
+    assert skill_files, "no skill files rendered for claude"
+    bad = [k for k in skill_files if k.endswith("/SKILL.md")]
+    assert not bad, (
+        f"claude files-delivery skills must stay SKILL.stc.md (found plain {bad})")
+
+
 # ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------

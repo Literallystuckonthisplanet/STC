@@ -519,6 +519,81 @@ def test_claude_render_keeps_SKILL_stc_md():
         f"claude files-delivery skills must stay SKILL.stc.md (found plain {bad})")
 
 
+def test_bundle_inlines_rules_not_pointer():
+    """REGRESSION: the always-context bundle must INLINE the 3 firing rules
+    (behavior/pev/session), not be a pointer. The hook-injection mechanism
+    (H06) is correct but does not fire in the current ZCode build, so inlining
+    is the workaround. Verifies: no @import lines; rule CONTENT is present."""
+    stc, registry, adapters, _ = D._gather()
+    for t in ("claude", "zcode"):
+        provider = R.provider_for(stc, t, REPO)
+        rr = R.render_harness(stc, registry, provider, adapters[t], D.CORE, REPO)
+        bundle = "CLAUDE.stc.md" if t == "claude" else "AGENTS.stc.md"
+        body = rr.files.get(bundle, "")
+        assert body, f"{t} bundle missing"
+        # NO @import / @~/.stc lines (the dead mechanism)
+        assert not any(ln.strip().startswith("@~/") or ln.strip().startswith("@/")
+                       for ln in body.splitlines()), (
+            f"{t} bundle still contains @import lines")
+        # the 3 rule fingerprints must be INLINED (content present, not pointer)
+        for fp in ("Facts → memory", "Plan→Do→Verify", "handoff"):
+            assert fp in body, f"{t} bundle missing inlined rule fingerprint '{fp}'"
+
+
+def test_h06_injects_rules_via_stc_core():
+    """REGRESSION (H06 injection — the original pre-@import mechanism): H06
+    must `cat` the always-context rule files from ${STC_CORE} (resolved to
+    ~/.stc/core) so its stdout reaches the model as additionalContext. This is
+    the ONLY reliable cross-harness loader. Verifies: the cat loop targets the 3
+    firing rules, ${STC_CORE} is substituted, project_docs is lazy (omitted to
+    fit the 24KB additionalContext cap)."""
+    stc, registry, adapters, _ = D._gather()
+    for t in ("claude", "zcode"):
+        provider = R.provider_for(stc, t, REPO)
+        rr = R.render_harness(stc, registry, provider, adapters[t], D.CORE, REPO)
+        h06 = next(k for k in rr.files if "session-start-context" in k)
+        body = rr.files[h06]
+        # ${STC_CORE} must be substituted (not left as a placeholder)
+        assert "${STC_CORE}" not in body, f"{t} H06 has unresolved ${{STC_CORE}}"
+        assert ".stc/core/rules" in body, f"{t} H06 does not target ~/.stc/core/rules"
+        # the cat loop must cover the 3 firing rules (project_docs is lazy)
+        for rule in ("behavior", "pev", "session"):
+            assert f'rules/${{f}}.md' in body or f'rules/${{f}}' in body or rule in body, (
+                f"{t} H06 missing rule {rule} in the cat loop")
+        # project_docs must NOT be in the injected loop (lazy, to fit 24KB cap)
+        # find the `for f in ...` loop line
+        for_loop = [ln for ln in body.splitlines() if ln.strip().startswith("for f in")]
+        assert for_loop, f"{t} H06 has no cat loop"
+        assert "project_docs" not in for_loop[0], (
+            f"{t} H06 still injects project_docs (must be lazy for the 24KB cap)")
+
+
+def test_zcode_plugin_event_hooks_matcher_not_star():
+    """REGRESSION (the silent hook-drop): ZCode treats `matcher` as a raw RegExp
+    (new RegExp(matcher)). Claude's "*" wildcard is an INVALID regex here
+    ("Nothing to repeat") → caught → the hook is silently dropped from every
+    run. Event hooks (SessionStart/UserPromptSubmit/Stop) carried matcher="*"
+    and never fired in the zcode plugin. The plugin-delivery path must emit
+    ".*" (or omit) for these. Claude (files delivery) is unchanged ("*" is a
+    valid wildcard there)."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "zcode", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["zcode"], D.CORE, REPO)
+    hj = next(k for k in rr.files if k.endswith("/hooks/hooks.json"))
+    data = json.loads(rr.files[hj])
+    # no entry in the plugin hooks.json may carry matcher == "*"
+    for ev, entries in data.get("hooks", {}).items():
+        for e in entries:
+            assert e.get("matcher") != "*", (
+                f"zcode plugin hook {ev} has matcher='*' (invalid regex → silently dropped)")
+    # the event hooks must be present with a valid matcher
+    for ev in ("SessionStart", "UserPromptSubmit", "Stop"):
+        assert ev in data["hooks"], f"event {ev} missing from plugin hooks.json"
+        for e in data["hooks"][ev]:
+            assert e.get("matcher") == ".*", (
+                f"zcode {ev} matcher is {e.get('matcher')!r}, expected '.*'")
+
+
 # ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------

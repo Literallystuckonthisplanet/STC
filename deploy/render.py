@@ -46,7 +46,7 @@ PLUGIN_DIR = f"cli/plugins/cache/{PLUGIN_MARKETPLACE}/{PLUGIN_NAME}/{PLUGIN_VERS
 RENDER_VARS = {
     "CDP_PORT", "COMPACT_CMD", "DEV_PORTS", "E2E_CLI_CMD", "HARNESS_DIR",
     "MEMORY_DIR", "RELEASE_ACK_FILE", "SECRETS_ENV", "SESSION_ID",
-    "USER_LANG", "USER_NAME", "DOCS_ROOT",
+    "STC_CORE", "USER_LANG", "USER_NAME", "DOCS_ROOT",
 }
 
 
@@ -255,7 +255,18 @@ def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
         # strip the _stc_* tags before emitting — they're a files-mode concern
         clean = {"hooks": {}}
         for ev, entries in wiring["hooks"].items():
-            clean["hooks"][ev] = [{k: v for k, v in e.items() if not k.startswith("_stc_")} for e in entries]
+            emitted = []
+            for e in entries:
+                ee = {k: v for k, v in e.items() if not k.startswith("_stc_")}
+                # ZCode treats `matcher` as a raw RegExp (new RegExp(matcher));
+                # Claude's "*" wildcard is an INVALID regex here ("Nothing to
+                # repeat" → caught → hook silently dropped). Normalise the bare
+                # "*" (the SessionStart/UserPromptSubmit/Stop wildcard) to ".*"
+                # so event-hooks actually fire in the plugin-delivery harness.
+                if ee.get("matcher") == "*":
+                    ee["matcher"] = ".*"
+                emitted.append(ee)
+            clean["hooks"][ev] = emitted
         result.files[os.path.join(plugin_root, "hooks", "hooks.json")] = \
             _json_dump(clean)
         _render_plugin_meta(adapter, plugin_root, result)
@@ -491,38 +502,60 @@ def _render_skills(core_dir, adapter, result, native_skills_dir):
 
 
 def _render_always_context(core_dir, adapter, result, native_dir, harness):
-    """Generate the always-context .stc.md bundle + the marker @import line."""
+    """Generate the always-context .stc.md bundle with INLINE rule content.
+
+    WORKAROUND (2026-07-08): the rules are inlined directly into the bundle
+    instead of relying on hook H06 (session-start-context) to inject them.
+    H06 is the correct, original mechanism (pre-@import), and it IS wired
+    correctly in the plugin hooks.json — but the hook runner in this ZCode
+    build does not fire plugin hooks despite registering them as runnable.
+    Pending a harness bugfix, inlining is the only reliable delivery path.
+    H06 stays in the code as the future mechanism once hooks fire.
+    TODO(harness-bugfix): revert to H06 injection when plugin hooks work.
+    """
     facts = adapter.get("harness_facts", {})
     ac_file = facts.get("always_context_file", "CLAUDE.md")  # CLAUDE.md | AGENTS.md
     bundle_name = re.sub(r"\.md$", ".stc.md", ac_file)
     bundle_rel = bundle_name  # at native dir root, like the user file
 
     lines = [
-        f"# STC always-context bundle ({harness})",
+        f"# STC always-context ({harness})",
         f"",
         f"Managed by `deploy.py`. Do not edit — regenerate with "
         f"`deploy.py render --target {harness}`.",
         f"",
-        f"## Always-context files (loaded via @import)",
+        f"## Always-context rules (firing rules — apply in the moment)",
         f"",
     ]
-    for f in ("MEMORY.md", "playbook.md", "code_standard.md"):
-        lines.append(f"@~/.stc/core/memory/{f}")
-    lines.append("")
-    lines.append("## Rule keepers (always-context)")
-    lines.append("")
-    for r in ("behavior.md", "pev.md", "project_docs.md", "session.md"):
-        lines.append(f"@~/.stc/core/rules/{r}")
-    lines.append("")
+
+    # Inline the 3 firing rules (behavior/pev/session). project_docs stays lazy
+    # (read by anchor [[project-docs]] when writing ADRs/specs).
+    for rule in ("behavior", "pev", "session"):
+        rule_path = os.path.join(core_dir, "rules", f"{rule}.md")
+        body = _read(rule_path).strip() if os.path.exists(rule_path) else ""
+        if body:
+            lines.append(f"<details><summary><code>{rule}.md</code></summary>")
+            lines.append("")
+            lines.append(body)
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+
+    lines.extend([
+        f"## Lazy memory (read on demand, not at start)",
+        f"",
+        f"- `~/.stc/core/memory/MEMORY.md` — the index/map. Read it when you "
+        f"need the catalog of references; wiki-links `[[name]]` point at the "
+        f"detail files (playbook, code-standard, reference-*, project-docs).",
+        f"- `~/.stc/core/user/` — personal memory (profile, feedback_*, "
+        f"projects/). Read by anchor when a rule references `[[user-profile]]`.",
+        f"",
+    ])
 
     result.files[bundle_rel] = "\n".join(lines)
-    result.manifest.append({"path": bundle_rel, "kind": "always-context", "source": "core/memory+rules"})
+    result.manifest.append({"path": bundle_rel, "kind": "always-context", "source": "inline-rules+lazy-pointer"})
 
     # the single marker block injected into the USER's always-context file.
-    # Contract: result.marker is { <ac_file>: <@import line> } — keyed by the
-    # always-context filename so consumers read it unambiguously. The content
-    # is the exact @import line (single source of truth; deploy does NOT
-    # reconstruct it).
     result.marker[ac_file] = f"@{_native_root(adapter, bundle_name)}"
 
 

@@ -52,6 +52,7 @@ vars:
   HARNESS_DIR:   "${HOME}/.zcode"
   HARNESS_NAME:  "zcode"
   MEMORY_DIR:    "${workspace.root}/.stc-memory"  # ZCode has no ~/.claude; project-scoped memory
+  STC_CORE:      "${HOME}/.stc/core"              # shared cross-harness rules/memory (H06 injects from here)
   COMPACT_CMD:   "/save-and-compact"              # rendered command (same name, harness-neutral)
   SECRETS_ENV:   "${HOME}/.stc/secrets.env"
   RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"

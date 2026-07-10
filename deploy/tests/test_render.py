@@ -566,6 +566,24 @@ def test_claude_bundle_is_pointer_not_inline():
             f"twice (bundle + H06)")
 
 
+def test_commands_and_skills_substitute_render_vars():
+    """REGRESSION (the unresolved ${DOCS_ROOT} bug): commands and skills use
+    deploy-owned ${VAR} tokens inline (no hook-style declaration block) —
+    to-spec/to-tasks carried a literal ${DOCS_ROOT} into the live harness,
+    which the agent then interpreted as a phantom path. Render must
+    substitute every RENDER_VARS token in command/skill bodies."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "claude", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["claude"], D.CORE, REPO)
+    # SESSION_ID is runtime-resolved (per session), never render-time
+    static_vars = R.RENDER_VARS - {"SESSION_ID"}
+    for rel, body in rr.files.items():
+        if rel.endswith(".stc.md") and ("commands/" in rel or "skills/" in rel):
+            for var in static_vars:
+                assert f"${{{var}}}" not in body, (
+                    f"{rel} carries unresolved ${{{var}}} into the harness")
+
+
 def test_bundle_inlines_profile_when_present():
     """The user profile (user/profile.md) is inlined into the bundle for BOTH
     harnesses — it must be always-context and no hook injects it, so inlining

@@ -471,7 +471,7 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
             result.manifest.append({"path": rel, "kind": "agent-degrade", "source": f"core/agents/{name}.md"})
 
 
-def _render_commands(core_dir, adapter, result, native_commands_dir):
+def _render_commands(core_dir, adapter, varmap, result, native_commands_dir):
     caps = adapter.get("commands", {}).get("capabilities", {})
     for name, cap in caps.items():
         if cap.get("supported") is False:
@@ -484,13 +484,16 @@ def _render_commands(core_dir, adapter, result, native_commands_dir):
         src = os.path.join(os.path.dirname(core_dir), source) if not os.path.isabs(source) else source
         if not os.path.exists(src):
             continue
-        body = _read(src)
+        # Commands use deploy-owned ${VAR} tokens inline (e.g. ${DOCS_ROOT} in
+        # to-spec/to-tasks) without a hook-style declaration block — substitute
+        # every RENDER_VARS token found in the body. Non-deploy ${...} stays.
+        body = _substitute_vars(_read(src), varmap, RENDER_VARS)
         rel = os.path.join(native_commands_dir, f"{name}.stc.md")
         result.files[rel] = body
         result.manifest.append({"path": rel, "kind": "command", "source": source})
 
 
-def _render_skills(core_dir, adapter, result, native_skills_dir):
+def _render_skills(core_dir, adapter, varmap, result, native_skills_dir):
     caps = adapter.get("skills", {}).get("capabilities", {})
     # plugin delivery: the harness enumerates skills expecting SKILL.md (the
     # standard convention, as in the zcode-guide plugin). The .stc.md collision-
@@ -506,7 +509,9 @@ def _render_skills(core_dir, adapter, result, native_skills_dir):
         skillmd = os.path.join(skill_dir, "SKILL.md")
         if not os.path.exists(skillmd):
             continue
-        body = _read(skillmd)
+        # same inline-token substitution as commands (e.g. ${E2E_CLI_CMD},
+        # ${CDP_PORT} in the e2e skill)
+        body = _substitute_vars(_read(skillmd), varmap, RENDER_VARS)
         rel = os.path.join(native_skills_dir, name, skill_file)
         result.files[rel] = body
         result.manifest.append({"path": rel, "kind": "skill", "source": f"core/skills/{name}/SKILL.md"})
@@ -773,9 +778,9 @@ def render_harness(stc, registry, provider, adapter, core_dir, repo_dir):
 
     _render_always_context(core_dir, adapter, result, native_dir, harness)
     _render_hooks(core_dir, adapter, varmap, result, hooks_dir)
-    _render_commands(core_dir, adapter, result, commands_dir)
+    _render_commands(core_dir, adapter, varmap, result, commands_dir)
     _render_subagents(core_dir, registry, provider, adapter, result, agents_dir)
-    _render_skills(core_dir, adapter, result, skills_dir)
+    _render_skills(core_dir, adapter, varmap, result, skills_dir)
     _render_mcp(adapter, stc, result)
     _render_permissions(adapter, result)
     _render_glue(repo_dir, adapter, result)

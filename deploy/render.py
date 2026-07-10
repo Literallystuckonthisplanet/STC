@@ -44,9 +44,9 @@ PLUGIN_DIR = f"cli/plugins/cache/{PLUGIN_MARKETPLACE}/{PLUGIN_NAME}/{PLUGIN_VERS
 # render substitutes exactly those tokens and leaves all other ${...} (script
 # locals: SESSION, BROKEN, HITS, …) to bash. See _hook_declared_vars().
 RENDER_VARS = {
-    "CDP_PORT", "COMPACT_CMD", "DEV_PORTS", "E2E_CLI_CMD", "HARNESS_DIR",
-    "MEMORY_DIR", "RELEASE_ACK_FILE", "SECRETS_ENV", "SESSION_ID",
-    "STC_CORE", "USER_LANG", "USER_NAME", "DOCS_ROOT",
+    "CDP_PORT", "COMPACT_CMD", "DEPLOY_SCRIPT", "DEV_PORTS", "E2E_CLI_CMD",
+    "HARNESS_DIR", "HARNESS_LIST", "MEMORY_DIR", "RELEASE_ACK_FILE",
+    "SECRETS_ENV", "SESSION_ID", "STC_CORE", "USER_LANG", "USER_NAME", "DOCS_ROOT",
 }
 
 
@@ -149,9 +149,20 @@ def resolve_vars(adapter, stc, provider):
     v["CDP_PORT"] = str(stc.get("mcp", {}).get("playwright", {}).get("cdp_port", "9222"))
     v["DOCS_ROOT"] = stc.get("doc_backend", {}).get("root", os.path.join(ws_root, ".stc-docs"))
     v["DOCS_ROOT"] = v["DOCS_ROOT"].replace("${workspace.root}", ws_root).replace("${HOME}", home)
-    v["COMPACT_CMD"] = v.get("COMPACT_CMD", "/save-and-compact")
+    v["COMPACT_CMD"] = v.get("COMPACT_CMD", "/compact")
     v["E2E_CLI_CMD"] = stc.get("e2e_cli_cmd", "")
     v["USER_LANG"] = stc.get("user", {}).get("language", v.get("USER_LANG", "en"))
+    # DEPLOY_SCRIPT — the path to deploy.py, for session-end infra re-apply.
+    # Derived from STC_CORE (the shared core root): deploy.py is a sibling's
+    # child at <repo>/deploy/deploy.py, i.e. ${STC_CORE}/../deploy/deploy.py.
+    # Pre-2026-07-09 this was a phantom token the agent interpreted literally;
+    # now it resolves to a real path.
+    stc_core = v.get("STC_CORE", os.path.join(home, ".stc", "core"))
+    v["DEPLOY_SCRIPT"] = os.path.join(os.path.dirname(stc_core), "deploy", "deploy.py")
+    # HARNESS_LIST — comma-separated harness ids for `deploy.py apply --target`.
+    # Defaults to this adapter's harness; a multi-harness deploy overrides it.
+    if "HARNESS_LIST" not in v:
+        v["HARNESS_LIST"] = adapter.get("harness", "claude,zcode")
     return v
 
 
@@ -504,16 +515,22 @@ def _render_skills(core_dir, adapter, result, native_skills_dir):
 def _render_always_context(core_dir, adapter, result, native_dir, harness):
     """Generate the always-context .stc.md bundle with INLINE rule content.
 
-    WORKAROUND (2026-07-08): the rules are inlined directly into the bundle
-    instead of relying on hook H06 (session-start-context) to inject them.
-    H06 is the correct, original mechanism (pre-@import), and it IS wired
-    correctly in the plugin hooks.json — but the hook runner in this ZCode
-    build does not fire plugin hooks despite registering them as runnable.
-    Pending a harness bugfix, inlining is the only reliable delivery path.
-    H06 stays in the code as the future mechanism once hooks fire.
-    TODO(harness-bugfix): revert to H06 injection when plugin hooks work.
+    Rule delivery is per-harness (harness_facts.rules_delivery):
+      - "hook" (claude): the bundle is a POINTER. Hook H06
+        (session-start-context) injects the 3 firing rules on SessionStart —
+        native and verified live. Inlining them here too would deliver every
+        rule twice (~20KB duplicate per session).
+      - "inline" (zcode) — WORKAROUND (2026-07-08): this ZCode build registers
+        plugin hooks but does not fire them, so H06 never reaches the model;
+        the rules are inlined into the bundle instead. H06 stays wired as the
+        future mechanism.
+        TODO(harness-bugfix): flip to "hook" when plugin hooks fire.
+
+    The user profile is inlined for BOTH: it must be always-context and no
+    hook injects it, so inlining never duplicates.
     """
     facts = adapter.get("harness_facts", {})
+    rules_delivery = facts.get("rules_delivery", "inline")
     ac_file = facts.get("always_context_file", "CLAUDE.md")  # CLAUDE.md | AGENTS.md
     bundle_name = re.sub(r"\.md$", ".stc.md", ac_file)
     bundle_rel = bundle_name  # at native dir root, like the user file
@@ -528,18 +545,58 @@ def _render_always_context(core_dir, adapter, result, native_dir, harness):
         f"",
     ]
 
-    # Inline the 3 firing rules (behavior/pev/session). project_docs stays lazy
-    # (read by anchor [[project-docs]] when writing ADRs/specs).
-    for rule in ("behavior", "pev", "session"):
-        rule_path = os.path.join(core_dir, "rules", f"{rule}.md")
-        body = _read(rule_path).strip() if os.path.exists(rule_path) else ""
-        if body:
-            lines.append(f"<details><summary><code>{rule}.md</code></summary>")
-            lines.append("")
-            lines.append(body)
-            lines.append("")
-            lines.append("</details>")
-            lines.append("")
+    rule_files = (("behavior", "rules/behavior.md"),
+                  ("pev",      "rules/pev.md"),
+                  ("session",  "rules/session.md"))
+
+    if rules_delivery == "hook":
+        # Pointer: H06 injects these on session start; the bundle only names
+        # them so the agent can fall back to a manual read if the hook did
+        # not fire.
+        lines.append("Hook H06 (`session-start-context`) injects these rule "
+                     "files into context on startup/compact/clear — they "
+                     "should already be present:")
+        lines.append("")
+        for label, rel in rule_files:
+            lines.append(f"- `~/.stc/core/{rel}`")
+        lines.extend([
+            "- `~/.stc/core/rules/project_docs.md` — lazy (read by anchor "
+            "`[[project-docs]]` when writing ADRs/specs)",
+            "",
+            "If any are MISSING (hook did not fire) — read them manually as "
+            "a fallback before acting.",
+            "",
+        ])
+    else:
+        # Inline the 3 firing rules (behavior/pev/session). project_docs
+        # stays lazy (read by anchor [[project-docs]] when writing ADRs/specs).
+        for label, rel in rule_files:
+            rule_path = os.path.join(core_dir, rel)
+            body = _read(rule_path).strip() if os.path.exists(rule_path) else ""
+            if body:
+                lines.append(f"<details><summary><code>{label}.md</code></summary>")
+                lines.append("")
+                lines.append(body)
+                lines.append("")
+                lines.append("</details>")
+                lines.append("")
+
+    # Inline the user profile. The profile is private per-user data that lives
+    # OUTSIDE core/ (it is never deployed to ~/.stc/ — the deployer copies only
+    # core/). But its CONTENT is safe (no secrets — the file's own guard forbids
+    # them; values are referenced by env-var NAME only) and is rendered into the
+    # always-context bundle so the agent knows the user without lazy reads.
+    # Cross-user: each user renders their own user/profile.md. Cross-harness:
+    # the inline lands in both CLAUDE.stc.md and AGENTS.stc.md.
+    profile_path = os.path.join(os.path.dirname(core_dir), "user", "profile.md")
+    profile_body = _read(profile_path).strip() if os.path.exists(profile_path) else ""
+    if profile_body:
+        lines.append(f"<details><summary><code>profile.md</code></summary>")
+        lines.append("")
+        lines.append(profile_body)
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
 
     lines.extend([
         f"## Lazy memory (read on demand, not at start)",
@@ -547,13 +604,17 @@ def _render_always_context(core_dir, adapter, result, native_dir, harness):
         f"- `~/.stc/core/memory/MEMORY.md` — the index/map. Read it when you "
         f"need the catalog of references; wiki-links `[[name]]` point at the "
         f"detail files (playbook, code-standard, reference-*, project-docs).",
-        f"- `~/.stc/core/user/` — personal memory (profile, feedback_*, "
-        f"projects/). Read by anchor when a rule references `[[user-profile]]`.",
+        f"- `~/.stc/core/user/` — personal memory (feedback_*, "
+        f"projects/<name>.md). Read by anchor when a rule references "
+        f"`[[user-profile]]` or a `[[project-*]]` link. The profile itself is "
+        f"inlined above (always-context), not lazy.",
         f"",
     ])
 
     result.files[bundle_rel] = "\n".join(lines)
-    result.manifest.append({"path": bundle_rel, "kind": "always-context", "source": "inline-rules+lazy-pointer"})
+    result.manifest.append({"path": bundle_rel, "kind": "always-context",
+                            "source": ("h06-pointer+inline-profile" if rules_delivery == "hook"
+                                       else "inline-rules+inline-profile")})
 
     # the single marker block injected into the USER's always-context file.
     result.marker[ac_file] = f"@{_native_root(adapter, bundle_name)}"

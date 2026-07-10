@@ -40,6 +40,9 @@ description: "<one-line: project + current status>"
 - <what's blocking, what's undecided, what's next>
 
 ## CHANGELOG  <!-- append-only, THIN — read only the last entry -->
+<!-- Rotation (I26): at session end, prior STATE/CHANGELOG entries move to
+     archive/project_<name>_archive.md; leave a [[project_<name>_archive]]
+     pointer here. STATE always = the latest session only. -->
 
 - **YYYY-MM-DD** — <one-line pointer; detail in repo docs / a commit>.
 - **YYYY-MM-DD** — <one-line>.

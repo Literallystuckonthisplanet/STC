@@ -185,7 +185,7 @@ def test_naming_consistency_rejects_underscore():
     """REGRESSION (the duplicate-files bug): core/commands/*.md with an
     underscore in the name must fail precheck (grill_me.md vs grill-me.md)."""
     errs = []
-    cmds = ["grill-me.md", "save-and-compact.md", "grill_me.md"]
+    cmds = ["grill-me.md", "to-spec.md", "grill_me.md"]
     for f in cmds:
         if f.endswith(".md") and "_" in f[:-3]:
             errs.append(f"underscore: {f}")
@@ -519,25 +519,67 @@ def test_claude_render_keeps_SKILL_stc_md():
         f"claude files-delivery skills must stay SKILL.stc.md (found plain {bad})")
 
 
-def test_bundle_inlines_rules_not_pointer():
-    """REGRESSION: the always-context bundle must INLINE the 3 firing rules
-    (behavior/pev/session), not be a pointer. The hook-injection mechanism
-    (H06) is correct but does not fire in the current ZCode build, so inlining
-    is the workaround. Verifies: no @import lines; rule CONTENT is present."""
+RULE_FINGERPRINTS = ("Facts → memory", "Plan→Do→Verify", "Memory rotation")
+
+
+def test_zcode_bundle_inlines_rules():
+    """REGRESSION (rules_delivery: inline): the zcode bundle must INLINE the
+    3 firing rules (behavior/pev/session), not be a pointer. H06 is wired
+    correctly but this ZCode build does not fire plugin hooks, so inlining is
+    the only reliable delivery. Verifies: no @import lines; rule CONTENT
+    present."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "zcode", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["zcode"], D.CORE, REPO)
+    body = rr.files.get("AGENTS.stc.md", "")
+    assert body, "zcode bundle missing"
+    # NO @import / @~/.stc lines (the dead mechanism)
+    assert not any(ln.strip().startswith("@~/") or ln.strip().startswith("@/")
+                   for ln in body.splitlines()), (
+        "zcode bundle still contains @import lines")
+    # the 3 rule fingerprints must be INLINED (content present, not pointer)
+    for fp in RULE_FINGERPRINTS:
+        assert fp in body, f"zcode bundle missing inlined rule fingerprint '{fp}'"
+
+
+def test_claude_bundle_is_pointer_not_inline():
+    """REGRESSION (rules_delivery: hook — the double-delivery bug): on claude,
+    H06 injects the 3 firing rules on SessionStart (verified live), so the
+    bundle must stay a POINTER. Inlining the rules here too would deliver
+    every rule twice (~20KB duplicate per session). Verifies: rule paths are
+    listed, rule CONTENT is absent."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "claude", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["claude"], D.CORE, REPO)
+    body = rr.files.get("CLAUDE.stc.md", "")
+    assert body, "claude bundle missing"
+    # pointer lists the rule paths H06 injects
+    for rel in ("rules/behavior.md", "rules/pev.md", "rules/session.md"):
+        assert rel in body, f"claude pointer bundle does not name {rel}"
+    # rule BODIES must NOT be inlined (H06 already delivers them). The check
+    # is structural — no <details> rule blocks — because fingerprint strings
+    # may legitimately appear in the inlined user profile.
+    for label in ("behavior.md", "pev.md", "session.md"):
+        marker = f"<code>{label}</code>"
+        assert marker not in body, (
+            f"claude bundle inlines {label} — rules would be delivered "
+            f"twice (bundle + H06)")
+
+
+def test_bundle_inlines_profile_when_present():
+    """The user profile (user/profile.md) is inlined into the bundle for BOTH
+    harnesses — it must be always-context and no hook injects it, so inlining
+    never duplicates. Skipped when the private profile file is absent."""
+    profile = os.path.join(REPO, "user", "profile.md")
+    if not os.path.exists(profile):
+        return  # private file absent (fresh clone) — nothing to verify
     stc, registry, adapters, _ = D._gather()
     for t in ("claude", "zcode"):
         provider = R.provider_for(stc, t, REPO)
         rr = R.render_harness(stc, registry, provider, adapters[t], D.CORE, REPO)
         bundle = "CLAUDE.stc.md" if t == "claude" else "AGENTS.stc.md"
         body = rr.files.get(bundle, "")
-        assert body, f"{t} bundle missing"
-        # NO @import / @~/.stc lines (the dead mechanism)
-        assert not any(ln.strip().startswith("@~/") or ln.strip().startswith("@/")
-                       for ln in body.splitlines()), (
-            f"{t} bundle still contains @import lines")
-        # the 3 rule fingerprints must be INLINED (content present, not pointer)
-        for fp in ("Facts → memory", "Plan→Do→Verify", "handoff"):
-            assert fp in body, f"{t} bundle missing inlined rule fingerprint '{fp}'"
+        assert "<code>profile.md</code>" in body, f"{t} bundle missing inlined profile"
 
 
 def test_h06_injects_rules_via_stc_core():

@@ -36,7 +36,7 @@ if [ -n "$used_pct" ]; then
   tok_note=""
   [ -n "$in_tok" ] && tok_note=" ${in_tok}tok"
   ctx=" ${col}${mark} ctx ${pct}%${tok_note}${RST}"
-  [ "$pct" -ge 75 ] && ctx="${ctx} ${R}→ /save-and-compact${RST}"
+  [ "$pct" -ge 75 ] && ctx="${ctx} ${R}→ /compact${RST}"
 else
   ctx=" ${DIM}ctx n/a${RST}"
 fi

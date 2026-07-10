@@ -11,6 +11,38 @@ release notes.
 
 ## [Unreleased]
 
+### Changed — session-end flow: memory rotation replaces handoff/save-and-compact
+- **New rule I26 (`behavior.md` § Memory rotation).** Project facts are saved
+  to `project_<name>.md` (R08 STATE/CHANGELOG) live as they arise; at task
+  completion and session end the prior STATE/CHANGELOG rotates to
+  `archive/project_<name>_archive.md`, so STATE always reflects the latest
+  session. Session start = read STATE; no handoff doc needed.
+- **Removed commands `/handoff` (S05) and `/save-and-compact` (S09)** from
+  core and all adapters; both registered in `reference_retired_codes.md`
+  (→ I26). `COMPACT_CMD` now defaults to the harness-native `/compact`;
+  hook H03 texts point at I26 instead of the removed command. The dead
+  `workspace.handoffs_dir` config knob is gone; the playbook "cheap session"
+  lever writes its brief into the project's OPEN section instead of
+  `${HANDOFFS_DIR}`.
+- **R08 format documented in `project_docs.md`** (STATE/OPEN/CHANGELOG,
+  pointer + status, rotation reference).
+
+### Fixed — per-harness rule delivery (the double-delivery bug)
+- `_render_always_context` now branches on `harness_facts.rules_delivery`:
+  **claude = `"hook"`** — H06 injects the 3 firing rules on SessionStart
+  (verified live), the bundle stays a pointer (inlining would have delivered
+  every rule twice, ~20KB duplicate per session, after the 0.1.2-era inline
+  workaround); **zcode = `"inline"`** — plugin hooks register but do not
+  fire in the current build, so rule bodies land in the bundle. The user
+  profile is inlined for both (no hook injects it — never duplicates).
+  Regression tests split accordingly (`test_claude_bundle_is_pointer_not_inline`,
+  `test_zcode_bundle_inlines_rules`, profile-inline test).
+- `session.md` §1 rewritten to describe the real loading mechanism (3 rules +
+  profile always; MEMORY.md/playbook/code_standard lazy) instead of the stale
+  7-file `@import` list.
+- New render vars `DEPLOY_SCRIPT` (absolute path to deploy.py, was a phantom
+  token) and `HARNESS_LIST` for the session-end infra re-apply step.
+
 ## [0.1.2] — 2026-07-08
 
 ### Fixed — zcode plugin delivery

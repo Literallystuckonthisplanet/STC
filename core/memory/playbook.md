@@ -261,9 +261,10 @@ every turn + recompressed on compact). Levers are placed where they fire:
   ephemeral agent (mechanics: cheaper model + caveman, judgment: main model),
   in main — only the summary.
 - **Cheap session:** a task cannot go to an agent (needs dialogue) but a
-  cheaper model can handle it → write a brief into `${HANDOFFS_DIR}/`
-  (what/why/files/AC/steps) + a prompt; the user opens a session on the
-  cheaper model. Pays off for medium+ tasks with low judgment risk.
+  cheaper model can handle it → write the brief (what/why/files/AC/steps)
+  into the project's `project_<name>.md` OPEN section (I26 — the next
+  session reads STATE/OPEN on start) + a prompt; the user opens a session
+  on the cheaper model. Pays off for medium+ tasks with low judgment risk.
 - **Compression at the task boundary** (see pev §3).
 
 **Self-enforcing (no need to remember — built in):**

@@ -14,8 +14,9 @@
 #     "value to .env first, not memory, don't echo". NOT a block (the value is
 #     the user's own input; the directive shapes the agent's next action).
 #   - On short command-like prompts (< 80 chars):
-#       a) COMPACT trigger → run /save-and-compact first, then ${COMPACT_CMD}.
-#       b) SESSION END trigger → run /save-and-compact, then stop services.
+#       a) COMPACT trigger → save memory per behavior.md § Memory rotation
+#          (I26) first, then ${COMPACT_CMD}.
+#       b) SESSION END trigger → rotate memory (I26), then stop services.
 #
 # Render-time vars (resolved by deploy.py from stc.yaml):
 #   ${USER_LANG}     — message language (en|ru). Default en.
@@ -76,8 +77,8 @@ if [ "$PROMPT_LEN" -ge 80 ]; then exit 0; fi
 if echo "$PROMPT" | grep -iE "compact|compress (context|session)|squeeze|save and compact|сжать (сессию|контекст)|сожми (сессию|контекст)|сохрани и сожми|сохранить и сжать|сохрани сессию|сжимаем|пора сжать|жать контекст" > /dev/null 2>&1; then
   if [ -n "$USER_NAME" ]; then NAME_REF="$USER_NAME"; else NAME_REF="the user"; fi
   case "$USER_LANG" in
-    ru) echo "COMPACT TRIGGER: сначала запусти /save-and-compact (сохранит память), потом скажи ${NAME_REF} ввести ${COMPACT_CMD}." ;;
-    *) echo "COMPACT TRIGGER: run /save-and-compact first (saves session memory), then tell ${NAME_REF} to run ${COMPACT_CMD}." ;;
+    ru) echo "COMPACT TRIGGER: сначала сохрани память по behavior.md § Memory rotation (I26: обнови STATE/CHANGELOG project_<name>.md, ротируй хвост в archive/), потом скажи ${NAME_REF} ввести ${COMPACT_CMD}." ;;
+    *) echo "COMPACT TRIGGER: save memory first per behavior.md § Memory rotation (I26: update STATE/CHANGELOG of project_<name>.md, rotate the tail to archive/), then tell ${NAME_REF} to run ${COMPACT_CMD}." ;;
   esac
 fi
 
@@ -86,12 +87,12 @@ if echo "$PROMPT" | grep -iE "ending session|wrap up|that's all for now|заве
   case "$USER_LANG" in
     ru)
       echo "=== ПРОТОКОЛ ЗАВЕРШЕНИЯ СЕССИИ (обязательно, по порядку) ==="
-      echo "ШАГ 1: запусти /save-and-compact — сохранить память сессии."
+      echo "ШАГ 1: сохрани память по behavior.md § Memory rotation (I26) — обнови STATE/CHANGELOG project_<name>.md, ротируй хвост в archive/."
       echo "ШАГ 2: остановить сервисы."
       ;;
     *)
       echo "=== SESSION END PROTOCOL (mandatory, in order) ==="
-      echo "STEP 1: run /save-and-compact — save session memory."
+      echo "STEP 1: save memory per behavior.md § Memory rotation (I26) — update STATE/CHANGELOG of project_<name>.md, rotate the tail to archive/."
       echo "STEP 2: stop running services."
       ;;
   esac

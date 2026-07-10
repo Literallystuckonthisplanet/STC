@@ -79,7 +79,7 @@ STC encodes a software development lifecycle that goes from **Spec-Driven Develo
 - **`/to-tasks`** slices a finalised spec into task lines in the project's task file. Large tasks require a finalised spec (block-coding mandatory).
 - **The `tdd` skill** is red-green-refactor via vertical tracer bullets (not all-tests-then-all-code). The iron law: no production code without a failing test first. The skill was merged from the user's own `tdd` command and the `superpowers/test-driven-development` methodology.
 - **The ×3 review pipeline** (`code-reviewer` + `security-arch` + `qa`, plus `security-deps` before deploy) runs fresh sub-agents with no prior context, deliberately, so the review is unbiased. Each returns a verdict (PASS / NEEDS FIXES / CRITICAL STOP). A caught defect becomes a row in the defect ledger, which becomes a design-time prevention for next time — a self-improving review loop.
-- **`/handoff` and `/save-and-compact`** close the loop: a session's state (tasks, decisions, new facts) is saved to memory before context is compacted or the session ends, so the next session — or another agent — picks up exactly where this one stopped.
+- **Project memory rotation** (behavior.md § Memory rotation, I26) closes the loop: key facts/decisions are saved to `project_<name>.md` (R08 STATE) live as they arise; at session end the prior STATE/CHANGELOG is rotated to `archive/project_<name>_archive.md`, so STATE always reflects the latest session. The next session names the project → reads STATE → picks up where the last one stopped. No handoff doc is needed.
 
 ## Guiding principles
 
@@ -198,10 +198,10 @@ Four rule files, loaded once per session via `@import`:
 
 | File | About |
 |---|---|
-| **`behavior.md`** | The firing-rule catalog — "situation → action" imperatives (anchors I01–I25). Secrets → `.env`; facts → memory now; worktrees + parallel sessions; git push = release; commit invariants; SELF-EXEC scope; background services auto-start; project start from `new-project.md`; the agent baseline for reviewers; reuse-before-reinvent + buy-vs-build; docs-first on integrations; output hygiene; token economy on sub-agent traffic. Each anchor notes which hook enforces it. |
+| **`behavior.md`** | The firing-rule catalog — "situation → action" imperatives (anchors I01–I26). Secrets → `.env`; facts → memory now; worktrees + parallel sessions; git push = release; commit invariants; SELF-EXEC scope; background services auto-start; project start from `new-project.md`; the agent baseline for reviewers; reuse-before-reinvent + buy-vs-build; docs-first on integrations; output hygiene; token economy on sub-agent traffic. Each anchor notes which hook enforces it. |
 | **`pev.md`** | The Plan → Do → Verify loop. Plan (clarify, understand, evaluate incl. the TDD + buy-vs-build questions, plan execution with mandatory AC); Do (one item at a time, in scope, TDD if agreed); Verify (mandatory, pick ≥1 of static/eyes/dynamic/agent/design-system; L tasks need ≥2 incl. agent). Task-scale S/M/L table decides PEV mode. |
 | **`project_docs.md`** | How to record decisions. ADR format (Decision → Why → Rejected, `ADR-NNN`, trigger: "would a new session need the WHY?"); task encoding (Blocks A/B/C, sub-blocks B0→B1→B2); ERD data models via mermaid.ink (`layout: elk` mandatory). |
-| **`session.md`** | Session lifecycle. Always-context is loaded via `@import` (lists the 7 files; profile is on-demand). Session start checks `${HANDOFFS_DIR}/` for fresh handoffs. Session end runs `/save-and-compact` then stops services (`kill DEV_PORTS` + `docker compose down`), detected by H03. Post-compact recovery reconciles uncommitted state. |
+| **`session.md`** | Session lifecycle. Always-context = 3 firing rules + user profile; rule delivery is per-harness (`rules_delivery`: claude → H06 hook injection, bundle stays a pointer; zcode → rules inlined into the bundle), profile is inlined everywhere. Session start: user names a project → read `project_<name>.md` (STATE = fresh). Session end: rotate memory (I26) then stop services (`kill DEV_PORTS` + `docker compose down`), detected by H03. Post-compact recovery (FR-7) reconciles uncommitted state. |
 
 ## Memory structure
 
@@ -235,7 +235,7 @@ Your **personal profile** (`user/profile.md`, gitignored) is read on demand when
 
 **9 agents** in `registry.yaml`, each with a `model_tier`, `tools`, `affinity`, and a `dispatches` description: `code-reviewer`, `security-arch`, `qa`, `security-deps` (fast), `e2e`, `cleanup` (fast), `research`, `docs` (fast), `harness-docs` (fast, claude-only). The registry is neutral bindings; the prompt body lives in `core/agents/<name>.md`. A harness with typed sub-agents renders both; one without routes through `skill_link` + a general-purpose dispatch.
 
-**10 slash commands**: `git-guardrails`, `grill-me`, `handoff`, `improve-codebase-architecture`, `install-mcp`, `prototype`, `save-and-compact`, `to-spec`, `to-tasks`, `zoom-out`.
+**8 slash commands**: `git-guardrails`, `grill-me`, `improve-codebase-architecture`, `install-mcp`, `prototype`, `to-spec`, `to-tasks`, `zoom-out`.
 
 ## The deployer and the renderer
 
@@ -335,7 +335,7 @@ STC/
 │   ├── hooks/          # 17 hook scripts (H01–H17) + README
 │   ├── skills/         # 15 skills (methodology + utility)
 │   ├── agents/         # registry.yaml + 9 agent prompt bodies
-│   ├── commands/       # 10 slash commands
+│   ├── commands/       # 8 slash commands
 │   ├── models/         # claude.yaml, glm.yaml (the MODEL axis providers)
 │   ├── templates/      # design-system, new-project, vault
 │   └── scripts/        # agent_cost.py, infra_graph.py, infra_graph_render.py

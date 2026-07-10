@@ -24,6 +24,7 @@ harness_facts:
   always_context_file: "<file>"             # TODO — CLAUDE.md / AGENTS.md / .cursorrules / ...
   supports_native_import: true|false|"unverified"   # TODO — does the always-context file support @<path>?
   import_syntax: "@<path>"                  # TODO — or "none"
+  rules_delivery: "hook"|"inline"           # TODO — "hook" if SessionStart hooks VERIFIABLY fire (H06 injects rules; bundle = pointer); "inline" otherwise (rules land inside the bundle). Default: inline.
   supports_typed_subagents: true|false      # TODO — does the harness dispatch typed agents (per-type frontmatter)?
   exposed_subagent_types: []                # TODO — e.g. [general-purpose] if untyped
   subagent_dispatch_tool: "<tool>"          # TODO — Task / Agent / ...
@@ -114,11 +115,9 @@ commands:
   capabilities:
     git-guardrails:                { supported: true, binding: { source: core/commands/git-guardrails.md } }
     grill-me:                      { supported: true, binding: { source: core/commands/grill-me.md } }
-    handoff:                       { supported: true, binding: { source: core/commands/handoff.md } }
     improve-codebase-architecture: { supported: true, binding: { source: core/commands/improve-codebase-architecture.md } }
     install-mcp:                   { supported: true, binding: { source: core/commands/install-mcp.md } }
     prototype:                     { supported: true, binding: { source: core/commands/prototype.md } }
-    save-and-compact:              { supported: true, binding: { source: core/commands/save-and-compact.md } }
     to-spec:                       { supported: true, binding: { source: core/commands/to-spec.md } }
     to-tasks:                      { supported: true, binding: { source: core/commands/to-tasks.md } }
     zoom-out:                      { supported: true, binding: { source: core/commands/zoom-out.md } }

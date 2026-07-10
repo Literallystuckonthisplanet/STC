@@ -15,7 +15,7 @@ user:
   name: "Your Name"            # how rules/commands address you
   role: "developer"            # developer | designer | BA/PO | student | ...
   language: "en"               # interface language (en | ru | ...); agent talks to you in this
-  timezone: "UTC"              # for handoff dates, audit cadence
+  timezone: "UTC"              # for memory timestamps, audit cadence
   git:
     name: "Your Git Name"
     email: "you@example.com"
@@ -42,7 +42,6 @@ models:
 workspace:
   root: "${HOME}/projects"     # where your projects live; agents resolve project memory relative to this
   dev_ports: [3000, 3001, 3002]  # ports scanned by the stop-services hook on session end
-  handoffs_dir: "${workspace.root}/.handoffs"  # where handoff docs are written
 
 # ------------------------------------------------------------
 # Deploy options

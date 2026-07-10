@@ -26,6 +26,7 @@ harness_facts:
   always_context_file: "AGENTS.md"            # project-root + user-level, harness-native
   supports_native_import: "unverified"        # @import may not be supported; H06 is the safety net
   import_syntax: "@<path>"                     # tried; if unsupported, fallback to H06 inject
+  rules_delivery: "inline"                     # WORKAROUND: plugin hooks register but do not fire → rules inlined into the bundle; flip to "hook" when the harness bug is fixed
   supports_typed_subagents: false              # ONLY general-purpose + Explore are exposed
   exposed_subagent_types: [general-purpose, Explore]
   subagent_dispatch_tool: "Agent"             # untyped dispatch (no per-type frontmatter)
@@ -52,7 +53,8 @@ vars:
   HARNESS_DIR:   "${HOME}/.zcode"
   HARNESS_NAME:  "zcode"
   MEMORY_DIR:    "${workspace.root}/.stc-memory"  # ZCode has no ~/.claude; project-scoped memory
-  COMPACT_CMD:   "/save-and-compact"              # rendered command (same name, harness-neutral)
+  STC_CORE:      "${HOME}/.stc/core"              # shared cross-harness rules/memory (H06 injects from here)
+  COMPACT_CMD:   "/compact"                        # harness-native compact command
   SECRETS_ENV:   "${HOME}/.stc/secrets.env"
   RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
 
@@ -122,11 +124,9 @@ commands:
   capabilities:
     git-guardrails:                { supported: true, binding: { source: core/commands/git-guardrails.md } }
     grill-me:                      { supported: true, binding: { source: core/commands/grill-me.md } }
-    handoff:                       { supported: true, binding: { source: core/commands/handoff.md } }
     improve-codebase-architecture: { supported: true, binding: { source: core/commands/improve-codebase-architecture.md } }
     install-mcp:                   { supported: true, binding: { source: core/commands/install-mcp.md } }
     prototype:                     { supported: true, binding: { source: core/commands/prototype.md } }
-    save-and-compact:              { supported: true, binding: { source: core/commands/save-and-compact.md } }
     to-spec:                       { supported: true, binding: { source: core/commands/to-spec.md } }
     to-tasks:                      { supported: true, binding: { source: core/commands/to-tasks.md } }
     zoom-out:                      { supported: true, binding: { source: core/commands/zoom-out.md } }

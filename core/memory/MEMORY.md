@@ -14,18 +14,19 @@ Lazy reference files. Read by anchor when a rule or command points here with a
 | `[[reference-abuse-cases]]` | Cross-project abuse/bypass-case base by category (AUTH/RATE/AUTHZ/INPUT/BUSINESS-LOGIC/CLIENT-TRUST): vector → countermeasure → test hook. Empty template — seed with your own | When writing spec/AC/test-cases for any S1+; during a security pass |
 | `[[reference-failure-modes]]` | Typical pitfalls+solutions per USE-CASE (all business logic, not only integrations): symptom → cause → solution → verify. Empty template — seed with your own | When writing a spec for each use-case; as a debug-reflex before any edit |
 | `[[reference-retired-codes]]` | Registry of code-labels retired when a rule migrated to a hook (ADR-001). Read by the doc-backend generator (not orphan, no gap) | When a label disappears from always; during an infra audit |
+| `[[project-docs]]` | ADR format, task encoding A/B/C, ERD via mermaid.ink, project-memory format R08 (STATE/OPEN/CHANGELOG) | When writing a spec/ADR; when starting a new project |
 
 ## Always-context (not in this folder, but referenced)
 
-These live in `rules/` and are loaded every session (injected by hook H06) —
-do not lazy-read:
+These live in `rules/` and are injected every session by hook H06
+(`session-start-context`) — do not lazy-read:
 
 | File | What's inside |
 |------|---------------|
-| `rules/session.md` | Always-context injected by H06 (not manual), session start (handoffs + audit), session end protocol, post-compact recovery (FR-7) |
+| `rules/session.md` | Always-context injected by H06 (not manual), session start (audit), session end protocol, post-compact recovery (FR-7) |
 | `rules/behavior.md` | SELF-EXEC, secrets→.env (H05/I05b), worktrees (H07), commits+verify (H01/I09), git-push=release (H01/I08), reuse-before-reinvent (H10/I21), agent baseline (H04/I20), output hygiene (H11/I24), live todo (I23), service-field language |
 | `rules/pev.md` | Plan→Do→Verify loop, task scale S/M/L, verification kinds |
-| `rules/project_docs.md` | ADR format, task encoding A/B/C, ERD via mermaid.ink, project-memory format R08 (STATE/OPEN/CHANGELOG) |
+| `user/profile.md` | User identity, role, language, git identity, how-I-work, voice-input dictionary, project pointers. **Inlined into the always-context bundle at render-time** (private file, never deployed to `~/.stc/`; only its non-secret content reaches the bundle). Template: `user/profile.example.md` |
 
 ## Hooks (not in memory/, but referenced)
 
@@ -61,7 +62,7 @@ Deploy renders the templates into `${DOCS_ROOT}` (default
 
 | File | What's inside |
 |------|---------------|
-| `user/profile.md` | User identity, role, language, git identity, how-I-work, voice-input dictionary, project pointers. Template: `user/profile.example.md` |
+| `user/profile.md` | **Now inlined into always-context (see the Always-context table above).** Lives at `user/profile.md` in the repo; rendered into the bundle at deploy-time. |
 | `user/projects/<name>.md` | Per-project memory in R08 format (STATE/OPEN/CHANGELOG — pointer + status, not detail): product, repo-doc pointers, gotchas, e2e scenarios. Template: `user/projects/example.example.md` |
 | `user/secrets.env` | Secret values (API tokens, credentials) referenced by env-var name from `stc.yaml`. Template: `user/secrets.env.example`. Never committed. |
 

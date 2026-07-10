@@ -24,6 +24,7 @@ harness_facts:
   always_context_file: "CLAUDE.md"        # the file at <native_dir>/CLAUDE.md
   supports_native_import: true            # CLAUDE.md supports @<path>
   import_syntax: "@<path>"                # native include, primary mechanism
+  rules_delivery: "hook"                  # H06 injects rules on SessionStart (verified live); bundle = pointer, inlining would deliver rules twice
   supports_typed_subagents: true          # agents/*.md carry frontmatter tools/model
   subagent_dispatch_tool: "Task"          # the tool name that launches a typed agent
   hook_config_file: "settings.json"       # hooks wired by matcher groups
@@ -51,7 +52,8 @@ vars:
   HARNESS_DIR:   "${HOME}/.claude"
   HARNESS_NAME:  "claude"
   MEMORY_DIR:    "${HOME}/.claude"         # project memory root (hooks that scan memory use this)
-  COMPACT_CMD:   "/save-and-compact"       # harness-native compact command
+  STC_CORE:      "${HOME}/.stc/core"       # shared cross-harness rules/memory (H06 injects from here)
+  COMPACT_CMD:   "/compact"                 # harness-native compact command
   SECRETS_ENV:   "${HOME}/.claude/.env"
   RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
 
@@ -135,11 +137,9 @@ commands:
   capabilities:
     git-guardrails:               { supported: true, binding: { source: core/commands/git-guardrails.md } }
     grill-me:                     { supported: true, binding: { source: core/commands/grill-me.md } }
-    handoff:                      { supported: true, binding: { source: core/commands/handoff.md } }
     improve-codebase-architecture: { supported: true, binding: { source: core/commands/improve-codebase-architecture.md } }
     install-mcp:                  { supported: true, binding: { source: core/commands/install-mcp.md } }
     prototype:                    { supported: true, binding: { source: core/commands/prototype.md } }
-    save-and-compact:             { supported: true, binding: { source: core/commands/save-and-compact.md } }
     to-spec:                      { supported: true, binding: { source: core/commands/to-spec.md } }
     to-tasks:                     { supported: true, binding: { source: core/commands/to-tasks.md } }
     zoom-out:                     { supported: true, binding: { source: core/commands/zoom-out.md } }

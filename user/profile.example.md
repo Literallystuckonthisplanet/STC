@@ -11,7 +11,7 @@ talk to you. Read by the agent on session start (see core/rules/session.md).
 - **Name:** ${USER_NAME}
 - **Role:** developer             <!-- developer | designer | BA/PO | student | ... -->
 - **Language:** en                <!-- the language the agent talks to you in (en | ru | ...) -->
-- **Timezone:** UTC               <!-- for handoff dates, audit cadence -->
+- **Timezone:** UTC               <!-- for memory timestamps, audit cadence -->
 
 ## Git identity (for commits the agent makes on your behalf)
 
@@ -34,9 +34,9 @@ short — situation → action. Examples below; edit freely.
   — the agent runs these itself. It asks me only for a value or a decision.
 - **Commit style:** small commits, one logical change each, commit-then-push
   immediately (the git-guardrails hook does NOT block push).
-- **Long context:** when the agent needs to compress context, it runs
-  `/save-and-compact` first, then tells me to run the harness-native compact
-  command — it never silently compacts.
+- **Long context:** when the agent needs to compress context, it rotates memory
+  first (behavior.md § Memory rotation, I26), then tells me to run the
+  harness-native compact command — it never silently compacts.
 
 ## Voice-input dictionary  <!-- optional; delete if not using voice input -->
 

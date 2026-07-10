@@ -28,6 +28,27 @@ here is a pointer; the hook is the guarantee.
   toxic.
 - `.env` files are never committed. `.gitignore` must cover them.
 
+## Memory rotation — project memory stays fresh
+<!-- I26 -->
+
+Rule 2 routes facts → memory. This rule says WHERE project facts go and how
+the file stays a fresh snapshot (not an append-log).
+
+- **A project fact** (a decision, a result, a config, a gotcha surfaced while
+  working on a project) → the project's `project_<name>.md` **live, as it
+  arises** — into STATE (the current truth) or CHANGELOG (a one-line pointer).
+  Do not batch to session-end.
+- **On task completion and at session end:** update STATE/CHANGELOG of
+  `project_<name>.md`. The PREVIOUS STATE/CHANGELOG entries are **moved to
+  `archive/project_<name>_archive.md`** (create if absent), leaving a
+  `[[project_<name>_archive]]` pointer in the active file's CHANGELOG tail.
+  After rotation, STATE = the latest session only.
+- **Session start:** the user names a project → read `project_<name>.md`
+  (STATE = fresh info from the last session). No handoff doc needed.
+- Format = R08 (STATE/OPEN/CHANGELOG); principle = pointer + STATUS, not
+  detail; history → git/archive. Hooks H08 (archive = valid link target, not
+  loaded) and H09 (R08 JIT-reminder on `project_*` edits) already support this.
+
 ## Worktrees and parallel sessions
 <!-- I07 -->
 

@@ -35,4 +35,10 @@ Example shape (replace with real entries):
   format) migrated to the JIT-inject of memory-guard.
 -->
 
-*(empty — add retirements here as ADR-001 migrations happen)*
+- S05 → I26 (2026-07-10): the `/handoff` command removed — cross-session
+  continuity now comes from Memory rotation (`behavior.md` § I26): STATE of
+  `project_<name>.md` is always the latest session, no handoff doc needed.
+- S09 → I26 (2026-07-10): the `/save-and-compact` command removed — session
+  memory is saved live per I26 (facts as they arise, rotation at session
+  end); the compact itself is the harness-native `${COMPACT_CMD}`, prompted
+  by hook H03.

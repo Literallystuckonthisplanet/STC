@@ -8,6 +8,22 @@ scope: global
 
 How to record decisions and encode work inside a project.
 
+## Project memory format (R08)
+<!-- R08 -->
+
+A project's memory file (`user/projects/<name>.md` / `project_<name>.md`)
+follows a compact three-section format — saves tokens (loaded when you work
+on a project), detail lives in repo docs:
+
+- **STATE** — the current truth, overwritten in place; pointers to repo docs.
+- **OPEN** — blockers / questions / what's next; closed items are **deleted**.
+- **CHANGELOG** — append-only, **thin** — read only the last entry.
+
+**Principle:** memory = pointer + STATUS, not detail. History → git (it's
+backed up), not into this file. Rotation: see `behavior.md` § Memory rotation
+(I26) — at session end, prior STATE/CHANGELOG moves to
+`archive/project_<name>_archive.md`.
+
 ## Architecture Decision Records (ADR)
 <!-- R05 -->
 

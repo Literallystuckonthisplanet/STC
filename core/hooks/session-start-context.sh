@@ -1,15 +1,19 @@
 #!/bin/bash
 # H06 — hook: session-start-context
-# SessionStart: post-compact loss-check (FR-7) + infra-audit cadence reminder.
+# SessionStart: injects the always-context rule files (the original pre-@import
+# mechanism — @import was a later refactor that does not work in harnesses
+# without native @-expansion). Also: post-compact loss-check (FR-7) + infra-audit
+# cadence nudge.
 #
-# This hook does NOT inject always-context rules — those load via @import in
-# the always-context file (CLAUDE.md → CLAUDE.stc.md → @~/.stc/core/rules/*,
-# @~/.stc/core/memory/*). Injecting them here would duplicate @import and
-# require the hook to second-guess paths that @import already resolves.
-# H06 owns only what @import CANNOT provide:
-#   - on source=compact → force a loss-check (the summary may be incomplete)
-#   - on source=startup/clear → infra-audit cadence nudge (≥30 days → remind)
-# On source=resume the context is already restored → skip.
+# WHAT H06 OWNS:
+#   - cat ~/.stc/core/rules/{behavior,pev,project_docs,session}.md → stdout
+#     → the harness feeds hook stdout to the model as additionalContext.
+#     This is the ONLY way the always-context rules reliably reach the model
+#     across harnesses. The always-context bundle (CLAUDE.stc.md/AGENTS.stc.md)
+#     is a fallback pointer, not the loader.
+#   - on source=compact → post-compact loss-check directive (FR-7).
+#   - on source=startup/clear → infra-audit cadence nudge (≥30 days → remind).
+# On source=resume the context is already restored → skip (no re-inject).
 #
 # FR-7 — post-compact recovery: on source=compact (manual /compact AND auto),
 # emit a loss-check directive (reconcile pre-compression state + record
@@ -17,8 +21,9 @@
 # critique BEFORE compression; instead forces the agent to verify losses.
 #
 # Render-time vars (resolved by deploy.py from stc.yaml):
-#   ${HARNESS_DIR}  — the harness home (~/.claude), where skills/ live.
-#   ${USER_LANG}    — message language (en|ru). Default en.
+#   ${STC_CORE}    — the shared rules/memory root (~/.stc/core), harness-neutral.
+#   ${HARNESS_DIR} — the harness home (~/.claude), where skills/ live.
+#   ${USER_LANG}   — message language (en|ru). Default en.
 
 INPUT=$(cat)
 SOURCE=$(echo "$INPUT" | jq -r '.source // empty')
@@ -52,11 +57,12 @@ if [ "$SOURCE" = "compact" ]; then
   echo ""
 fi
 
+echo "=== ОБЯЗАТЕЛЬНЫЙ КОНТЕКСТ СТАРТА (инжектнут хуком H06 — НЕ перечитывать вручную, если уже видишь) ==="
+
 # Infra-audit cadence: ≥30 days since the last run → remind.
 # Best-effort: the "Last run" timestamp lives in the infra-audit skill.
-# Skills render as SKILL.stc.md (collision-proof suffix); check both the STC
-# name and a plain SKILL.md so this works pre/post-deploy. Absent on a harness
-# without the skill → the check silently skips (no nudge, which is correct).
+# Skills render as SKILL.md (plugin) or SKILL.stc.md (files); check both. Absent
+# on a harness without the skill → the check silently skips (no nudge).
 AUDIT_FILE=""
 for cand in "${HARNESS_DIR}/skills/infra-audit/SKILL.stc.md" "${HARNESS_DIR}/skills/infra-audit/SKILL.md"; do
   [ -f "$cand" ] && AUDIT_FILE="$cand" && break
@@ -76,3 +82,17 @@ if [ -f "$AUDIT_FILE" ]; then
     fi
   fi
 fi
+
+# The always-context rules. ${STC_CORE} resolves to ~/.stc/core (shared, cross-
+# harness). 3 firing-rule files (behavior/pev/session) are injected here;
+# project_docs.md stays lazy (read by anchor [[project-docs]] when writing
+# ADRs/specs) — this keeps the inject within the ZCode 24KB additionalContext
+# cap (4 files overflow it by ~160 bytes).
+for f in behavior pev session; do
+  src="${STC_CORE}/rules/${f}.md"
+  if [ -f "$src" ]; then
+    echo ""
+    echo "----- rules/${f}.md -----"
+    cat "$src"
+  fi
+done

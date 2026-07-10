@@ -58,17 +58,14 @@ strategy (the whole base), unlike a code review (tactics, a diff). Surface
 Condition: a domain glossary (`CONTEXT.md`) should exist before the first run.
 Cue for the user: "it's been a few large tasks — time for an architecture pass?"
 
-**`handoff`** — saves into `${HANDOFFS_DIR}/`, filename `YYYY-MM-DD-topic.md`.
-
-**`save-and-compact`** — steps: 1) session review 2) update the project's
-tuning-pending notes 3) save new facts 4) flush infra docs to the doc backend
-(incremental; skip if infra wasn't touched) 5) report. After it — the user
-runs the harness's compact command. The `stop_services_reminder.sh` hook (H03,
-UserPromptSubmit) catches trigger phrases and reminds:
+**Compact / session-end** (no separate command — lives in `session.md` §3,
+triggered by H03). The `stop_services_reminder.sh` hook (H03, UserPromptSubmit)
+catches trigger phrases:
 - "compress/compact the session", "compact the context", "save and compact",
-  "compacting", "time to compact", etc.
+  "compacting", "time to compact", etc. → first save memory per behavior.md §
+  Memory rotation (I26), then tell the user to run `${COMPACT_CMD}`.
 - On the phrase "wrap up the session" it unfolds the session-end protocol
-  (save → stop services).
+  (rotate memory → stop services).
 - Also scans the prompt for a secret (I05b) → directive to write it to
   `${SECRETS_ENV}` first.
 

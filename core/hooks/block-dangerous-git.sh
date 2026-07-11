@@ -16,7 +16,9 @@
 #     (pre-commit bypassed → run lint/tsc manually).
 #
 # Render-time vars (resolved by deploy.py from stc.yaml):
-#   ${RELEASE_ACK_FILE} — per-session ack marker path (one-shot push-to-main).
+#   ${RELEASE_ACK_FILE} — per-session ack marker path; contains ${SESSION_ID},
+#                         which is a RUNTIME bash var filled from stdin below
+#                         (NOT a render-time value — deploy leaves it literal).
 #   ${USER_LANG}        — message language (en|ru). Default en.
 #
 # Install via the /git-guardrails command.
@@ -26,6 +28,12 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null)
 if [ -z "$COMMAND" ]; then exit 0; fi
 
 USER_LANG="${USER_LANG:-en}"
+
+# session_id arrives in the hook's stdin JSON, NOT the environment. Parse it so
+# ${RELEASE_ACK_FILE} (…/stc-release-${SESSION_ID}) resolves per-session; without
+# this SESSION_ID is empty and the ack marker collapses to a single global path
+# (`/tmp/stc-release-`), leaking one session's release-ack into every other.
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
 DANGEROUS_PATTERNS=(
   "git reset --hard"

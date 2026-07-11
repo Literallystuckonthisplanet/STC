@@ -49,6 +49,11 @@ for seg in "${SEGS[@]}"; do
     printf '%s' "$seg" | grep -qE '\-\-json' || block "audit as a wall into the window (add --json, or the security-deps agent)"
   fi
 
+  # inline eval (python -c / node -e|-p / ruby -e) = small inline code, not a
+  # data-script file → the word `import` here is a language keyword, not an
+  # import-script action. Skip rule A (rule B above never uses -c/-e/-p).
+  printf '%s' "$seg" | grep -qE '(^|[[:space:]])(python3?|node|bun|ruby|deno)[[:space:]]+-(c|e|p)([[:space:]]|$)' && continue
+
   # A) noisy data-script: runner + action
   if printf '%s' "$seg" | grep -qiE '(^|[[:space:]])(pnpm|npm|yarn|npx|node|tsx|ts-node|bun|python3?)\b' \
      && printf '%s' "$seg" | grep -qiE '(import|seed|publish|scrape|backfill|sync)'; then

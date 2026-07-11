@@ -72,7 +72,7 @@ case "$HAY" in
   *dadata*)            KEY="dadata" ;;
   *gspread*|*google*sheet*|*sheets.googleapis*) KEY="sheets" ;;
   *openai*)            KEY="openai" ;;
-  *anthropic*|*api.anthropic*) KEY="anthropic" ;;
+  *api.anthropic*|*@anthropic-ai*|*"import anthropic"*|*"from anthropic "*|*anthropic.anthropic*|*anthropic_api_key*) KEY="anthropic" ;;  # real SDK/API only — a bare mention or an @anthropic.com e-mail address must NOT trigger
   *amazonaws*|*aws-sdk*|*@aws-sdk*|*boto3*) KEY="aws" ;;
   *cloudflare*)        KEY="cloudflare" ;;
   *@notionhq*|*notion*api*) KEY="notion" ;;

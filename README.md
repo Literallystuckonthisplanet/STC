@@ -158,7 +158,6 @@ STC is deliberately light on dependencies, but a few external tools are load-bea
 | **Superpowers** | Jesse Vincent (obra) | [github.com/obra/superpowers](https://github.com/obra/superpowers) (MIT) | Methodology source. STC does **not** depend on it — every capability is self-contained in `core/` (Decision 4). Three skills were **merged** from the user's own commands + the superpowers equivalent: `diagnose` (← systematic-debugging), `tdd` (← test-driven-development), `worktree` (← using-git-worktrees). Each carries a "Supporting sources" block for the monthly upstream-drift check. |
 | **Context7** | Upstash | [npmjs.com/package/@context7/mcp](https://www.npmjs.com/package/@context7/mcp) | The `docs` agent + docs-first contract. Vendor-neutral docs knowledge base. Powers H16 (integration-docs-gate) and the read-first-router buy-vs-build reminders. Secret via `CONTEXT7_API_KEY`. |
 | **Playwright MCP** | Microsoft | [npmjs.com/package/@playwright/mcp](https://www.npmjs.com/package/@playwright/mcp) | **Required** core capability for browser-driven e2e. Powers the `e2e` agent and the H02 playwright router. Connects to a browser on `--remote-debugging-port=9222`. |
-| **GitHub MCP** | modelcontextprotocol (official) | [npmjs.com/package/@modelcontextprotocol/server-github](https://www.npmjs.com/package/@modelcontextprotocol/server-github) | User-specific MCP server (optional). Secret via `GITHUB_PERSONAL_ACCESS_TOKEN`. |
 | **mcp-gsheets** | community | [npmjs.com/package/mcp-gsheets](https://www.npmjs.com/package/mcp-gsheets) | User-specific MCP server (optional). Google Sheets access. |
 | **Matt Pocock skills set** | Matt Pocock ([total-typescript.com](https://www.total-typescript.com)) | — | Origin of the `prototype` and `improve-codebase-architecture` command methodologies. Ghost links to a sibling skills set were resolved by inlining the content directly (Decision 1). |
 | **GLM** | Zhipu / BigModel | [open.bigmodel.cn](https://open.bigmodel.cn/api/anthropic) | Model provider (`core/models/glm.yaml`). Anthropic-compatible Messages endpoint, mounts into any harness speaking the Anthropic protocol. |
@@ -294,7 +293,7 @@ cd STC
 cp stc.example.yaml stc.yaml                # edit: your name, role, workspace, MCP ports,
                                             #        models.<harness> per-target overrides
 cp user/profile.example.md user/profile.md  # edit: your style, stack, voice dictionary
-cp user/secrets.env.example user/secrets.env  # add tokens (GITHUB_*, GRAPHIFY_CLI, ...)
+cp user/secrets.env.example user/secrets.env  # add tokens (CONTEXT7_API_KEY, GRAPHIFY_CLI, ...)
 
 # 2. Preview what deploy would write (no live writes)
 python3 deploy/deploy.py check

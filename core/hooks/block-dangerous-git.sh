@@ -35,6 +35,14 @@ USER_LANG="${USER_LANG:-en}"
 # (`/tmp/stc-release-`), leaking one session's release-ack into every other.
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
+# Normalize whitespace before matching: collapse runs of spaces/tabs to one
+# space (do NOT lowercase — git flags are case-sensitive, `-D` ≠ `-d`; the
+# greps below use -i for case). A literal single-space, case-sensitive match let
+# `GIT RESET --HARD` or `git  reset  --hard` (extra spaces / tab) slip past a
+# control documented as a hard-block. The realistic adversary is prompt-injected
+# content instructing a slightly-reformatted destructive command.
+NORM=$(printf '%s' "$COMMAND" | tr -s '[:space:]' ' ')
+
 DANGEROUS_PATTERNS=(
   "git reset --hard"
   "git clean -fd"
@@ -46,7 +54,7 @@ DANGEROUS_PATTERNS=(
 )
 
 for pattern in "${DANGEROUS_PATTERNS[@]}"; do
-  if echo "$COMMAND" | grep -qE "$pattern"; then
+  if echo "$NORM" | grep -qiE "$pattern"; then
     echo "BLOCKED: '$COMMAND' matches dangerous pattern '$pattern'. The user has prevented this operation." >&2
     exit 2
   fi
@@ -55,11 +63,11 @@ done
 # I08 — push to main/master = RELEASE. Allowed only by explicit "releasing".
 ACK="${RELEASE_ACK_FILE}"
 
-if echo "$COMMAND" | grep -qE 'git[[:space:]]+push'; then
+if echo "$NORM" | grep -qiE 'git[[:space:]]+push'; then
   TO_MAIN=0
-  echo "$COMMAND" | grep -qE '\b(main|master)\b' && TO_MAIN=1
+  echo "$NORM" | grep -qiE '\b(main|master)\b' && TO_MAIN=1
   # bare push (no branch) → current branch; on release that is main
-  echo "$COMMAND" | grep -qE 'git[[:space:]]+push([[:space:]]+(-[^[:space:]]+))*([[:space:]]+origin)?[[:space:]]*$' && TO_MAIN=1
+  echo "$NORM" | grep -qiE 'git[[:space:]]+push([[:space:]]+(-[^[:space:]]+))*([[:space:]]+origin)?[[:space:]]*$' && TO_MAIN=1
   if [ "$TO_MAIN" = "1" ]; then
     if [ -n "$ACK" ] && [ -f "$ACK" ]; then rm -f "$ACK"; exit 0; fi  # ack present → pass once
     case "$USER_LANG" in
@@ -71,7 +79,7 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+push'; then
 fi
 
 # B2 — I17 verify-gate + I09 commit-invariants before commit (JIT-inject, NOT block, FR-5).
-if echo "$COMMAND" | grep -qE 'git[[:space:]]+commit'; then
+if echo "$NORM" | grep -qiE 'git[[:space:]]+commit'; then
   case "$USER_LANG" in
     ru)
       MSG="✅ Перед коммитом — verify (I17) + инварианты коммита (I09).
@@ -86,7 +94,7 @@ INVARIANTS — one task = one commit (logically cohesive, not a dump); do NOT co
 In your answer, list 'Checked: X✓ Y✓ Z✓'."
       ;;
   esac
-  if echo "$COMMAND" | grep -qE '(--no-verify|[[:space:]]-n([[:space:]]|$))'; then
+  if echo "$NORM" | grep -qiE '(--no-verify|[[:space:]]-n([[:space:]]|$))'; then
     case "$USER_LANG" in
       ru) MSG="$MSG
 ⚠️ --no-verify: pre-commit-гейт ОБОЙДЁН. Прогнал lint/tsc вручную? Обход оправдан только когда хук падает на генерируемом коде, не для пропуска реальных ошибок." ;;

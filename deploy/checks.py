@@ -149,6 +149,21 @@ def _no_personal_data_in_core(core_dir):
     email_re = re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.I)
     ipv4_re = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
     key_re = re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY")
+    # API-key / token formats (minimum lengths so placeholders like `sk-...`,
+    # `ghp_...`, `${TOKEN}` do not trip it — only a real key's length matches).
+    # Mirrors the proven patterns in core/hooks/secret-scan-memory.sh; core/ is
+    # public so a real key pasted into a doc example must fail the deploy.
+    # // ds-exception: defining secret-detection regexes, not integrating any API.
+    token_res = [
+        (re.compile(r"\bghp_[A-Za-z0-9]{36}\b"), "GitHub PAT"),
+        (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{60,}\b"), "GitHub fine-grained PAT"),
+        (re.compile(r"\bntn_[A-Za-z0-9]{40,}\b"), "Notion token"),
+        (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{40,}\b"), "Anthropic API key"),
+        (re.compile(r"\bsk-[A-Za-z0-9]{40,}\b"), "sk-prefixed vendor key"),
+        (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key id"),
+        (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"), "Slack token"),
+        (re.compile(r"\bre_[A-Za-z0-9]{30,}\b"), "Resend API key"),
+    ]
     # placeholder / doc emails that are fine to appear in generic prose
     email_allow = ("example.com", "example.org", "you@", "user@", "name@")
 
@@ -180,6 +195,9 @@ def _no_personal_data_in_core(core_dir):
                     errs.append(f"{rel}: public IP '{m.group(0)}' in public core/ — move to user/.")
             if key_re.search(text):
                 errs.append(f"{rel}: private-key material in public core/ — move to user/.")
+            for tok_re, label in token_res:
+                if tok_re.search(text):
+                    errs.append(f"{rel}: {label} in public core/ — move to user/ and rotate it.")
     return errs
 
 

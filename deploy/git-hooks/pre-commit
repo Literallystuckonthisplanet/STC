@@ -1,0 +1,30 @@
+#!/bin/bash
+# STC repo pre-commit hook — public-leak tripwire.
+#
+# core/ is the PUBLIC half of STC. This runs the same leak-guard that
+# `deploy.py check` runs (_no_personal_data_in_core) on every commit, so a real
+# email / public IP / private key / API token cannot reach the public history
+# by simply forgetting to run a deploy first (git history is hard to scrub).
+#
+# Install (once, from the repo root):
+#   git config core.hooksPath deploy/git-hooks
+# or copy this file to .git/hooks/pre-commit and chmod +x it.
+#
+# Bypass a false positive (rare): git commit --no-verify (and then fix the guard).
+
+REPO="$(git rev-parse --show-toplevel)"
+python3 - "$REPO" <<'PY'
+import sys, os
+repo = sys.argv[1]
+sys.path.insert(0, os.path.join(repo, "deploy"))
+import checks
+errs = checks._no_personal_data_in_core(os.path.join(repo, "core"))
+if errs:
+    print("✗ pre-commit leak-guard BLOCKED — personal/secret data in public core/:")
+    for e in errs:
+        print("   " + e)
+    print("Move it to user/ (gitignored) and rotate any exposed secret. "
+          "Override (not recommended): git commit --no-verify.")
+    sys.exit(1)
+sys.exit(0)
+PY

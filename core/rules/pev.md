@@ -74,12 +74,15 @@ ready-made solution first.
   `/to-tasks`, block-coding A0/B1 mandatory; **medium** (when taken into
   work) → `/to-tasks` (spec/AC — only if new functionality). Small — not
   tracked.
+- **New ADR or plan item?** — decide whether the change needs a new ADR or a
+  new plan entry → `project_docs.md`.
 - For a **large** task, name the files you will touch and the verification
   you will run. If you cannot name them, you are not ready to start.
 - **Design system (UI tasks):** a UI task → read the project's `DESIGN.md`
-  (or the design-system template) before generating; map the element onto a
-  token/scale, no token → add a token (not raw). Enforced nudge: H10 (DS
-  branch). See playbook §Design system.
+  before generating; map the element onto a token/scale, no token → add a
+  token (not raw). No `DESIGN.md` yet → adopt the process first
+  (`templates/design-system/process.md`), do not generate UI on stock
+  defaults. Enforced nudge: H10 (DS branch). See playbook §Design system.
 - **Legal review:** assess whether the planned features need one (triggers →
   playbook § research agent (legal review)). Needed → run a `research` agent
   BEFORE implementation;
@@ -138,6 +141,21 @@ verification. Pick at least one method, matching the task:
 | **design-system** (UI) | anti-generic + conformance (everything from the system, reuse primitives) | UI tasks |
 
 - For **L** tasks, run at least two kinds, one of which is `agent`.
+- **Eyes checklist:** the diff has nothing extra (touched only what was
+  asked, no drive-by edits to neighboring code); it logically matches the
+  task; no hardcoded secrets/keys/passwords in the diff. For text content
+  (posts, legal pages, descriptions) — no AI-tell markers, no factual
+  errors.
+- **Dynamic split:** the change contains **logic** → tests are mandatory (if
+  missing, create them via the `qa` sub-agent, then run). The change is
+  **UI/style only** → Playwright + the `verify` skill instead of tests.
+- **Agent triggers (quick reference; full list → playbook.md § Agent
+  triggers):** `code-reviewer` — the change contains logic (not for typos /
+  style / copy / config with no logic). `security-arch` — auth / API /
+  upload / personal data / CORS. `e2e` sub-agent — behavior in a user
+  scenario / middleware / layout. `security-deps` — before every deploy;
+  result STOP (HIGH/CRITICAL) blocks the deploy, report it. `research` agent
+  (legal review) — data collection / third parties / monetization / UGC.
 - A UI fix is "done" only when proven by **appearance** (before/after), not
   by "compiled / mounted without errors". Take a screenshot of the target
   element before (bug state) and after the fix → compare yourself: did the
@@ -150,20 +168,44 @@ verification. Pick at least one method, matching the task:
 Verify passed → commit (see `behavior.md` § Commits). Decision to compact
 **by context fill**: <~40% do not compact (warm cache is cheaper); ~40–75%
 compact only if the next task is unrelated to the current context; >~75%
-compact always. Memory safety is a separate reason to compact — do not
-starve it for economy.
+compact always via your own `save-and-compact` (behavior.md § Memory
+rotation) — do not wait for a blind automatic compaction. Memory safety is a
+separate reason to compact — do not starve it for economy.
 
 ## Task scale
 <!-- I16 -->
 
-| Size | Criteria | PEV mode |
-|------|----------|----------|
-| **S** | 1 file. Typo, style, config, copy. | Verify only |
-| **M** | 2–5 files, no architectural decisions. A component, a bug, an API endpoint. | Plan in head + Verify |
-| **L** | 6+ files / DB+API+UI / architectural decisions / deploy. | Full Plan→Do→Verify + show the plan |
+| Size | Criteria | PEV mode | Static | Eyes | Dynamic |
+|------|----------|----------|--------|------|---------|
+| **S** | 1 file. Typo, style, config, copy. | Verify only | if the extension has one (`.py`/`.yaml`/`.json`/`.ts`/…) | yes | — |
+| **M** | 2–5 files, no architectural decisions. A component, a bug, an API endpoint. | Plan in head + Verify | yes | yes | logic → `qa` tests; UI → Playwright + `verify` |
+| **L** | 6+ files / DB+API+UI / architectural decisions / deploy. | Full Plan→Do→Verify + show the plan | yes | yes | tests + Playwright + `verify` — all of it |
 
 When in doubt → pick the more thorough mode. Agent checks fire by triggers
 (see playbook), not tied to scale.
+
+## Skills — when to launch (trigger summary)
+
+Triggers here (always-context); detailed descriptions →
+`skills_triggers.md` (lazy).
+
+| Skill | Moment / trigger | Who initiates |
+|---|---|---|
+| `diagnose` | a bug/regression ("it broke", "not working") | I do, after asking "what's the pass/fail loop?" |
+| `zoom-out` | starting work in unfamiliar code (before Plan step 2); also folded into agent/worktree prompts (build-agent contract, `reuse-before-reinvent` → playbook § Agent prompt contract) | I do |
+| `grill-me` | a large task with ≥3 open forks, before Plan step 4 | I offer it to the user |
+| `tdd` | business logic (calculations/validation/transforms), Do phase | joint decision (Plan step 3) |
+| `code-review` | reviewing a diff that contains logic (tactics) | I do |
+| `verify` | the change is UI/style only | I do |
+| design system | a UI task: before generating (Plan) + anti-generic check at Verify | I do |
+| `improve-architecture` | roughly every 3 completed large tasks (strategy, whole codebase) | I offer it to the user |
+| `prototype` | "show me options", "which is better", "compare approaches" | I offer it to the user |
+| `to-spec` + `to-tasks` | large: spec + tasks (after the plan is finalised); medium: tasks only (when taken into work) | I do |
+| compact / session-end | "compact/save the context", session end (a hook reminds) | I do |
+| `caveman` | "briefly", "fewer tokens"; agent pipelines | the user, or I in sub-agent prompts |
+
+Agent checks (`code-reviewer`, `security-arch`, `e2e`, `security-deps`,
+legal review) — see § Verify above.
 
 ## When the loop does not apply
 

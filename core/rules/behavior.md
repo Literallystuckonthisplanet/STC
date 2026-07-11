@@ -22,7 +22,9 @@ here is a pointer; the hook is the guarantee.
 - **Rule 2 — Facts → memory immediately:** a fact surfaced in conversation
   (resource ID, a decision, an important result, a config) is saved to memory
   **immediately**, not "at the end of the session". After the task is done and
-  the user approves — decide whether to keep it; if not, delete it.
+  the user approves — decide whether to keep it; if not, delete it. Safety net
+  on auto-compact: **H06** (post-compact recovery backfills anything missed —
+  the harness has no PreCompact hook, FR-7).
 - In code, examples, logs, or handoffs, replace real secrets with a
   placeholder (`<TOKEN>`, `${API_TOKEN}`). Treat the user's real values as
   toxic.
@@ -115,6 +117,14 @@ before. Concrete patterns → `[[playbook]]` § SELF-EXEC.
 - **Auto-start before an operation:** if the work needs a service, verify it's
   running, start it yourself if not. Take the port and start command from the
   project's instruction file or `package.json`.
+
+  | Service needed | When |
+  |---|---|
+  | Dev server | e2e, `/verify`, Playwright |
+  | Docker / DB | migrations, DB-backed tests, any backend that needs a database |
+
+  If the service fails to start — diagnose the cause (port in use, config
+  error) and fix it. Don't report "failed to start" and stop there.
 - **Cascade restarts after a config change:** restart the dependent service
   yourself, don't tell the user "restart it".
 - **Stop:** only on "wrap up the session" (protocol → session rules §3). In

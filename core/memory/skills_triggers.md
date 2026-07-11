@@ -44,9 +44,10 @@ docs-first channel — use it BEFORE coding against a library API. Hook H10
 (read-first router) nudges it on integration/payment/webhook files.
 
 **`zoom-out`** — returns a map of modules/calls in the language of the domain
-glossary. Uses the project's `CONTEXT.md` / glossary — if absent, it works
-more coarsely. Can be self-launched — in the main thread before the Plan step
-2, and added to agent/worktree prompts in an unfamiliar area.
+glossary. Uses the project's `LANGUAGE.md` / `CONTEXT.md` glossary — if
+absent, it works more coarsely. Can be self-launched — in the main thread
+before the Plan step 2, and added to agent/worktree prompts in an unfamiliar
+area.
 
 **`grill-me`** — ask questions one at a time; the user answers the business
 ones, the agent takes the technical ones. Convergent (removes ambiguity).
@@ -78,10 +79,10 @@ concretely".
 **`caveman`** — final answers to the user are ALWAYS in normal mode;
 compressed style is only for inter-agent traffic in pipelines.
 
-**`to-spec`** — a `.md` spec in `${DOCS_ROOT}/specs/`: use cases + AC + ADR +
-buy-vs-build (DEP-4) + abuse-cases + failure-modes + a block-plan. Source of
-truth = the file (the doc backend is a view). Launch — after Plan-step 4 of a
-large task, before the Do phase.
+**`to-spec`** — a `.md` spec in `${DOCS_ROOT}/specs/`: use cases + AC
+(checklist tag `#ac`) + ADR + buy-vs-build (DEP-4) + abuse-cases +
+failure-modes + a block-plan. Source of truth = the file (the doc backend is
+a view). Launch — after Plan-step 4 of a large task, before the Do phase.
 
 **`to-tasks`** — task lines in `${DOCS_ROOT}/tasks/<project>-tasks.md` with
 inline fields (project/block/exec/priority). In the plan, items are tagged

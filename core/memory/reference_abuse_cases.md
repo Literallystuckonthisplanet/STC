@@ -46,6 +46,11 @@ Format: **bypass scenario → countermeasure → test-case hook.**
   notifications, oversell) → rate-limit per-IP+per-session on the create
   endpoint; idempotency (request key); honeypot field; captcha on anomaly
   → *test: 50× create in a minute from one IP = throttle.*
+- **Spam registrations / reviews / forms** → rate-limit + premoderation
+  (new UGC starts PENDING) + honeypot field + an ownership check (e.g. a
+  review only allowed if the item was actually ordered/purchased) → *test:
+  an anonymous user submits 20 reviews = blocked; a review without a
+  matching order = rejected.*
 - **Paid proxy-token drain** (a third-party token proxied through your
   backend) → a limit on the proxy endpoint; a click-gate (load on action);
   origin check → *test: a direct hammer on the proxy route = throttle.*
@@ -77,13 +82,18 @@ Format: **bypass scenario → countermeasure → test-case hook.**
   DNS and check the FINAL IP (not the string — otherwise a DNS-rebinding
   bypass); block-lists: `127.0.0.0/8`+`localhost`, RFC1918, link-local
   `169.254.0.0/16` (incl. metadata), `0.0.0.0`, IPv6 `::1`/`fc00::/7`/
-  `fe80::/10`; allowlist schemes (`http(s)` only); **block redirects into
-  private networks** (check every hop, not only the first); catch
-  octal/hex/decimal IP bypasses; block `file://`/`gopher://`/`dict://`.
+  `fe80::/10`, IPv4-mapped IPv6 (`::ffff:169.254.169.254`); allowlist
+  schemes (`http(s)` only); **block redirects into private networks**
+  (check every hop, not only the first); catch octal/hex/decimal IP
+  bypasses (`0x7f000001` / `0177.0.0.1` / `2130706433` all decode to
+  `127.0.0.1`) and user@host parser confusion (`http://google.com@192.168.1.1`
+  tricks a naive parser into trusting `google.com` while it actually
+  connects to `192.168.1.1`); block `file://`/`gopher://`/`dict://`.
   **Do not write a filter by hand — take a ready library** (Node
   `ssrf-req-filter`, Python `ssrfcheck`). → *tests: a URL on
-  `169.254.169.254`, `localhost`, `10.x`, and a public→private redirect —
-  all rejected.*
+  `169.254.169.254`, `localhost`, `10.x`, `http://0x7f000001`,
+  `http://google.com@192.168.1.1`, and a public→private redirect — all
+  rejected.*
 - **File-upload abuse** (flag FILE: type/size/polyglot/path-traversal) →
   MIME + magic-byte check, size limit, random name outside webroot →
   *test: a .php disguised as .jpg is rejected.*

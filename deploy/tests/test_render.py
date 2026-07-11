@@ -594,6 +594,24 @@ def test_no_personal_data_in_core():
         _sh.rmtree(tmp)
 
 
+def test_claude_target_not_on_glm_provider():
+    """REGRESSION (glm default-provider leak, 2026-07-11): a Claude Code target
+    must not resolve to the glm provider — glm-* model ids make claude typed
+    sub-agents silently fail to dispatch. The live config must be clean, and
+    precheck must flag a claude target that falls through to a glm default."""
+    import checks as C
+    stc, registry, adapters, _ = D._gather()
+    assert not [e for e in C.precheck(stc, registry, None, adapters, D.CORE)
+                if "glm provider" in e], "live config resolves claude onto glm"
+    import copy
+    bad = copy.deepcopy(stc)
+    bad["models"] = {"provider": "glm", "zcode": "glm"}   # no claude override
+    bad["deploy"] = {"targets": ["claude"]}
+    errs = C.precheck(bad, registry, None, adapters, D.CORE)
+    assert [e for e in errs if "glm provider" in e and "claude" in e], (
+        "precheck must flag a claude target resolving to glm")
+
+
 RULE_FINGERPRINTS = ("Facts → memory", "Plan→Do→Verify", "Memory rotation")
 
 

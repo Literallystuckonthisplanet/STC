@@ -50,4 +50,57 @@ failure-mode rows. Example shape:
     errors, the page is clickable throughout.
 -->
 
-*(empty — add use-cases here as you spec and debug them)*
+### Yandex Cloud Foundation Models (YandexGPT) · connection
+- **Symptom:** `403 "Permission to [resource-manager.folder …, cloud …,
+  organization …] denied"` calling `/foundationModels/v1/completion`, even
+  though the service account has the `ai.languageModels.user` role on the
+  right folder, the key belongs to the right SA, and the scope
+  (`yc.ai.foundationModels.execute`) all look correct.
+  - **Cause:** the cloud's billing account is not active. Foundation Models
+    is a paid service; without active billing it returns an IAM-shaped 403
+    that looks identical to a real permissions problem.
+  - **Solution:** on a 403 with correct-looking IAM, check billing status
+    FIRST (console → billing → payment account = ACTIVE) before chasing
+    roles/SA/keys.
+  - **Verify:** the same key/folder returns 200 right after billing is
+    activated.
+- **Symptom:** `400 "Specified folder ID X does not match with service
+  account folder ID Y"`.
+  - **Cause:** with Api-Key auth, the folder in `modelUri=gpt://<folder>/…`
+    must equal the home folder of the key's own service account — not just
+    any folder where a role was granted.
+  - **Solution:** use the folder named in the error (= the key's home SA
+    folder), or mint a new key on the SA whose home folder is the one you
+    need. A key ID does not reveal which SA it belongs to via Api-Key
+    introspection — check the console (or use a Bearer token) to confirm.
+- **Symptom:** `400 grpcCode=3 "Invalid JSON Schema: all fields must be
+  required, '<field>' is optional"` when requesting structured output
+  (`json_schema`).
+  - **Cause:** Yandex's strict structured-output mode requires ALL fields to
+    be listed in `required`; an `optional` field is rejected outright.
+  - **Solution:** express optionality as **nullable**, not optional — e.g.
+    `type: ['string', 'null']` or an enum that includes `null`, plus
+    `additionalProperties: false`. Parse the response with a nullable-aware
+    schema (e.g. zod `.nullish()`), since the model sends explicit `null`
+    for empty fields.
+  - **Verify:** a request built with a nullable schema returns 200; empty
+    fields come back as `null`, not omitted.
+
+### Email/OAuth login (Auth.js behind an nginx reverse proxy)
+- **Symptom:** auth-email links / OAuth redirect URLs point at
+  `https://localhost:<port>` (client sees a TLS handshake error following
+  the link) even though the site itself loads fine over the real domain.
+  - **Cause:** a certbot-generated nginx config sets `Host` and
+    `X-Forwarded-Proto` but **not** `X-Forwarded-Host`. Without it, Auth.js
+    v5 (even with `trustHost` set) falls back to the listen host
+    (`localhost:<port>`) combined with the forwarded proto for building
+    absolute URLs.
+  - **Solution (both ends required):** set `AUTH_URL=https://<app-domain>`
+    in the production env, AND add `proxy_set_header X-Forwarded-Host
+    $host;` to the nginx config.
+  - **Verify:** one request right after deploy —
+    `curl https://<app-domain>/api/auth/providers` — `signinUrl` and
+    `callbackUrl` in the response should show the app domain, never
+    localhost.
+
+*(add more use-cases here as you spec and debug them)*

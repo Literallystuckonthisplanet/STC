@@ -37,9 +37,12 @@ ones you actually hit in each project.
 
 Commands come from the project's instruction file or `package.json`. Typical:
 - `pnpm test` / `pnpm vitest` — unit/integration tests
-- e2e — only through the e2e sub-agent (do **not** run `pnpm playwright test`
-  directly — headless Chromium is not installed on this machine; the e2e
-  agent drives the user's real browser via Playwright MCP)
+- **e2e — CLI-first: the project's `pnpm test:e2e`** (Playwright CLI, a
+  codified suite). Only pass/fail reaches context (reporter `line`/`dot`) —
+  ~0 a11y trees. A clean headless bundled `chromium`
+  (`npx playwright install chromium`). MCP + real browser, or a sub-agent —
+  only for a one-off visual check / exploration (see § e2e sub-agent — three
+  channels).
 
 ### After unit/integration tests (even if all passed)
 
@@ -74,14 +77,28 @@ do not generate UI on stock shadcn/Inter.
 - [ ] spacing on a custom scale (DESIGN.md §5)
 - [ ] 1–2 staggered reveals, not scatter animations
 - [ ] cross-check against Do's & Don'ts (DESIGN.md §7)
-- optional: Playwright `toHaveScreenshot()` — baseline on first iteration,
-  regression afterwards. Take the screenshot via Playwright MCP (not
-  `pnpm playwright test` — Chromium not installed, see §e2e).
+- Playwright `toHaveScreenshot()` visual-regression — its own suite
+  `pnpm test:visual` (tag `@visual`, excluded from `pnpm test:e2e`). Baseline
+  on the first iteration (`pnpm test:visual:update`, in the canonical
+  environment: docker up + `.env.local` + dev server), regression afterwards
+  runs cheap in the shell; an intentional redesign → re-`--update` + commit
+  the new baseline. A one-off visual check by eye → MCP via a sub-agent (see
+  § Playwright MCP).
+
+**Need a value outside the scale → decision-tree**
+(`design-system/process.md` §7): (1) a token already exists → use it;
+(2) reusable → add a token (mini-review, document in DESIGN.md); (3) a one-off
+deliberate exception → an arbitrary/inline value **only** with the marker
+`// ds-exception: <reason>`. The marker is the escape-hatch for the linter
+[STYLE-6] and a visible trace in git. Neither a token nor a justification →
+do not hardcode.
 
 **Verify (UI) — conformance (is everything from the system), mid tier:**
-- Linter (from project config): no hardcoded colors (`#hex`, `rgb()`, `oklch()`
-  in components), no arbitrary Tailwind values (`p-[13px]`, `text-[#...]`), no
-  inline `style` for visuals, no `font-family` bypassing tokens.
+- Linter (from project config, see the code standard [STYLE-6]): no hardcoded
+  colors (`#hex`, `rgb()`, `oklch()` in components), no arbitrary Tailwind
+  values (`p-[13px]`, `text-[#...]`), no inline `style` for visuals, no
+  `font-family` bypassing tokens. Exception — only a line with
+  `// ds-exception: <reason>` (§ decision-tree above).
 - Diff each UI task: reused an existing primitive (did not reinvent), all
   visual values from `@theme` tokens, a new component only by the rule of
   three (`design-system/process.md` §6).
@@ -120,10 +137,14 @@ verify skill is enough.
    (`channel:'chrome'`) is the target if the bundled Chromium is unavailable.
 2. **MCP + real browser in main** — only when you need the user's real session
    / saved credentials (the browser on `${CDP_PORT}`). Heavy: every
-   snapshot/navigate/click drags the full a11y tree into context.
+   snapshot/navigate/click drags the full a11y tree into context (measured on
+   one project's history: ~714k tokens total, ~4.9k/snapshot, max 43k).
 3. **e2e sub-agent** (isolation) — pure exploratory e2e; the sub-agent
    isolates the expensive output from the main context. CLI-first inside the
    sub-agent too.
+
+MCP is not for regression. A MCP scenario that passed and is worth keeping →
+codify it into the CLI suite (channel 1), do not re-run it via MCP.
 
 **Hook:** H02 (playwright-mcp-guard) injects the channel choice once per
 session + a preflight nudge to start the real browser if it's down.
@@ -162,13 +183,23 @@ list of legal documents), researches the law → reports what must be updated.
 If there are no legal documents, tell the user explicitly — do not stay silent.
 
 ## Saving research
+<!-- FR-16 -->
 
-When a research task is done (the research agent, or any investigation with a
-result), save the output as a **separate sub-page** in the doc backend:
-- With a project → into that project's "Research" container.
-- Without a project → into the "Research (no project)" branch.
+A research task finishes (the `research` agent, or any investigation with a
+result) → save it **local-first** in `memory/notes/research/` (not the doc
+backend):
+1. Copy `notes/research/_TEMPLATE.md` → `YYYY-MM-DD-<kebab-topic>.md`.
+2. **The brief is a delta:** the file holds only the delta vs. the baseline
+   (what's new / adopted / rejected + why). Do not copy the agent's or pages'
+   raw material into it — that was transient, it lived in context only. Mark
+   trust per claim: ✅ verified / ⚠ unverified.
+3. Add a row to the TOP of the table in `notes/research/00-index.md` (the
+   registry: date · topic · project · delta · trust · cost · file). FR-21:
+   cost = `python3 core/scripts/agent_cost.py --latest` right after the
+   research agent finishes (not a manual cost check — that is cumulative for
+   the whole session, not the agent run).
 
-Page: title = topic + date; body = research summary (markdown).
+Registry + rules → `notes/research/00-index.md`.
 
 ## Agent-driven verification outcomes
 
@@ -184,6 +215,7 @@ Page: title = topic + date; body = research summary (markdown).
 | **code-reviewer** | Architecture + code quality: patterns, coupling, correctness, readability | Does not hunt CVEs, not deep security audit |
 | **security-arch** | Security audit of code: OWASP, logic flaws, auth patterns, injection | Does not check dependencies/packages |
 | **security-deps** | CVEs in dependencies: npm/pnpm audit + WebSearch for HIGH/CRITICAL | Does not read code |
+| **cleanup** | Executor of mechanical edits against a READY spec: codemod, rename across the repo, cleanup to standard, a batch of lint fixes + static verification | Does NOT decide what to change (that's the parent/linter/reviewer), does not touch business logic, does not change behavior |
 
 ## Cascading restarts
 
@@ -203,6 +235,19 @@ Playwright MCP connects to the user's **real browser** via CDP — not headless.
 - MCP + real browser in main — only for credentials / saved session
   (`${CDP_PORT}`).
 - e2e sub-agent — for pure exploratory e2e (isolation).
+
+**Starting the real browser (CDP):** an IDE-extension integration does not
+auto-launch the browser with CDP enabled — start it manually before the
+first MCP call of the session:
+```bash
+<browser-binary> --remote-debugging-port=${CDP_PORT} --no-first-run --user-data-dir=/tmp/cdp-profile &
+# verify:
+curl -s http://localhost:${CDP_PORT}/json/version | python3 -c "import json,sys; print(json.load(sys.stdin).get('Browser'))"
+# after the task:
+kill $(lsof -ti:${CDP_PORT})
+```
+A desktop-app integration (not an IDE extension) may open CDP automatically —
+check first before running the manual bootstrap.
 
 **When you do use MCP:**
 - Warn the user before launching: the browser theme may reset for the session.
@@ -275,17 +320,42 @@ every turn + recompressed on compact). Levers are placed where they fire:
 **Fire by anchors in always-context (PEV):**
 - **Offload reading (lever #1):** heavy reading/search/analysis → an
   ephemeral agent (mechanics: cheaper model + caveman, judgment: main model),
-  in main — only the summary.
+  in main — only the summary. **Return contract:** the finding + `file:line`,
+  NOT file contents and NOT raw search results.
+  - **Enforcement (hook H15, exec-offload-guard):** hard-blocks expensive
+    Bash in main — (a) a noisy data-script (import/seed/publish/scrape/
+    sync/backfill) and (b) an `audit` run without `--json` → offload it to an
+    ephemeral cheap-model agent (runs it, returns the result/errors/counters,
+    not the raw stdout). A deliberate run in main → the marker `# in-main` on
+    the command. Most output-triage into the window is already held by the
+    output-hygiene hook (H11 — collapses raw output yourself or via an
+    agent); H15 closes the residual case of "the command itself prints a
+    wall of text."
 - **Cheap session:** a task cannot go to an agent (needs dialogue) but a
   cheaper model can handle it → write the brief (what/why/files/AC/steps)
   into the project's `project_<name>.md` OPEN section (I26 — the next
   session reads STATE/OPEN on start) + a prompt; the user opens a session
   on the cheaper model. Pays off for medium+ tasks with low judgment risk.
-- **Compression at the task boundary** (see pev §3).
+- **Compact by context fill, NOT at every task boundary** (see pev §3).
+  Mechanics: every turn resends the whole context; the stable prefix is
+  cached (~10% of the price, TTL ~5 min while you keep working). Compacting
+  BREAKS the cache + re-reads everything for the summary + reloads all rules
+  uncached (~8.7k tokens) — there is a prepayment cost. A new session = a
+  cold cache + the same reload. Hence the thresholds (`/context`):
+  - **<~40% (≈<80k):** don't compact. Small tasks accumulate in the cached
+    prefix at ~10% — cheap; compacting here loses money.
+  - **~40–75%:** compact only if the next task is UNrelated to the current
+    context (drop the ballast); related → keep going.
+  - **>~75% (≈>150k):** always compact, via your own compact-and-save
+    (memory saves correctly) — don't wait for a blind auto-compact to catch
+    you.
+  A new session instead of compacting — only when the work is fully
+  independent AND otherwise you'd drag along a large irrelevant context.
 
 **Self-enforcing (no need to remember — built in):**
-- **Model tier** — in the agent's frontmatter. When spawning, do not pass
-  `model` → the frontmatter applies.
+- **Model tier** — in the agent's frontmatter (docs/security-deps = haiku;
+  reviewers = sonnet). When spawning, do not pass `model` → the frontmatter
+  applies.
 - **caveman** — in agents whose output is facts (research/docs/security-deps).
   Reviewers (code-reviewer/security-arch/qa) — WITHOUT caveman (need
   reasoning). caveman compresses output, not thought.
@@ -294,6 +364,9 @@ every turn + recompressed on compact). Levers are placed where they fire:
 **Habits (best-effort, discipline, not hard rules):**
 - Do not edit always-files mid-session (kills prompt-cache) → batch, sync once.
 - Read in ranges (`Read offset/limit`), refer as `path:line`, do not paste walls.
+- Do not dump bash output >~50 lines into the window without a filter: `wc -l`
+  first, then `tail`/`grep`/`grep -A/-B`; 50 lines isn't enough → grep ~50 more
+  with context, don't dump everything.
 - Do not re-read unchanged files (the harness tracks state); do not verify an
   `Edit` with a `Read`.
 - Background = fire-and-forget + one check.
@@ -316,6 +389,21 @@ When writing/editing rules in always-context files:
   firing (lazy is not always read). Do not move the executable instruction
   wholesale into lazy; only its detail.
 
+**Dedup + placement — run before a NEW rule:**
+- **Dedup:** grep always+lazy by the concern's keywords. A match → extend or
+  refine the existing rule, do not duplicate it (reuse-before-reinvent for
+  rules — the parallel of [ARCH-6] in the code standard, but for rules). The
+  same rule duplicated across more than one always-file is a violation the
+  infra audit catches.
+- **New file vs. extend:** a file = one concern. The concern matches an
+  existing file's `description` → extend that file. A standalone concern, or
+  one that cuts across several areas → a new file + an index-pointer line in
+  MEMORY.md. Do not dump unrelated content into one file, and do not split
+  one concern across several files.
+- **Always vs. lazy:** an executable action (`situation → action`) → always;
+  explanation/history/examples/detail → lazy (or delete, if the lesson is
+  already baked into the wording).
+
 **Firing test — run before saving ANY rule (mandatory):**
 1. **Trigger:** what situation fires the rule?
 2. **Location:** where will I be at that moment — is the trigger in an
@@ -326,6 +414,30 @@ When writing/editing rules in always-context files:
 3. **Type — mark honestly:** firing-rule (needs an anchor) / self-enforcing
    (built into config: frontmatter, settings, hook) / habit (best-effort, on
    discipline). "Wrote it down" ≠ "it fires".
+
+**Hook header format — the same logic as for rules (self-documenting +
+predictable).** Every hook script opens with a 4-part `#`-comment block:
+1. **Identification (the format `infra_graph.py`'s `RE_SH_LABEL` parses):**
+   `# Hxx — hook: <kebab-name> — <what it enforces> (FR-NN).` The `— hook:`
+   token right after the code is mandatory — without it the generator can't
+   see the label and the code becomes an orphan (this exact mistake has
+   orphaned hook codes before). Next line: `# Event:
+   <PreToolUse(matcher)|Stop|SessionStart|UserPromptSubmit>`.
+2. **Pain/why:** 1-2 lines — why a hook and not always-text (what kept
+   recidivising). Explanation is fine here — a hook file is not
+   always-context, it doesn't cost session tokens.
+3. **What it does:** list the BLOCK (`exit 2`) or INJECT
+   (`hookSpecificOutput.additionalContext`) conditions concretely.
+4. **Marker/bypass:** the once-per-X marker path (if any) + the escape
+   condition (an override flag, an ack-marker) — OR explicitly "no bypass".
+
+**Delivery mechanics to the model** (matters for part 3): on PreToolUse, bare
+stdout does NOT reach the model — only the user sees it — so inject via
+`hookSpecificOutput.additionalContext` (not a block) or `exit 2` on stderr (a
+block); bare stdout only reaches the model on SessionStart/UserPromptSubmit.
+Format examples: `output-hygiene-guard.sh` (H11, block),
+`playwright_reminder.sh` (H02, inject). Full mechanics + the event-guard map
+→ `core/hooks/README.md`.
 
 ## SELF-EXEC patterns
 
@@ -386,11 +498,17 @@ reinvents what the repo already has. **Hook H04 blocks the launch** if the
 
 Contract preamble:
 1. **zoom-out** — the agent reads the relevant area to get the lay of the land.
-2. **reuse-before-reinvent** — grep/`Explore` how the concern is already done
-   in the repo → reuse; a second way = only an explicit recorded decision.
+2. **reuse-before-reinvent** — grep/`Explore` the repo for existing patterns
+   (auth / data access / error handling / utilities / API response format /
+   money & dates / id-SKU formats) → found it, reuse it; a second way to do
+   the same thing = only with an explicit recorded justification.
 3. **return contract** — what comes back: a `file:line` summary, not raw
    output; an answer ≤ 1500 tokens (tight; this is inter-agent traffic).
    Caveman-compressed if `${SUBAGENT_COMPRESSION}` is on.
+
+**Read-only agents are exempt:** `Explore`/`research`/`code-reviewer`/
+`security-*`/`docs`/`qa`/`e2e` don't write code, so they don't need the
+preamble — the hook (H04) passes them through without checking.
 
 For **reviewer** agents (security-deps/qa/code-reviewer/e2e/security-arch):
 add the **baseline** (see § Agent baseline) and any "accepted/out-of-scope"
@@ -413,5 +531,21 @@ Two layers for any infra artifact:
    in `core/hooks/` cover the block/pass/inject branches of H01 and H05);
    confirm the `additionalContext` JSON actually shapes the model's behavior.
 
-The `infra-audit` skill runs both on its monthly cadence. Don't claim "fixed"
-or "works" from the structural layer alone.
+Functional check, by artifact type:
+- **A hook** — a live trigger (a real tool call, not just piping JSON into the
+  script) + test cases from the real distribution (actual compound commands,
+  `2>` redirects, pipes — not toy `cmd file` inputs). NB: a hook only becomes
+  active from the NEXT session — until restart, say honestly "activates next
+  session, not verified live" instead of claiming it works.
+- **A rule (always/lazy)** — the firing-test above: does it actually fire at
+  the real decision point?
+- **An agent/skill** — a run on a real task, not a synthetic one.
+- **A script** — on real data + edge cases (e.g. the doc-backend generator on
+  the full label set, not on one label).
+
+Principle: **verify infra as strictly as you verify code** (PEV applies to
+rules/hooks/scripts, not just to projects); a false green is debt — don't
+push defect discovery onto the user.
+
+The `infra-audit` skill runs both layers on its monthly cadence. Don't claim
+"fixed" or "works" from the structural layer alone.

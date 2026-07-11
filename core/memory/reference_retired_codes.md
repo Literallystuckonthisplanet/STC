@@ -10,7 +10,9 @@ The doc-backend generator reads this registry so a retired code:
 - (a) is **not** flagged as an orphan (the orphan-scan skips it, even though
   hook headers/text still mention it);
 - (b) does **not** create a numbering gap (the gap-scan subtracts retired
-  numbers).
+  numbers);
+- (c) is marked `Status = retired→Hxx` in the doc backend on `--apply` (the
+  entry itself is not deleted — links and history stay intact).
 
 ## When NOT to register here
 
@@ -35,6 +37,8 @@ Example shape (replace with real entries):
   format) migrated to the JIT-inject of memory-guard.
 -->
 
+- I04 → H09 (2026-06-22): the memory-edit style/protocol (dedup → place →
+  format) migrated to the JIT-inject of memory-guard.
 - S05 → I26 (2026-07-10): the `/handoff` command removed — cross-session
   continuity now comes from Memory rotation (`behavior.md` § I26): STATE of
   `project_<name>.md` is always the latest session, no handoff doc needed.

@@ -30,7 +30,10 @@ user:
 #   <target>  — per-harness override (takes precedence for that target)
 # ------------------------------------------------------------
 models:
-  provider: glm              # default (must match a core/models/<x>.yaml)
+  provider: claude            # default (must match a core/models/<x>.yaml).
+                              # claude = the reference harness; glm-* ids make
+                              # Claude Code typed sub-agents silently fail to
+                              # dispatch, so never default to glm for a claude target.
   # Optional per-target overrides. Example: Claude Code on an Anthropic
   # subscription, ZCode on GLM:
   #   claude:  claude

@@ -67,6 +67,17 @@ def precheck(stc, registry, provider, adapters, core_dir):
             pfile = os.path.join(os.path.dirname(core_dir), "core", "models", f"{override}.yaml")
             if not os.path.exists(pfile):
                 errs.append(f"models.{t} '{override}': no core/models/{override}.yaml.")
+        # a Claude Code target must NOT resolve to the glm provider: glm-* model
+        # ids make claude typed sub-agents silently fail to dispatch (the danger
+        # behind the glm-authoring default-provider leak, 2026-07-11). Resolved
+        # provider = models.<target> override, else the models.provider default.
+        resolved = override or default_provider
+        harness = (adapters[t].get("harness") or t)
+        if harness == "claude" and resolved == "glm":
+            errs.append(
+                f"target '{t}' (claude harness) resolves to the glm provider "
+                f"(models.{t if override else 'provider'}='glm') — glm-* ids make "
+                f"claude typed sub-agents silently fail; use provider 'claude'.")
 
     # REQUIRED capabilities must be available. playwright is an MCP server by
     # nature (browser automation over stdio) → must be mcp.playwright.enabled.

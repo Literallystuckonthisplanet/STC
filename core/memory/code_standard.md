@@ -78,8 +78,14 @@ Rule: what a linter catches does NOT go into manual/agent review.
   errors / logs / cache / money / dates / id-sku: ONE canonical way in the
   repo. Before adding a path for such a concern → grep/`Explore` how it's done
   → reuse; a second way = only an explicit recorded decision (instruction
-  file / ADR); a divergence = stop for review. (Origin: a "two admin
-  authorizations" bug — a second ad-hoc auth path silently diverged.) 👁
+  file / ADR); a divergence = a stop-signal at review (`code-reviewer`/
+  `security-arch`; `improve-codebase-architecture` re-checks this
+  periodically too). Broader than [ARCH-4] (that one is about feature
+  abstractions; this one is about infra plumbing, where the failure mode is
+  code bolted onto the nearest existing pattern without checking it against
+  the global architecture). Anchor-trigger in always-context: I21 (behavior
+  rules). (Origin: a "two admin authorizations" bug — a second ad-hoc auth
+  path silently diverged.) 👁
 
 ### VALID — input validation at boundaries
 - [VALID-1] Anything coming from outside (forms, URL params, external API
@@ -182,7 +188,9 @@ A numbered procedure: stop at the first "yes".
 - [LEAN-1] **Decision ladder** — before writing code for a need, check in
   order: (1) is it needed at all? (2) stdlib? (3) the platform (Next/Payload/
   Prisma/your stack)? (4) a dependency already installed? (5) a one-liner?
-  (6) only then — your own implementation. Stop at the first "yes". 👁
+  (6) only then — your own implementation. Stop at the first "yes". A new
+  dependency pulled in specifically to reach step (4) needs an explicit
+  [DEP-1]/[DEP-2] check, not an automatic add. 👁
 - [LEAN-2] **What NOT to cut** — validation, error handling, security,
   state handling, a11y. Less code, not fewer features. 👁
 - [LEAN-3] **`lean:` label** — where you stop on the ladder + an upgrade path
@@ -190,8 +198,10 @@ A numbered procedure: stop at the first "yes".
   baseline. 👁
 - [LEAN-4] **Less CODE, not fewer symbols.** [READ-5] (readable) outranks
   brevity — don't golf. 👁
-- [LEAN-5] **Stitching** — aligns with [ARCH-4] (one concern, one place) and
-  [DEP-2] (write small things yourself). 👁
+- [LEAN-5] **Stitching** — aligns with [ARCH-4] (do not abstract before the
+  3rd repetition) and [DEP-2] (≤50 lines, no live analog → write it
+  yourself rather than pulling in a package). LEAN is a procedure; these
+  rules are its particular cases. 👁
 
 ### TEST — testability
 - [TEST-1] Separate business logic (calculations, discounts, validation,
@@ -344,7 +354,9 @@ criteria on handoff. Wire them into the process:
 
 - On handoff / spec → the security baseline (rate-limit / dual validation /
   resource-ownership verification / zero admin keys in the bundle /
-  access-control) goes into the spec's acceptance criteria.
+  access-control) goes into the spec's acceptance criteria — wire in the
+  items applicable to the project's flags (ACCT→1,3,5; API→1,2; UGC→1;
+  PII→4,5, numbered per the Baseline-5 list in §9).
 - At Verify → the `security-arch` agent checks the baseline as a gate.
 - A deliberately-accepted or out-of-scope finding → the repo baseline (see
   playbook § Agent baseline); security HIGH/CRITICAL never go under it.
@@ -375,7 +387,9 @@ works now". The full protocol and the registry →
 if not fixed as AC on handoff: they are forgotten at the spec stage →
 retrofitted after an incident. An AI/developer builds exactly what was
 asked; security lives in the unasked questions ("what if an endpoint is hit
-10k times?", "who can read this data?").
+10k times?", "who can read this data?"). Source trigger: a teardown of "the
+3 holes of vibe-coded sites" — missing rate-limit, missing email
+verification, and admin keys left in the frontend bundle.
 
 **Two reflexes on EVERY use-case of a spec:**
 1. **The attacker reflex — "how to break it?"** Run it against the

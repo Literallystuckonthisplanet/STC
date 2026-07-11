@@ -85,12 +85,14 @@ if echo "$NORM" | grep -qiE 'git[[:space:]]+commit'; then
       MSG="✅ Перед коммитом — verify (I17) + инварианты коммита (I09).
 VERIFY — проверил? СТАТИКА (lint/tsc/build по стеку). ГЛАЗАМИ (diff только нужное; нет секретов/ключей; для текстов — нет AI-маркеров). ДИНАМИКА (логика→тесты+code-reviewer; UI→Playwright/verify). Агентные по триггерам (security-arch/e2e/security-deps перед деплоем/legal).
 ИНВАРИАНТЫ — одна задача=один коммит (логически цельный, не свалка); НЕ коммить незавершённое/сломанное даже «временно/чтобы не потерять»; нет проверки = нет коммита.
+ПАМЯТЬ (I26) — коммит = точка завершения задачи с кодом: если он меняет состояние/решения проекта, обнови project_<name>.md (STATE/CHANGELOG) ДО коммита.
 В ответе перечисли «Проверил: X✓ Y✓ Z✓»."
       ;;
     *)
       MSG="✅ Before commit — verify (I17) + commit-invariants (I09).
 VERIFY — checked? STATIC (lint/tsc/build per the stack). EYES (diff = only the intended change; no secrets/keys; for text — no AI markers). DYNAMIC (logic → tests + code-reviewer; UI → Playwright/verify). Agent-triggered checks per playbook §Agent triggers.
 INVARIANTS — one task = one commit (logically cohesive, not a dump); do NOT commit unfinished/broken even 'temporarily / to not lose it'; no check = no commit.
+MEMORY (I26) — the commit is the completion point of a code task: if it changes project state/decisions, update project_<name>.md (STATE/CHANGELOG) BEFORE committing.
 In your answer, list 'Checked: X✓ Y✓ Z✓'."
       ;;
   esac

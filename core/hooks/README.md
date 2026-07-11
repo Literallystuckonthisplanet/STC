@@ -25,8 +25,9 @@ only to the user. To inject context that the model sees, use:
 jq -cn --arg c "$MESSAGE" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}'
 ```
 
-This is the only channel for JIT context-injection on PreToolUse. The 6
-JIT-injecting hooks (H02, H04, H06, H09, H10, H12) all use it.
+This is the only channel for JIT context-injection on PreToolUse. The
+JIT-injecting hooks (H01, H02, H04, H06, H07, H09, H10, H12, H14, H16) all use
+it — some inject unconditionally, others alongside a block/nudge.
 
 On **SessionStart / UserPromptSubmit**, bare stdout DOES reach the model —
 plain `echo` works (used by H03, H06).
@@ -48,7 +49,7 @@ H08 (link-integrity), H13 (web-route), H14 (buy-vs-build).
 
 ## The 6 event-guards (flow-point → file)
 
-The 16 hooks are routed by the harness `settings.json` matcher groups into
+The 17 hooks are routed by the harness `settings.json` matcher groups into
 ~6 flow points. One file = one guard (single-responsibility, auditable).
 
 | Flow point | Hook(s) | What it enforces |
@@ -68,9 +69,10 @@ Beyond the 6-guard map (legitimate extras):
 | `output-hygiene-guard.sh` H11 | PreToolUse(Bash) | 🔒 I24/FR-15 block raw output dumps (cat/sed/head/tail/git diff/find/grep -r) |
 | `acquire-dedup-guard.sh` H12 | PreToolUse(Read\|Grep\|Glob\|Bash) | 💉 FR-17 soft anti-duplicate (already-gathered nudge) |
 | `web-route-guard.sh` H13 | PreToolUse(WebSearch\|WebFetch) | 🔒 FR-17 web-via-subagent (block main, pass sub-agent) |
-| `buy-vs-build-reminder.sh` H14 | PreToolUse(EnterPlanMode) + PreToolUse(Write) | 💉 FR-24/DEP-4 "evaluate a ready solution before building" (Plan entry + new-module backstop) |
+| `buy-vs-build-reminder.sh` H14 | PreToolUse(EnterPlanMode) + PreToolUse(Write\|Edit\|MultiEdit) | 💉 FR-24/DEP-4 buy-vs-build inject on plan entry **+ 🔒 FR-27 exec-slice HARD GATE**: the first code edit after plan mode is blocked (exit 2) until the exec-slice table is acknowledged (acknowledge-once) |
 | `exec-offload-guard.sh` H15 | PreToolUse(Bash) | 🔒 expensive-Bash-offload block (noisy data-scripts import/seed/scrape/sync → ephemeral agent; audit without --json) |
 | `integration-docs-gate.sh` H16 | PreToolUse(Write\|Edit\|MultiEdit) | 🔒 FR-26 docs-first block: editing a named integration's code without saved research → block (lifted by research-save or `// docs-checked:`) |
+| `secret-read-guard.sh` H17 | PreToolUse(Read\|Glob\|Grep) | 🔒 block reading a secret file (`.env` / `.pem` / `id_rsa`) → keeps secrets out of context/logs (defense-in-depth: mirrors `permissions.deny` on claude, the ONLY read-guard on a harness without a permissions engine). Escape: `// secret-exception:` |
 
 ## Settings wiring
 
@@ -89,6 +91,7 @@ hook-event names):
       { "matcher": "Write|Edit|MultiEdit", "hooks": [{"type":"command","command":".../secret-scan-memory.sh"}, {"type":"command","command":".../dirty-tree-guard.sh"}, {"type":"command","command":".../memory-guard.sh"}, {"type":"command","command":".../read-first-router.sh"}, {"type":"command","command":".../integration-docs-gate.sh"}, {"type":"command","command":".../buy-vs-build-reminder.sh"}] },
       { "matcher": "EnterPlanMode", "hooks": [{"type":"command","command":".../buy-vs-build-reminder.sh"}] },
       { "matcher": "Read|Grep|Glob|Bash", "hooks": [{"type":"command","command":".../acquire-dedup-guard.sh"}] },
+      { "matcher": "Read|Glob|Grep", "hooks": [{"type":"command","command":".../secret-read-guard.sh"}] },
       { "matcher": "WebSearch|WebFetch", "hooks": [{"type":"command","command":".../web-route-guard.sh"}] }
     ],
     "UserPromptSubmit": [{ "hooks": [{"type":"command","command":".../stop_services_reminder.sh"}] }],

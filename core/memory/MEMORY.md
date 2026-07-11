@@ -30,7 +30,7 @@ These live in `rules/` and are injected every session by hook H06
 
 ## Hooks (not in memory/, but referenced)
 
-The enforcement layer (ADR-001). 16 hooks, mapped to ~6 flow points. Map +
+The enforcement layer (ADR-001). 17 hooks, mapped to ~6 flow points. Map +
 the `additionalContext` injection mechanism + the acknowledge-once pattern →
 `core/hooks/README.md`. Rule anchors in `behavior.md` note which hook enforces
 them (e.g. "Enforced: H01").

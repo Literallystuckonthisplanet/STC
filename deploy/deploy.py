@@ -192,9 +192,26 @@ def _merge_settings_patch(patch, native_dir, overwrite, skip_collisions):
             for h in (e.get("hooks") or []):
                 if isinstance(h, dict):
                     h["command"] = h.get("command", "").replace("$NATIVE_DIR", native_dir)
-    hooks = live.setdefault("hooks", {})
+    hooks = live.get("hooks")
     if not isinstance(hooks, dict):
-        return  # unusual shape; skip
+        # A non-dict hooks key (hand-edited / corrupt). We cannot merge into it,
+        # but silently returning here would also drop the statusLine and
+        # permissions.deny writes below — losing them with a "✓ applied" report.
+        # Reset to a fresh dict (STC hooks are required) and warn loudly instead.
+        if hooks is not None:
+            print(f"   ⚠ settings.json 'hooks' was not an object "
+                  f"({type(hooks).__name__}); STC reset it — restore from a backup "
+                  f"if you had custom hooks there.")
+        hooks = {}
+        live["hooks"] = hooks
+
+    # Every capability THIS render emits (across the whole patch). Used to sweep
+    # STALE STC-managed entries whose capability was fully removed from the render
+    # (a dropped hook, not just a renamed one): a per-entry match only replaces
+    # caps still present, so a removed cap's wiring would linger forever — pointing
+    # at a hook script _prune_orphans just deleted. Mirrors _uninstall_one's sweep.
+    current_caps = {e.get("_stc_cap")
+                    for entries in patch.get("hooks", {}).values() for e in entries}
 
     for event, entries in patch.get("hooks", {}).items():
         bucket = hooks.setdefault(event, [])
@@ -205,6 +222,16 @@ def _merge_settings_patch(patch, native_dir, overwrite, skip_collisions):
             bucket = [x for x in bucket if not _is_stc_owned(x, cap, entry_basenames)]
             bucket.append(e)
         hooks[event] = bucket
+    # sweep stale STC-managed entries across ALL events (cap no longer rendered).
+    # Guarded on a non-empty patch so an empty/failed render can't wipe the wiring.
+    if patch.get("hooks"):
+        for event in list(hooks.keys()):
+            hooks[event] = [x for x in hooks[event]
+                            if not (isinstance(x, dict)
+                                    and x.get("_stc_managed") is True
+                                    and x.get("_stc_cap") not in current_caps)]
+            if not hooks[event]:
+                del hooks[event]
     if "_stc_statusline" in patch and overwrite:
         live["statusLine"] = {"type": "command",
                               "command": f"{native_dir}/{patch['_stc_statusline']}"}

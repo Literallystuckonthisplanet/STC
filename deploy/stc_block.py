@@ -49,11 +49,13 @@ def _split(text):
         return "", None, text  # no block → append after existing content
     end_idx = text.find(STC_END, begin_idx)
     if end_idx == -1:
-        # Dangling BEGIN without END: treat the rest as block body (corrupt
-        # state). Replace from BEGIN to EOF.
-        before = text[:begin_idx]
-        body = text[begin_idx + len(STC_BEGIN):]
-        return before, body, ""
+        # Dangling BEGIN without END (a user deleted the END line by hand).
+        # Swallowing everything from BEGIN to EOF as "block body" would let
+        # inject_block OVERWRITE any real user content that followed the removed
+        # END marker — the exact data-loss this module promises never happens.
+        # Treat it as "no recognizable block" instead: append a fresh block and
+        # leave the dangling line as inert user content for the user to clean up.
+        return "", None, text
     before = text[:begin_idx]
     body = text[begin_idx + len(STC_BEGIN):end_idx]
     after = text[end_idx + len(STC_END):]

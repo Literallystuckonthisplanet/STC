@@ -57,7 +57,10 @@ deploy:
   doc_backend: markdown            # markdown | none
 
   # Harnesses to deploy into. `deploy.py --target X` overrides this for a single run.
-  targets: [claude, zcode]
+  # NOTE: the zcode adapter ships `frozen: true` (adapters/zcode/) — it stays in
+  # the repo to keep the adapter layer proven multi-harness, but is not deployed
+  # by default. Add `zcode` here + unfreeze its adapter.yaml to enable it.
+  targets: [claude]
 
 # ------------------------------------------------------------
 # Doc backend (only used if deploy.doc_backend != none)

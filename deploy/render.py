@@ -495,13 +495,12 @@ def _render_commands(core_dir, adapter, varmap, result, native_commands_dir):
 
 def _render_skills(core_dir, adapter, varmap, result, native_skills_dir):
     caps = adapter.get("skills", {}).get("capabilities", {})
-    # plugin delivery: the harness enumerates skills expecting SKILL.md (the
-    # standard convention, as in the zcode-guide plugin). The .stc.md collision-
-    # proof suffix is a files-delivery concern (claude loose files in ~/.claude);
-    # inside a plugin the skill is already namespaced by skills/<name>/, so a
-    # non-SKILL.md filename makes it invisible to the plugin loader.
-    delivery = adapter.get("harness_facts", {}).get("capability_delivery", "files")
-    skill_file = "SKILL.md" if delivery == "plugin" else "SKILL.stc.md"
+    # Every skill loader (plugin AND loose files in ~/.claude/skills/)
+    # enumerates skills expecting exactly SKILL.md — any other filename makes
+    # the skill invisible. The skill is already namespaced by its skills/<name>/
+    # directory, so the .stc collision-proof suffix is unnecessary here (and
+    # was the bug that hid all 15 skills from the claude harness, 2026-07-11).
+    skill_file = "SKILL.md"
     for name, cap in caps.items():
         if cap.get("supported") is False:
             continue

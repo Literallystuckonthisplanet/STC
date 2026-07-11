@@ -128,6 +128,22 @@ verify skill is enough.
 **Hook:** H02 (playwright-mcp-guard) injects the channel choice once per
 session + a preflight nudge to start the real browser if it's down.
 
+### cleanup agent (mechanical edits)
+Run when the edit is **uniform, bulk, spec-in-hand** and low-judgment:
+- codemod / rename a symbol across the repo
+- clean existing code to the standard (violations already surfaced by the
+  linter / `code-reviewer` — the agent only applies the list)
+- a batch of one-class lint fixes across many files
+- the execution half of a lean-review: the edit list exists → hand it here.
+
+Flow: **what to change** is decided by the parent / linter / reviewer
+(judgment) → **applying it** is the cleanup agent (mechanics, `haiku`). The
+prompt MUST carry the literal `reuse-before-reinvent` (build-agent, enforced
+H04) + an enumerable edit spec.
+NOT a trigger: the edit touches business logic / architecture / behavior, or
+the scope is fuzzy → do it in main or via a worktree agent on `sonnet`. This
+is the `sub-haiku` tier of the exec-slice (pev Step 4, FR-27).
+
 ### research agent (open questions)
 Run when broad investigation is needed: strategy, technologies, market,
 architecture options.

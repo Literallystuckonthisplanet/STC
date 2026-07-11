@@ -142,6 +142,11 @@ Don't improvise the structure on the fly. The kickoff determines the stack for
 file uses the STATE/OPEN/CHANGELOG format (R08) — don't duplicate repo docs →
 `[[project_docs]]` § R08.
 
+**Integration registry:** if the project talks to external services outside
+the global H16 lexicon → create `.claude-integrations` in the repo root (one
+service key per line) so the H16 docs-first gate catches them precisely.
+Set this up at project start, not after the gate misses.
+
 ## Code conventions
 <!-- I14 -->
 
@@ -236,16 +241,22 @@ whole stdout). **Enforced: H15** (exec-offload guard — blocks unless stdout
 is redirected, carries `--json`, or is marked `# in-main`). The lever → pev
 Step 2 / `[[playbook]]` § Token economy.
 
-## Service-field language
+## Docs-first over hypothesis-guessing
 <!-- I25 -->
 
-Service fields visible to the user — in the user's language, like the text
-answers. Covers: tool-call `description`, `TodoWrite` items
-(`content`/`activeForm`), `AskUserQuestion` headers/previews. (Internal
-reasoning runs in EN → it used to leak into the wrapper.) **Exception:** code
-artifacts of the repo's ambient language — code comments and git commits stay
-in that language; if the user asks for their language there too — extend the
-rule.
+Unfamiliar behavior of someone else's tool / platform / API / format that is
+**in the task scope** → read the authoritative source BEFORE the first edit.
+Do not start a guess-and-check loop (edit → run → edit). Library/SDK → `docs`
+agent (Context7); app/platform → `research` agent (official help docs) or a
+WebFetch of the help site. The threshold sits at the ENTRY: read the contract
+before touching it, on Plan/spec too (`to-spec` step 2, integration inventory)
+— not reactively after misses.
+
+**Backstop** (if you took the unfamiliar for familiar and started guessing
+anyway): ≥2 failed hypotheses about the tool's behavior = hard STOP, go read
+the docs. On the code of a named integration this is a gate, not advice:
+**H16** (integration-docs-gate). Overlap → pev Step 3, `[[code-standard]]` § 6
+(uncertainty map).
 
 ## Tokens economy on inter-agent traffic
 <!-- I13b -->

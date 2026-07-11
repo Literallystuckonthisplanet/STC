@@ -80,15 +80,35 @@ ready-made solution first.
   (or the design-system template) before generating; map the element onto a
   token/scale, no token → add a token (not raw). Enforced nudge: H10 (DS
   branch). See playbook §Design system.
+- **Legal review:** assess whether the planned features need one (triggers →
+  playbook § research agent (legal review)). Needed → run a `research` agent
+  BEFORE implementation;
+  re-check by the triggers after. A clear violation → STOP, surface it.
 - **grill-me / Council:** large task with ≥3 open forks → `grill-me` →
   `Council` → plan. Medium + uncertain → offer Council.
 - A large task → ask clarifying questions + show the plan. After drawing it
   up, always say:
   > "Plan ready. Read it and check it is ideal. If you want to change it,
   > say so. I will not start coding until you approve."
-- `[agent]`/`[main]` marking — **only** with parallel worktrees (else skip):
-  `[agent]` = isolated, full spec, check via git diff/tests; `[main]` =
-  needs dialogue along the way / changes architecture / external deps.
+- **Exec slice — who runs this (mandatory for M/L, per plan block).** Mark
+  each block with its CHEAPEST safe executor so work doesn't default to main
+  on the expensive model:
+  - `sub-haiku` — mechanical, no judgment (repo search, applying a ready
+    spec, template-wide edits, running scripts) → ephemeral agent.
+  - `sub-sonnet` — judgment but isolated, no dialogue needed (review, tests,
+    research, docs) → ephemeral agent.
+  - `cheap-session` — needs dialogue with the user but low error-risk
+    (routine feature on a ready spec, copy, configs). I prepare a brief file
+    (what / why / files / AC / steps / stop-conditions + a link to
+    project-memory); the user opens a sonnet session on it. No context lost.
+  - `main` — architecture, open forks, high uncertainty. In doubt → main, but
+    **write WHY main** (so "main by default" can't creep back silently).
+  When showing a plan, present this as a table (block / size / executor /
+  model) so the user sees what can move to a parallel cheap session before
+  start. **Enforced: H14** — after plan mode the FIRST code edit is hard-blocked
+  once until you produce the table (acknowledge-once; not a passive nudge).
+  **Worktree parallelism is orthogonal:** an isolated block still gets a full
+  spec + git-diff/test check regardless of tier.
 
 ## 2. Do
 

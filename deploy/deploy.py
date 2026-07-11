@@ -79,8 +79,10 @@ def _resolve_targets(arg_target, adapters, stc):
             if t and t not in seen:
                 seen.add(t)
                 targets.append(t)
+        explicit = True
     else:
         targets = list(stc.get("deploy", {}).get("targets", []))
+        explicit = False
     unknown = [t for t in targets if t not in adapters]
     if unknown:
         avail = ", ".join(sorted(adapters))
@@ -88,6 +90,21 @@ def _resolve_targets(arg_target, adapters, stc):
             f"✗ unknown target(s): {', '.join(unknown)}\n"
             f"  available adapters: {avail}"
         )
+    # Frozen adapters (adapter.yaml `frozen: true`): kept in-tree so the adapter
+    # architecture stays proven and resuming is trivial, but not deployed by
+    # default. Skipped when they come from the stc.yaml default list; deployed
+    # (with a warning) only when named explicitly via --target, so a deliberate
+    # resume works without friction.
+    frozen = [t for t in targets if adapters[t].get("frozen")]
+    if frozen:
+        if explicit:
+            print(f"⚠ {', '.join(frozen)}: FROZEN adapter(s) — deploying because "
+                  f"you named them explicitly (adapters/<name>/ is preserved but "
+                  f"not actively maintained).")
+        else:
+            print(f"⏸ skipping frozen target(s): {', '.join(frozen)} — re-add to "
+                  f"stc.yaml deploy.targets, or run --target {frozen[0]} to resume.")
+            targets = [t for t in targets if t not in frozen]
     return targets
 
 

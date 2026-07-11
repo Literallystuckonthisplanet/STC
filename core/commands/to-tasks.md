@@ -23,7 +23,7 @@ If no doc backend is configured (`deploy.doc_backend == none`), say so and stop.
 ## Task line format
 
 ```
-- [ ] <task title> [project:: <Project>] [block:: A0] [exec:: agent] [priority:: Medium] [adr:: <url>]
+- [ ] <task title> [project:: <Project>] [block:: A0] [exec:: sub-haiku] [priority:: Medium] [adr:: <url>]
 ```
 
 Field conventions and statuses (`[ ]` open / `[/]` in progress / `[x]` done)
@@ -40,7 +40,9 @@ From the argument or context.
 From Plan-step 4 collect the marked items. For each:
 
 - Title (without the markup suffixes).
-- `[agent]` / `[main]` → inline `exec` field (NOT in the title).
+- Exec slice → inline `exec` field (NOT in the title): `sub-haiku`
+  (mechanical) / `sub-sonnet` (isolated judgment) / `cheap-session` (dialogue,
+  low risk) / `main` (architecture/uncertainty). See pev Step 4.
 - Block-coding (A0, A1, B0…) → inline `block` field.
 - Priority if stated → inline `priority` (else Medium).
 

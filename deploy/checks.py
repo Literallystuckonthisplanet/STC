@@ -116,6 +116,117 @@ def precheck(stc, registry, provider, adapters, core_dir):
     errs += _naming_consistency(core_dir, adapters)
     errs += _mcp_validity(stc, adapters)
     errs += _subagent_consistency(core_dir, registry, adapters)
+    errs += _reference_integrity(core_dir)
+    errs += _no_personal_data_in_core(core_dir)
+    return errs
+
+
+def _no_personal_data_in_core(core_dir):
+    """Public-leak guard (2026-07-11): core/ is PUBLISHED (the public half of
+    STC). Personal/project memory belongs in user/ (gitignored), never here.
+    This fails fast if a high-signal personal marker reaches core/ — the merge
+    of migration-debris memory into STC is the moment this can slip. Scans
+    core/**/*.{md,sh,yaml,yml} for real email addresses, public IPv4s, and
+    private-key headers. Deliberately narrow (near-zero false positives on
+    generic rule prose); it is a tripwire, not a full DLP scan.
+
+    NOTE: git history is hard to scrub — this runs BEFORE commit/push. Do not
+    weaken it to silence a hit; move the offending content to user/ instead."""
+    import glob
+    import re
+    errs = []
+    email_re = re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.I)
+    ipv4_re = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
+    key_re = re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY")
+    # placeholder / doc emails that are fine to appear in generic prose
+    email_allow = ("example.com", "example.org", "you@", "user@", "name@")
+
+    def _public_ip(m):
+        a, b = int(m.group(1)), int(m.group(2))
+        if not (0 <= a <= 255 and 0 <= b <= 255):
+            return False
+        if a in (0, 10, 127):
+            return False
+        if a == 192 and b == 168:
+            return False
+        if a == 172 and 16 <= b <= 31:
+            return False
+        if a == 169 and b == 254:
+            return False
+        if a == 255 or a >= 224:              # broadcast / multicast / reserved
+            return False
+        return True
+
+    for pat in ("**/*.md", "**/*.sh", "**/*.yaml", "**/*.yml"):
+        for f in glob.glob(os.path.join(core_dir, pat), recursive=True):
+            rel = os.path.relpath(f, os.path.dirname(core_dir))
+            text = open(f, encoding="utf-8").read()
+            for em in set(email_re.findall(text)):
+                if not any(a in em.lower() for a in email_allow):
+                    errs.append(f"{rel}: real email '{em}' in public core/ — move to user/.")
+            for m in ipv4_re.finditer(text):
+                if _public_ip(m):
+                    errs.append(f"{rel}: public IP '{m.group(0)}' in public core/ — move to user/.")
+            if key_re.search(text):
+                errs.append(f"{rel}: private-key material in public core/ — move to user/.")
+    return errs
+
+
+def _reference_integrity(core_dir):
+    """Dangling-reference guard (migration-loss class, 2026-07-11).
+
+    The STC migration lost rules whose anchors then pointed at nothing — a
+    silent failure: the reference just does nothing, no error surfaces. This
+    check fails fast on the three shapes that broke:
+      1. every skill dir carries an exactly-named SKILL.md (the loader ignores
+         any other name — the bug that hid all 15 skills);
+      2. every H<NN> hook code cited in core/rules/*.md is declared by some
+         core/hooks/*.sh header;
+      3. every [[wikilink]] in core/rules/*.md resolves to a core memory/rules
+         file (hyphen/underscore-insensitive). Piped display aliases
+         ([[target|shown]]) and template placeholders ([[project_<name>]]) are
+         handled — the latter never matches (it contains '<').
+    Returns a list of error strings (empty = ok)."""
+    import glob
+    import re
+    errs = []
+
+    # 1. skill dir → SKILL.md present
+    for sd in sorted(glob.glob(os.path.join(core_dir, "skills", "*"))):
+        if os.path.isdir(sd) and not os.path.exists(os.path.join(sd, "SKILL.md")):
+            errs.append(
+                f"skills/{os.path.basename(sd)}: missing SKILL.md "
+                f"(the loader requires exactly SKILL.md).")
+
+    # 2. hook codes declared by some hook header ("# H<NN> — hook: ...")
+    declared = set()
+    for h in glob.glob(os.path.join(core_dir, "hooks", "*.sh")):
+        with open(h, encoding="utf-8") as f:
+            for m in re.findall(r"#\s*(H\d{2})\b", f.read(2000)):
+                declared.add(m)
+
+    # 3. resolvable wikilink targets = memory + rules file stems, normalized
+    def _norm(s):
+        return s.replace("-", "_").lower()
+
+    resolvable = set()
+    for d in ("memory", "rules"):
+        for f in glob.glob(os.path.join(core_dir, d, "*.md")):
+            resolvable.add(_norm(os.path.splitext(os.path.basename(f))[0]))
+
+    for rf in sorted(glob.glob(os.path.join(core_dir, "rules", "*.md"))):
+        name = os.path.basename(rf)
+        text = open(rf, encoding="utf-8").read()
+        for code in sorted(set(re.findall(r"\b(H\d{2})\b", text))):
+            if code not in declared:
+                errs.append(
+                    f"rules/{name}: cites hook {code} but no core/hooks/*.sh "
+                    f"declares it.")
+        for tgt in sorted(set(re.findall(r"\[\[([a-z0-9_-]+)(?:\||\]\])", text))):
+            if _norm(tgt) not in resolvable:
+                errs.append(
+                    f"rules/{name}: wikilink [[{tgt}]] resolves to no core "
+                    f"memory/rules file.")
     return errs
 
 

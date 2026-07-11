@@ -24,7 +24,7 @@ These live in `rules/` and are injected every session by hook H06
 | File | What's inside |
 |------|---------------|
 | `rules/session.md` | Always-context injected by H06 (not manual), session start (audit), session end protocol, post-compact recovery (FR-7) |
-| `rules/behavior.md` | SELF-EXEC, secrets→.env (H05/I05b), worktrees (H07), commits+verify (H01/I09), git-push=release (H01/I08), reuse-before-reinvent (H10/I21), agent baseline (H04/I20), output hygiene (H11/I24), live todo (I23), service-field language |
+| `rules/behavior.md` | SELF-EXEC, secrets→.env (H05/I05b), worktrees (H07), commits+verify (H01/I09), git-push=release (H01/I08), reuse-before-reinvent (H10/I21), agent baseline (H04/I20), output hygiene (H11/I24), live todo (I23), docs-first over guessing (H16/I25) |
 | `rules/pev.md` | Plan→Do→Verify loop, task scale S/M/L, verification kinds |
 | `user/profile.md` | User identity, role, language, git identity, how-I-work, voice-input dictionary, project pointers. **Inlined into the always-context bundle at render-time** (private file, never deployed to `~/.stc/`; only its non-secret content reaches the bundle). Template: `user/profile.example.md` |
 

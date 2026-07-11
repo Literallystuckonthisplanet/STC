@@ -504,19 +504,94 @@ def test_zcode_render_uses_SKILL_md_not_stc_md():
     assert good, f"expected SKILL.md skill files for zcode, got {skill_files}"
 
 
-def test_claude_render_keeps_SKILL_stc_md():
-    """REGRESSION guard (claude files-delivery): the plugin-delivery SKILL.md fix
-    must not change claude — claude keeps the .stc.md collision-proof suffix
-    (loose files in ~/.claude/skills/<name>/SKILL.stc.md, sharing the dir with
-    user skills)."""
+def test_claude_render_uses_SKILL_md():
+    """REGRESSION (claude skill visibility, 2026-07-11): the loose-files loader
+    (~/.claude/skills/<name>/SKILL.md) requires exactly SKILL.md, same as the
+    plugin loader — SKILL.stc.md rendered all 15 skills invisible to the
+    harness. The skill is namespaced by its skills/<name>/ directory, so the
+    .stc collision-proof suffix is unnecessary for skills on every delivery."""
     stc, registry, adapters, _ = D._gather()
     provider = R.provider_for(stc, "claude", REPO)
     rr = R.render_harness(stc, registry, provider, adapters["claude"], D.CORE, REPO)
     skill_files = [k for k in rr.files if "SKILL" in k and k.endswith(".md")]
     assert skill_files, "no skill files rendered for claude"
-    bad = [k for k in skill_files if k.endswith("/SKILL.md")]
+    bad = [k for k in skill_files if k.endswith("SKILL.stc.md")]
     assert not bad, (
-        f"claude files-delivery skills must stay SKILL.stc.md (found plain {bad})")
+        f"claude skills must render as SKILL.md, not SKILL.stc.md (found {bad})")
+
+
+def test_frozen_adapter_skipped_by_default_but_explicit_ok():
+    """REGRESSION (zcode freeze, 2026-07-11): an adapter with `frozen: true`
+    stays in-tree (adapter layer stays proven multi-harness) but must NOT
+    deploy by default — skipped when it appears in the stc.yaml default target
+    list, yet still deployable when named explicitly via --target (so resuming
+    is frictionless)."""
+    stc, registry, adapters, _ = D._gather()
+    assert adapters["zcode"].get("frozen") is True, "zcode adapter must be frozen"
+    stc.setdefault("deploy", {})["targets"] = ["claude", "zcode"]
+    assert D._resolve_targets(None, adapters, stc) == ["claude"], (
+        "frozen zcode must be dropped from the default target list")
+    assert D._resolve_targets("zcode", adapters, stc) == ["zcode"], (
+        "explicit --target zcode must still resolve (with a warning) to resume")
+
+
+def test_reference_integrity_clean_on_core():
+    """REGRESSION (migration-loss class, 2026-07-11): rules whose anchors point
+    at a hook code / [[wikilink]] / skill that no longer exists fail silently.
+    The live core must stay clean; the guard must also actually catch the three
+    broken shapes (proven on a synthetic tree, so it can't pass vacuously)."""
+    import checks as C
+    assert C._reference_integrity(D.CORE) == [], (
+        "core has dangling rule references — see the reported anchors")
+
+    import tempfile, os as _os, shutil as _sh
+    def _w(p, c):
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(c)
+    tmp = tempfile.mkdtemp()
+    try:
+        for sub in ("rules", "memory", "hooks", "skills/good", "skills/bad"):
+            _os.makedirs(_os.path.join(tmp, sub))
+        _w(_os.path.join(tmp, "rules", "t.md"),
+           "[[playbook]] ok; [[ghost]] bad. H01 ok; H99 bad.")
+        _w(_os.path.join(tmp, "memory", "playbook.md"), "pb")
+        _w(_os.path.join(tmp, "hooks", "h.sh"), "# H01 — hook: x")
+        _w(_os.path.join(tmp, "skills", "good", "SKILL.md"), "x")
+        # skills/bad has no SKILL.md on purpose
+        errs = C._reference_integrity(tmp)
+        joined = " ".join(errs)
+        assert "ghost" in joined, "must catch a dangling wikilink"
+        assert "H99" in joined, "must catch an undeclared hook code"
+        assert "bad" in joined, "must catch a skill dir missing SKILL.md"
+        assert "playbook" not in joined and "H01" not in joined, (
+            "must NOT flag valid references")
+    finally:
+        _sh.rmtree(tmp)
+
+
+def test_no_personal_data_in_core():
+    """PUBLIC-LEAK guard (2026-07-11): core/ is published, so a real email /
+    public IP / private key must never appear there. The live core must be
+    clean, and the tripwire must actually catch a leak (proven on a synthetic
+    tree) while ignoring placeholder emails and loopback/private IPs."""
+    import checks as C
+    assert C._no_personal_data_in_core(D.CORE) == [], (
+        "personal data leaked into public core/ — see the reported paths")
+
+    import tempfile, os as _os, shutil as _sh
+    tmp = tempfile.mkdtemp()
+    try:
+        _os.makedirs(_os.path.join(tmp, "rules"))
+        with open(_os.path.join(tmp, "rules", "t.md"), "w", encoding="utf-8") as fh:
+            fh.write("real a@b.co and 8.8.8.8; ok you@example.com and 127.0.0.1 too")
+        errs = C._no_personal_data_in_core(tmp)
+        joined = " ".join(errs)
+        assert "a@b.co" in joined, "must catch a real email"
+        assert "8.8.8.8" in joined, "must catch a public IP"
+        assert "example.com" not in joined and "127.0.0.1" not in joined, (
+            "must NOT flag placeholder email / loopback IP")
+    finally:
+        _sh.rmtree(tmp)
 
 
 RULE_FINGERPRINTS = ("Facts → memory", "Plan→Do→Verify", "Memory rotation")

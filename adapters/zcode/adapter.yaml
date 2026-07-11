@@ -12,10 +12,23 @@
 # attempted if the harness supports it; H06 JIT-inject is the fallback.
 # Capabilities are delivered as a plugin (.zcode-plugin-seed.json +
 # skills/ + hooks/hooks.json), the harness's native extension form.
+#
+# ------------------------------------------------------------
+# FROZEN 2026-07-11. STC develops only the `claude` harness for now.
+# This adapter is kept in-tree on purpose: it is the second harness that
+# proves the adapter layer is genuinely multi-harness, and keeping it
+# (with its render tests green) means resuming is trivial and it can't
+# rot out of sync with main. `frozen: true` makes deploy.py skip it by
+# default (see _resolve_targets). TO RESUME: set `frozen: false` here and
+# add `zcode` back to stc.yaml deploy.targets. Known blocker at freeze
+# time: the harness registered plugin hooks but did not fire them (see
+# project-stc-core-migration OPEN), plus GLM quota pacing.
+# ------------------------------------------------------------
 # ============================================================
 
 schema_version: 1
 harness: zcode
+frozen: true
 canonical_home: "${HOME}/.stc"
 native_dir:     "${HOME}/.zcode"
 

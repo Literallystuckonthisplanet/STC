@@ -28,6 +28,10 @@ sys.path.insert(0, DEPLOY)
 import render as R      # noqa: E402
 import checks as C      # noqa: E402
 import deploy as D      # noqa: E402
+import stc_block as B   # noqa: E402
+sys.path.insert(0, os.path.join(REPO, "core", "scripts"))
+import infra_graph as IG          # noqa: E402
+import infra_graph_render as GR   # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -777,6 +781,103 @@ def test_prune_orphans_removes_dropped_stc_artifact_but_never_user_files():
     assert os.path.exists(os.path.join(d, kept)), "current artifact wrongly removed"
     # a bare .md is not a prunable shape → the user file survives the prune
     assert os.path.exists(os.path.join(d, user)), "user file must NEVER be pruned"
+
+
+# ---------------------------------------------------------------------------
+# review-session regression shields (art_slug collision, settings sweep,
+# non-dict hooks, dangling marker, infra-graph scan, leak-guard tokens)
+# ---------------------------------------------------------------------------
+
+def test_art_slug_disambiguates_skill_md():
+    # every skill's file is literally SKILL.md → a bare-basename slug collapses
+    # all skills into one stub. Must disambiguate on the parent dir.
+    a = GR.art_slug("/x/core/skills/tdd/SKILL.md")
+    b = GR.art_slug("/x/core/skills/qa/SKILL.md")
+    assert a != b, f"skill files must get distinct slugs, got {a} == {b}"
+    assert a == "art-tdd-skill" and b == "art-qa-skill", f"{a} / {b}"
+
+
+def test_settings_merge_sweeps_retired_stc_cap():
+    import tempfile
+    d = tempfile.mkdtemp()
+    live = {"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "_stc_managed": True, "_stc_cap": "H99_retired",
+         "hooks": [{"type": "command", "command": "$NATIVE_DIR/hooks/retired.stc.sh"}]},
+        {"matcher": "Bash", "_stc_managed": True, "_stc_cap": "H01_git",
+         "hooks": [{"type": "command", "command": "$NATIVE_DIR/hooks/block-dangerous-git.stc.sh"}]},
+    ]}}
+    json.dump(live, open(os.path.join(d, "settings.json"), "w"))
+    patch = {"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "_stc_managed": True, "_stc_cap": "H01_git",
+         "hooks": [{"type": "command", "command": "$NATIVE_DIR/hooks/block-dangerous-git.stc.sh"}]},
+    ]}}
+    D._merge_settings_patch(patch, d, overwrite=True, skip_collisions=False)
+    caps = [e.get("_stc_cap") for e in json.load(open(os.path.join(d, "settings.json")))["hooks"]["PreToolUse"]]
+    assert "H99_retired" not in caps, f"a retired STC cap must be swept: {caps}"
+    assert "H01_git" in caps, f"the current cap must survive: {caps}"
+
+
+def test_merge_non_dict_hooks_still_writes_permissions():
+    import tempfile
+    d = tempfile.mkdtemp()
+    # corrupt: 'hooks' hand-edited to a string. Must not silently drop the
+    # permissions.deny write (the old `return` did).
+    json.dump({"hooks": "oops"}, open(os.path.join(d, "settings.json"), "w"))
+    patch = {"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "_stc_managed": True, "_stc_cap": "H01",
+         "hooks": [{"type": "command", "command": "$NATIVE_DIR/hooks/block-dangerous-git.stc.sh"}]}]},
+        "permissions": {"_stc_deny": ["Read(./.env)"]}}
+    D._merge_settings_patch(patch, d, overwrite=True, skip_collisions=False)
+    out = json.load(open(os.path.join(d, "settings.json")))
+    assert isinstance(out["hooks"], dict), "hooks must be reset to a dict"
+    assert out.get("permissions", {}).get("deny") == ["Read(./.env)"], \
+        "permissions.deny must still be written when hooks was corrupt"
+
+
+def test_stc_block_dangling_begin_preserves_user_tail():
+    import tempfile
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "CLAUDE.md")
+    # BEGIN present, END deleted by hand, real user content after it
+    open(p, "w").write(B.STC_BEGIN + "\nold import\nIMPORTANT USER NOTES\n")
+    B.inject_block(p, "@new-import", create=True)
+    txt = open(p).read()
+    assert "IMPORTANT USER NOTES" in txt, "user tail must NOT be swallowed by a dangling BEGIN"
+    assert "@new-import" in txt, "a fresh block must be appended"
+
+
+def test_infra_graph_multiletter_scan():
+    import tempfile
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "x.md")
+    open(p, "w").write("# H\n<!-- I50 -->\ntext\n## R\n<!-- R50 -->\nmore\n")
+    codes = {f.code for f in IG.parse_md_file(p, "IR", "lazy")[0]}
+    assert {"I50", "R50"} <= codes, f"multi-letter scan must keep both: {codes}"
+    only_i = {f.code for f in IG.parse_md_file(p, "I", "lazy")[0]}
+    assert only_i == {"I50"}, f"single letter must keep only I: {only_i}"
+
+
+def test_infra_graph_external_ignore_is_context_scoped():
+    # A10 on an OWASP line → ignored; a bare A10 reference → still an orphan
+    ignored = IG.check({}, {}, [("x", "OWASP A10 SSRF sweep")], set())
+    assert "A10" not in ignored["orphans"], "A10 in OWASP context must be ignored"
+    real = IG.check({}, {}, [("x", "see A10 for the details")], set())
+    assert "A10" in real["orphans"], "a bare A10 orphan (no external ctx) must surface"
+
+
+def test_infra_graph_retired_not_orphan():
+    # a retired code mentioned in prose but undefined must not be an orphan
+    f = IG.check({}, {}, [("x", "H99 was retired")], {"H99"})
+    assert "H99" not in f["orphans"], "a retired code must not read as an orphan"
+
+
+def test_leak_guard_detects_api_token():
+    import tempfile
+    d = tempfile.mkdtemp()
+    os.makedirs(os.path.join(d, "core", "memory"))
+    open(os.path.join(d, "core", "memory", "x.md"), "w").write("key ghp_" + "a" * 36 + " here")
+    errs = C._no_personal_data_in_core(os.path.join(d, "core"))
+    assert any("GitHub PAT" in e for e in errs), f"must detect a planted PAT: {errs}"
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,38 @@ release notes.
 
 ## [Unreleased]
 
+### Added — H19 precompact-memory-guard (rotate memory before compaction)
+- New hook `precompact-memory-guard.sh` on the `PreCompact` event (fires before a
+  manual `/compact` AND before auto-compaction): injects the I26 memory-rotation
+  directive so facts are saved before the summary replaces context. Restores the
+  proactive pre-compaction reminder that was dropped on the STC migration under the
+  (now outdated) assumption that the harness has no PreCompact hook. `PreCompact`
+  added to the claude adapter's `hook_event_names`; `behavior.md` rule 2 now cites
+  H19 + H06 (post-compact recovery) as the compaction-boundary safety net. Core
+  hook count 18 → 19.
+
+### Changed — H11 output-hygiene disabled on the claude harness
+- `adapters/claude/adapter.yaml`: `H11_output_hygiene` set `supported: false`. The
+  claude harness already collapses/persists large tool output, so the guard is
+  redundant here and over-fires on grouped commands (`find`/`grep -r` inside a
+  `{ … } > file` block, where the redirect is on the group not the segment). Kept
+  in `core/` for clutter-prone harnesses (VS Code/zcode). Claude now deploys 18
+  active hooks (H11 inert).
+
+### Added — commit-checklist memory anchor (H01/I26)
+- The JIT commit checklist (`block-dangerous-git.sh`, I17/I09) gains a MEMORY line
+  (ru+en): a commit is the completion point of a code task, so if it changes project
+  state/decisions, update `project_<name>.md` (STATE/CHANGELOG) before committing.
+  Makes the deterministic commit event a memory-write trigger instead of relying on
+  a fuzzy "task done" notion.
+
+### Removed — leftover GitHub MCP references
+- Dropped the GitHub MCP row from README and the `GITHUB_PERSONAL_ACCESS_TOKEN`
+  block from `user/secrets.env.example` (the server was already removed from the
+  `mcp:` block on 2026-07-11; it survived as a manual entry in the user's private
+  `~/.claude.json` with a plaintext PAT, since removed and the token revoked). STC
+  does all GitHub work through the git CLI over SSH.
+
 ### Fixed — deploy now prunes removed MCP servers
 - `_merge_mcp_patch` upserted servers but never removed one dropped from the
   `mcp:` block — a retired server (with its secret) lingered in `.mcp.json`

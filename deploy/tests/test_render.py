@@ -748,6 +748,38 @@ def test_zcode_plugin_event_hooks_matcher_not_star():
 
 
 # ---------------------------------------------------------------------------
+# prune: a file a prior deploy wrote but the current render drops must be
+# removed from the native dir (retired command), while user files are never
+# touched — even if a manifest glitch lists one.
+# ---------------------------------------------------------------------------
+
+def test_prune_orphans_removes_dropped_stc_artifact_but_never_user_files():
+    import tempfile
+    d = tempfile.mkdtemp()
+    os.makedirs(os.path.join(d, "commands"), exist_ok=True)
+    kept = "commands/to-spec.stc.md"       # still emitted by the new render
+    dropped = "commands/handoff.stc.md"    # retired → not in the new render
+    user = "commands/mine.md"              # user's own file, wrongly in manifest
+    for rel in (kept, dropped, user):
+        with open(os.path.join(d, rel), "w", encoding="utf-8") as fh:
+            fh.write("x")
+    mf = os.path.join(d, "_manifest.json")
+    json.dump({"claude": {"files": [kept, dropped, user]}},
+              open(mf, "w", encoding="utf-8"))
+    old = D.MANIFEST
+    D.MANIFEST = mf
+    try:
+        pruned = D._prune_orphans("claude", d, [kept])
+    finally:
+        D.MANIFEST = old
+    assert dropped in pruned, f"retired STC artifact must be pruned: {pruned}"
+    assert not os.path.exists(os.path.join(d, dropped)), "dropped file still on disk"
+    assert os.path.exists(os.path.join(d, kept)), "current artifact wrongly removed"
+    # a bare .md is not a prunable shape → the user file survives the prune
+    assert os.path.exists(os.path.join(d, user)), "user file must NEVER be pruned"
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 

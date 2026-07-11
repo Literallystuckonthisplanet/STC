@@ -419,6 +419,12 @@ def cmd_apply(args):
         _sync_stc_home()
         # 2. *.stc.md + hook scripts into the native dir
         _write_tree(native_dir, rr.files, native_dir=native_dir)
+        # 2a. prune artifacts a PRIOR deploy wrote that this render no longer emits
+        #     (e.g. a retired command like handoff.stc.md) — deploy used to only
+        #     ever write, never clean, so a dropped file lingered forever.
+        pruned = _prune_orphans(t, native_dir, rr.files.keys())
+        if pruned:
+            print(f"   🧹 pruned {len(pruned)} orphaned artifact(s): {', '.join(pruned)}")
         # 2b. plugin-delivery harnesses need the plugin REGISTERED to be visible:
         #     the cache dir alone is not discovered. enable in cli/config.json and
         #     add the filesystem marketplace to known_marketplaces.json (idempotent).
@@ -672,6 +678,41 @@ def _native_dir_for_backup(ts):
     except json.JSONDecodeError:
         return None
     return (ledger.get(ts) or {}).get("native_dir")
+
+
+def _prunable(rel):
+    """A relpath deploy may safely delete during prune. Scoped to STC-owned
+    shapes as a safety net: the collision-proof suffixes (.stc.md / .stc.sh) and
+    the skill manifest file (skills/<name>/SKILL.md — the one STC artifact that
+    keeps its bare name). Anything else is left untouched even if the manifest
+    somehow lists it, so a user file can never be removed.
+    """
+    return rel.endswith((".stc.md", ".stc.sh")) or os.path.basename(rel) == "SKILL.md"
+
+
+def _prune_orphans(target, native_dir, new_files):
+    """Remove STC artifacts a prior deploy wrote that this render no longer emits.
+
+    Compares the previous manifest's file list for THIS target against the
+    current render and unlinks the difference (filtered by `_prunable`). Called
+    in cmd_apply BEFORE _write_manifest overwrites the record. Returns the list
+    of pruned relpaths (for the apply log).
+    """
+    if not os.path.exists(MANIFEST):
+        return []
+    try:
+        manifest = json.load(open(MANIFEST, encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    old_files = set(manifest.get(target, {}).get("files", []))
+    orphans = sorted(rel for rel in (old_files - set(new_files)) if _prunable(rel))
+    pruned = []
+    for rel in orphans:
+        p = os.path.join(native_dir, rel)
+        if os.path.isfile(p):
+            os.remove(p)
+            pruned.append(rel)
+    return pruned
 
 
 def _write_manifest(rr, target, native_dir):

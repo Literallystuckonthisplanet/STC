@@ -1,0 +1,27 @@
+#!/bin/bash
+# STC repo pre-push hook — "every code/infra push carries a CHANGELOG entry"
+# (project rule, 2026-07-11). A push that changes core/ | deploy/ | adapters/
+# must also touch CHANGELOG.md in the same range; README is updated when the
+# change is user-facing. Keeps the public history self-documenting.
+#
+# Install (once): git config core.hooksPath deploy/git-hooks
+# Bypass a genuine exception: git push --no-verify.
+
+remote_main="$(git rev-parse --verify --quiet origin/main || echo '')"
+range="${remote_main:+$remote_main..HEAD}"
+[ -z "$range" ] && exit 0   # no upstream yet → nothing to compare
+
+changed="$(git diff --name-only "$range" 2>/dev/null)"
+[ -z "$changed" ] && exit 0
+
+touches_code=$(echo "$changed" | grep -cE '^(core/|deploy/|adapters/)')
+has_changelog=$(echo "$changed" | grep -c '^CHANGELOG.md')
+
+if [ "$touches_code" -gt 0 ] && [ "$has_changelog" -eq 0 ]; then
+  echo "✗ pre-push BLOCKED — this push changes core/deploy/adapters but does NOT"
+  echo "  touch CHANGELOG.md (project rule: code/infra pushes carry a changelog"
+  echo "  entry; update README too if user-facing). Add the entry, or override"
+  echo "  a genuine exception with: git push --no-verify."
+  exit 1
+fi
+exit 0

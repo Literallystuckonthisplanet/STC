@@ -871,6 +871,21 @@ def test_infra_graph_retired_not_orphan():
     assert "H99" not in f["orphans"], "a retired code must not read as an orphan"
 
 
+def test_mcp_merge_prunes_removed_stc_server_keeps_user():
+    import tempfile
+    d = tempfile.mkdtemp()
+    live = {"mcpServers": {"stc-old": {"command": "x"},
+                           "stc-keep": {"command": "y"},
+                           "user-own": {"command": "z"}}}
+    json.dump(live, open(os.path.join(d, ".mcp.json"), "w"))
+    patch = {"mcpServers": {"stc-keep": {"command": "y2"}}}  # stc-old dropped
+    D._merge_mcp_patch(patch, d)
+    out = json.load(open(os.path.join(d, ".mcp.json")))["mcpServers"]
+    assert "stc-old" not in out, "a removed stc- server must be pruned"
+    assert "stc-keep" in out, "the current stc- server stays"
+    assert "user-own" in out, "a user server is never touched"
+
+
 def test_leak_guard_detects_api_token():
     import tempfile
     d = tempfile.mkdtemp()

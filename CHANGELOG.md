@@ -11,6 +11,14 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — deploy now prunes removed MCP servers
+- `_merge_mcp_patch` upserted servers but never removed one dropped from the
+  `mcp:` block — a retired server (with its secret) lingered in `.mcp.json`
+  forever (the same gap the hooks-sweep fixed). Now prunes `stc-*` servers the
+  render no longer emits (guarded on a non-empty patch; user servers untouched).
+  Regression test added. Applied: removed the unused `github` MCP (all GitHub
+  work goes through the git CLI) and `gsheets` from the private config.
+
 ### Added — H18 graphify-first (enforce code-graph over grep-chains)
 - New hook `graphify-first.sh`: in a repo that already has a built code-graph
   (`graphify-out/graph.json`), the first grep-style search (Grep tool, or a Bash

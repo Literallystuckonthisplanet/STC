@@ -288,8 +288,16 @@ def _merge_mcp_patch(patch, native_dir):
     path = os.path.join(native_dir, ".mcp.json")
     live = C._load_json(path) or {}
     servers = live.setdefault("mcpServers", {})
-    for name, cfg in (patch.get("mcpServers") or {}).items():
+    incoming = patch.get("mcpServers") or {}
+    for name, cfg in incoming.items():
         servers[name] = cfg  # stc-* names → update in place (idempotent)
+    # prune STC-managed servers (stc-*) this render no longer emits — a server
+    # removed from stc.yaml's mcp block would otherwise linger in .mcp.json
+    # forever (same gap the hooks-sweep fixed). Only stc-* keys; user servers
+    # untouched. Guarded on a non-empty patch so a failed render can't wipe them.
+    if incoming:
+        for name in [n for n in servers if n.startswith("stc-") and n not in incoming]:
+            del servers[name]
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(live, fh, indent=2, ensure_ascii=False)
 

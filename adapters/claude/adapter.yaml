@@ -35,6 +35,7 @@ harness_facts:
     - SessionStart
     - SessionEnd
     - Stop
+    - PreCompact
   mcp_config_file: ".mcp.json"            # mcpServers live here
   statusline:
     enabled: true
@@ -119,7 +120,10 @@ hooks:
     H08_link_integrity:        { supported: true, matcher: ["*"], event: "Stop",                      binding: { file: link-integrity-guard.sh } }
     H09_memory_guard:          { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: memory-guard.sh } }
     H10_read_first_router:     { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: read-first-router.sh } }
-    H11_output_hygiene:        { supported: true, matcher: ["Bash"],                                  binding: { file: output-hygiene-guard.sh } }
+    # H11 disabled on claude (Anton, 2026-07-12): the claude harness already collapses/persists
+    # large tool output, so the guard is redundant here AND over-fires on grouped commands
+    # (find/grep inside a `{ ... } > file` block). Kept in core/ for clutter-prone harnesses (VS Code/zcode).
+    H11_output_hygiene:        { supported: false, matcher: ["Bash"],                                 binding: { file: output-hygiene-guard.sh } }
     H12_acquire_dedup:         { supported: true, matcher: ["Read|Grep|Glob|Bash"],                   binding: { file: acquire-dedup-guard.sh } }
     H13_web_route:             { supported: true, matcher: ["WebSearch|WebFetch"],                    binding: { file: web-route-guard.sh } }
     H14_buy_vs_build:          { supported: true, matcher: ["EnterPlanMode","Write|Edit|MultiEdit"],  binding: { file: buy-vs-build-reminder.sh } }
@@ -127,6 +131,7 @@ hooks:
     H16_integration_docs_gate: { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: integration-docs-gate.sh } }
     H17_secret_read_guard:     { supported: true, matcher: ["Read|Glob|Grep"],                         binding: { file: secret-read-guard.sh } }   # L8 read-side; pairs with permissions.deny (claude runs BOTH — deny is faster when it short-circuits pre-tool, this hook covers any harness gap)
     H18_graphify_first:        { supported: true, matcher: ["Grep|Bash"],                               binding: { file: graphify-first.sh } }   # in a repo with a built code-graph, nudge `graphify query` over grep-chains (acknowledge-once)
+    H19_precompact_memory:     { supported: true, matcher: ["*"], event: "PreCompact",                 binding: { file: precompact-memory-guard.sh } }   # before compaction (manual/auto): rotate memory first (I26) so the summary loses nothing
 
 # ============================================================
 # LAYER 4 — commands

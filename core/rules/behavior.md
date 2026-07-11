@@ -22,9 +22,11 @@ here is a pointer; the hook is the guarantee.
 - **Rule 2 — Facts → memory immediately:** a fact surfaced in conversation
   (resource ID, a decision, an important result, a config) is saved to memory
   **immediately**, not "at the end of the session". After the task is done and
-  the user approves — decide whether to keep it; if not, delete it. Safety net
-  on auto-compact: **H06** (post-compact recovery backfills anything missed —
-  the harness has no PreCompact hook, FR-7).
+  the user approves — decide whether to keep it; if not, delete it. Safety net at
+  the compaction boundary: **H19** (PreCompact guard — rotate memory before the
+  summary is built; fires on manual `${COMPACT_CMD}` AND auto-compaction) +
+  **H06** (post-compact recovery backfills anything a silent auto-compact still
+  missed). FR-7.
 - In code, examples, logs, or handoffs, replace real secrets with a
   placeholder (`<TOKEN>`, `${API_TOKEN}`). Treat the user's real values as
   toxic.

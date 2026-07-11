@@ -127,9 +127,9 @@ Each harness speaks **one** model family at a time, so `stc.yaml` lets you pin a
 
 ```yaml
 models:
-  provider: glm               # default (back-compat, fallback when no override)
+  provider: claude            # default provider (the reference harness's own)
   claude:  claude             # Claude Code on Anthropic sub → sonnet/haiku/opus
-  zcode:   glm                # ZCode → glm-5.2/glm-5-turbo
+  zcode:   glm                # ZCode → glm-5.2/glm-5-turbo (adapter currently frozen)
 ```
 
 ### Capability ≠ realisation
@@ -185,7 +185,7 @@ Hooks are the **enforcement layer** (ADR-001: a rule in always-text recidivs; a 
 | **H11** output-hygiene-guard | PreToolUse(Bash) | Blocks raw-output dumps to terminal (cat/sed/head/tail/git diff/find/grep -r un-redirected). Enforces output-to-file-then-summary. | guard |
 | **H12** acquire-dedup-guard | PreToolUse(Read\|Grep\|Glob\|Bash) | Injects an anti-duplicate nudge: keeps a session log of normalized targets, nudges on exact-repeat reads. | inject |
 | **H13** web-route-guard | PreToolUse(WebSearch\|WebFetch) | Blocks web calls from the main agent once/session — forces routing through the research sub-agent. Passes inside a sub-agent. | guard |
-| **H14** buy-vs-build-reminder | PreToolUse(EnterPlanMode\|Write) | Injects the "evaluate a ready solution before building" reminder on plan entry, plus a Write backstop for new source files. | inject |
+| **H14** buy-vs-build-reminder | PreToolUse(EnterPlanMode\|Write\|Edit\|MultiEdit) | On plan entry: the "evaluate a ready solution before building" reminder. After plan mode: hard-blocks the first code edit once until the FR-27 exec-slice table (which model runs each block) is produced — acknowledge-once. | guard |
 | **H15** exec-offload-guard | PreToolUse(Bash) | Blocks expensive data-scripts (import/seed/publish/scrape/sync; audits without `--json`) → must offload to an ephemeral agent. | guard |
 | **H16** integration-docs-gate | PreToolUse(Write\|Edit\|MultiEdit) | Blocks editing a named integration's code without saved research (failure-modes catalog or notes/research). Lifted by a research save or a `// docs-checked:` marker. | guard |
 | **H17** secret-read-guard | PreToolUse(Read\|Glob\|Grep) | Blocks reading secret files (`.env`/`.pem`/`id_rsa`). Harness-neutral equivalent of Claude's `permissions.deny` (ZCode has no perms engine). Override via `// secret-exception:`. | guard |
@@ -219,7 +219,7 @@ core/memory/
 ├── reference_abuse_cases.md       # seed: abuse/bypass base by category (AUTH/RATE/AUTHZ/INPUT/...)
 ├── reference_failure_modes.md     # seed: per-use-case pitfalls (symptom → cause → solution → verify)
 ├── reference_retired_codes.md     # code-labels retired when a rule migrated to a hook (ADR-001)
-└── skills_triggers.md             # the "which skill when" nuances (summary table lives in pev)
+└── skills_triggers.md             # the "which skill when" summary table + per-skill nuances (pev keeps a one-line pointer)
 ```
 
 The `reference_*.md` files are **empty seed templates** in the public repo. You fill them per project, in your private `user/projects/<name>.md` or in the harness's project memory, as you spec and debug. They are not loaded into always-context — a rule or hook reads them by anchor when it needs them.
@@ -323,7 +323,7 @@ python3 deploy/tests/test_render.py    # zero-dependency stdlib runner
 python3 -m pytest deploy/tests/        # the suite is pytest-compatible
 ```
 
-The suite (15 tests) pins every deploy bug from the history — the three render bugs (event-hook matcher, `$NATIVE_DIR` resolution, `+x` bit), the double-wiring merge, idempotent re-deploy, legacy-hook absorption, the per-harness provider, naming consistency, and session-path warnings — so they cannot silently return.
+The suite (33 tests) pins every deploy bug from the history — the three render bugs (event-hook matcher, `$NATIVE_DIR` resolution, `+x` bit), the double-wiring merge, idempotent re-deploy, legacy-hook absorption, the per-harness provider, naming consistency, session-path warnings, the frozen-adapter skip, the reference-integrity / personal-data / glm-on-claude prechecks, and `SKILL.md` for both deliveries — so they cannot silently return.
 
 ## Repository layout
 
@@ -341,7 +341,7 @@ STC/
 │   └── scripts/        # agent_cost.py, infra_graph.py, infra_graph_render.py
 ├── adapters/
 │   ├── claude/         # the REFERENCE realisation (files-delivery)
-│   ├── zcode/          # the DEGRADE realisation (plugin-delivery)
+│   ├── zcode/          # the DEGRADE realisation (plugin-delivery) — currently frozen
 │   └── _template/      # documented skeleton for new harnesses
 ├── deploy/
 │   ├── deploy.py       # CLI orchestrator (render/apply/check/uninstall/restore)
@@ -362,6 +362,8 @@ See [`docs/PROGRESS.md`](docs/PROGRESS.md) for the full build log and design dec
 ## Status
 
 Early beta. The `0.1.0` line carries the deploy pipeline; breaking changes can happen between minor bumps until `1.0.0`. Contributions and ideas welcome.
+
+Development currently focuses on the **`claude`** harness. The **`zcode`** adapter is **frozen** — it stays in-tree as the reference degrade realisation (and the two-axis abstraction is unchanged), but default deploys skip it; deploy it explicitly with `--target zcode` if you need it.
 
 ## License
 

@@ -11,6 +11,66 @@ release notes.
 
 ## [Unreleased]
 
+### Added — FR-27 exec-slice planning (which model runs each block)
+- New planning lever in `pev.md` § Plan step 4: every M/L task block is tagged
+  with its cheapest safe executor — `sub-haiku` / `sub-sonnet` / `cheap-session`
+  / `main` (a written reason required for `main`) — presented to the user as a
+  table before work starts, so mechanical work stops defaulting to the expensive
+  main thread. **Enforced by H14**: after plan mode the first code edit is
+  hard-blocked once until the exec-slice table is produced (acknowledge-once).
+
+### Added — three deploy prechecks
+- **Reference integrity** — every `Hxx` / `[[wiki-link]]` / skill-dir a rule
+  names must resolve (hyphen/underscore normalized; templates and piped aliases
+  handled); a dangling reference fails the precheck.
+- **Personal-data leak-guard** — `core/**` is public, so the precheck scans for
+  real e-mails, public IPv4 (loopback/private/link-local excluded), and
+  private-key headers, and refuses the deploy if any are found.
+- **glm-on-claude guard** — a `glm-*` model id resolved onto a `claude` target
+  is rejected (typed sub-agents would otherwise silently fail to dispatch).
+
+### Changed — zcode adapter frozen
+- Development now focuses on the `claude` harness. The `zcode` adapter stays
+  in-tree as the reference degrade realisation but is marked `frozen: true`:
+  `apply`/`render` with no `--target` skip it; an explicit `--target zcode`
+  still works, with a warning. The adapter principle is unchanged.
+
+### Changed — skills trigger table moved to lazy memory
+- The "which skill, when" summary table moved out of `pev.md` (always-context)
+  into `skills_triggers.md` (lazy); `pev.md` keeps a one-line pointer. Keeps the
+  always-context bundle lean (detailed tables → lazy).
+
+### Fixed — skills invisible on the claude target too (`SKILL.stc.md`)
+- `_render_skills` emitted `SKILL.stc.md` for files delivery, but the Claude
+  loose-file skill loader requires exactly `SKILL.md` (same as the plugin
+  loader) — so every skill was invisible on `claude` as well, not only zcode.
+  Now `SKILL.md` for both deliveries. Completes the 0.1.2 plugin-only fix.
+
+### Fixed — generic content dropped during the pre-STC → core/ migration
+- A migration audit found generic rule/reference content lost when the pre-STC
+  memory was migrated into `core/`. Restored: the docs-first behaviour rule, the
+  legal-review checkpoint, the integration registry, playbook operational
+  content, and the `code_standard` / `abuse_cases` / `defect_ledger` /
+  `failure_modes` / `retired_codes` / `skills_triggers` catalog bodies.
+
+### Fixed — GLM default-provider leak
+- `stc.yaml` and `stc.example.yaml` defaulted `models.provider` to `glm`;
+  corrected to `claude` (the default should be the reference harness's own
+  provider). The glm-on-claude precheck backstops any recurrence.
+
+### Fixed — H15/H16 hook false-positives on language keywords
+- **H15** (exec-offload) no longer blocks inline-eval runners: `python -c
+  "import …"` / `node -e` / `ruby -e` — `import` there is a language keyword,
+  not a data-import script.
+- **H16** (integration-docs-gate) narrowed the `anthropic` key to real SDK/API
+  signals (`api.anthropic` / `@anthropic-ai` / `import anthropic` /
+  `anthropic.Anthropic` / `*_api_key`), so an `@anthropic.com` e-mail literal in
+  code no longer reads as an Anthropic-API integration.
+
+### Testing
+- Suite grew 15 → 33 tests (frozen-adapter skip, reference-integrity,
+  personal-data leak-guard, glm-on-claude, `SKILL.md` for both deliveries).
+
 ### Changed — session-end flow: memory rotation replaces handoff/save-and-compact
 - **New rule I26 (`behavior.md` § Memory rotation).** Project facts are saved
   to `project_<name>.md` (R08 STATE/CHANGELOG) live as they arise; at task

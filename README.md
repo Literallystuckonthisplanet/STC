@@ -50,7 +50,7 @@ Every token that goes into the model's context window costs money and attention 
 
 STC attacks this on several fronts:
 
-- **Always-context is loaded once**, via native `@import` in the harness's always-context file (`CLAUDE.md` / `AGENTS.md`). The seven baseline files (3 memory + 4 rules) enter context a single time per session and are never re-read. Everything else is **on-demand** — read only when a rule or hook references it.
+- **Always-context is loaded once per session.** The three firing rules (`behavior.md`, `pev.md`, `session.md`) plus the user profile enter context a single time and are never re-read; delivery is per-harness (on Claude the **H06** hook injects them, the bundle `@import` staying a pointer so nothing is delivered twice; a harness whose plugin hooks don't fire gets them inlined into the bundle). Everything else — the memory index, playbook, code standard, reference catalogs, `project_docs.md` — is **on-demand**, read only when a rule or hook references it.
 - **Caveman compression** for sub-agent traffic. Research and review sub-agents answer in ultra-compressed speech (~75% fewer tokens) when `subagent_compression: caveman` is set. The final answer to the user is always normal prose.
 - **Output hygiene hook (H11)** blocks raw-output dumps (`cat`/`sed`/`head`/`tail`/`git diff`/`find`/`grep -r` without redirection). Output goes to a file; only the summary reaches the model.
 - **Exec-offload hook (H15)** blocks expensive data scripts (import/seed/publish/scrape/sync, audits without `--json`) in the main thread and routes them to an ephemeral sub-agent, so the main context stays lean.
@@ -144,8 +144,8 @@ The principle: a capability is know-how written once (neutral); a harness realis
 
 ### Always-context vs on-demand
 
-- **Always-context** (Layer 1) is loaded every session. The harness's native `@import` is the primary mechanism (Claude Code's `CLAUDE.md` supports `@<path>`). The seven baseline files — `MEMORY.md`, `playbook.md`, `code_standard.md` (memory) + `behavior.md`, `pev.md`, `project_docs.md`, `session.md` (rules) — enter context once and are never re-read. The **H06** session-start hook is the fallback for harnesses without native `@import` and for post-compact recovery.
-- **On-demand** is everything else. Skills, commands, and agents are loaded when invoked. Reference memory is read by anchor (`[[link]]`) only when a rule references it.
+- **Always-context** (Layer 1) is loaded every session: the three firing rules (`behavior.md`, `pev.md`, `session.md`) + the user profile. Delivery is per-harness — on Claude Code the **H06** session-start hook injects the rules (the bundle `@import` stays a pointer, so rules are not delivered twice); a harness whose plugin hooks don't fire (ZCode) gets them inlined into the bundle. The profile is inlined everywhere. H06 also owns post-compact recovery.
+- **On-demand** is everything else: the memory index (`MEMORY.md`), `playbook.md`, `code_standard.md`, `project_docs.md`, the reference catalogs, and every skill/command/agent — read by anchor (`[[link]]`) or on invocation, only when needed.
 
 ## Third-party tools and credits
 
@@ -177,7 +177,7 @@ Hooks are the **enforcement layer** (ADR-001: a rule in always-text recidivs; a 
 | **H03** stop-services-reminder | UserPromptSubmit | Always prints the SELF-EXEC scope; scans the prompt for secrets → directive to write to `.env`; detects compact/session-end trigger phrases and unfolds the protocols. | inject |
 | **H04** agent-reuse-contract | PreToolUse(Task) | Blocks a build-capable sub-agent launch if the reuse-before-reinvent marker is absent; injects the reviewer-agent baseline. | guard |
 | **H05** secret-scan-memory | PreToolUse(Write\|Edit\|MultiEdit) | Blocks writing a real secret into `memory/*`. Length-gated so it does not fire on docs. Never prints the secret value. | guard |
-| **H06** session-start-context | SessionStart | Owns post-compact loss-check (FR-7) and the infra-audit cadence nudge (≥1 month). Rules themselves load via `@import`; this hook does not inject them. | inject |
+| **H06** session-start-context | SessionStart | On the claude harness, injects the firing rules (`behavior`/`pev`/`session`) each session (`rules_delivery: hook`; the bundle `@import` stays a pointer). Also owns post-compact loss-check (FR-7) and the infra-audit cadence nudge (≥1 month). | inject |
 | **H07** dirty-tree-guard | PreToolUse(Write\|Edit\|MultiEdit) | On first edit in a repo: blocks if the tree is dirty (uncommitted WIP, possibly a parallel session); injects a worktree nudge if more than one worktree exists. | guard |
 | **H08** link-integrity-guard | Stop | Verifies `[[wiki-links]]` integrity against the `name:` frontmatter registry (catches rename drift). Blocks once/session. | guard |
 | **H09** memory-guard | PreToolUse(Write\|Edit\|MultiEdit) | Injects the I04 checklist on first edit of a memory file (once-per-file-per-session). Routes by basename (rules vs facts). | inject |
@@ -194,7 +194,7 @@ On ZCode, where there is no `permissions.deny` engine, **H17 is the only read-gu
 
 ## The rules (always-context)
 
-Four rule files, loaded once per session via `@import`:
+Four rule files. The three firing rules — `behavior.md`, `pev.md`, `session.md` — are always-context (delivered per-harness: Claude → H06 injection with the bundle as a pointer; ZCode → inlined into the bundle). `project_docs.md` is on-demand, read by anchor when recording decisions:
 
 | File | About |
 |---|---|

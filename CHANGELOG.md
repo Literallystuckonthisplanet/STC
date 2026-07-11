@@ -11,6 +11,16 @@ release notes.
 
 ## [Unreleased]
 
+### Added — H18 graphify-first (enforce code-graph over grep-chains)
+- New hook `graphify-first.sh`: in a repo that already has a built code-graph
+  (`graphify-out/graph.json`), the first grep-style search (Grep tool, or a Bash
+  `grep`/`rg`/`ag`/`git grep`) is hard-blocked once with a nudge to use
+  `graphify query`/`affected`/`explain` for how/why/connect/blast-radius
+  questions — a built graph nobody queries is wasted. Acknowledge-once: the
+  marker is set before `exit 2`, so a repeat passes (grep is still right for an
+  exact-string lookup). Repos without a graph are never gated. Wired on
+  `Grep|Bash`; hook count 17 → 18.
+
 ### Fixed — H16 integration-docs-gate false-positive on bare service names
 - The tier-1 LEXICON keyed an integration off ANY occurrence of a service name,
   so a generic-English name (openai/stripe/aws/sheets/…) in a comment, a string,

@@ -25,6 +25,11 @@ Not installed → install per the upstream (safishamsi/graphify), then
 `graphify install --platform <harness>` to wire the harness skill. See
 `install-mcp.md` for the per-harness wiring.
 
+> **Enforced by H18 (`graphify-first`):** in a repo that already has a built
+> graph, the first grep-style search is blocked once, nudging `query` instead —
+> so a built graph does not sit unused (acknowledge-once; an exact-string grep
+> passes on repeat).
+
 ## When to use
 
 - **Entering an unfamiliar repo** → `extract .`, then `query`/`explain` to get

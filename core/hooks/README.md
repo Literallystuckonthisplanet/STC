@@ -45,11 +45,11 @@ MARKER="/tmp/stc-<hookname>-${SESSION}"
 ```
 
 Used by: H01 (push-to-main), H04 (build-agent-contract), H07 (dirty-tree),
-H08 (link-integrity), H13 (web-route), H14 (buy-vs-build).
+H08 (link-integrity), H13 (web-route), H14 (buy-vs-build), H18 (graphify-first).
 
 ## The 6 event-guards (flow-point → file)
 
-The 17 hooks are routed by the harness `settings.json` matcher groups into
+The 18 hooks are routed by the harness `settings.json` matcher groups into
 ~6 flow points. One file = one guard (single-responsibility, auditable).
 
 | Flow point | Hook(s) | What it enforces |
@@ -73,6 +73,7 @@ Beyond the 6-guard map (legitimate extras):
 | `exec-offload-guard.sh` H15 | PreToolUse(Bash) | 🔒 expensive-Bash-offload block (noisy data-scripts import/seed/scrape/sync → ephemeral agent; audit without --json) |
 | `integration-docs-gate.sh` H16 | PreToolUse(Write\|Edit\|MultiEdit) | 🔒 FR-26 docs-first block: editing a named integration's code without saved research → block (lifted by research-save or `// docs-checked:`). Generic-English service names (openai/stripe/aws/…) require a USAGE signal (import/API-host/`_api_key`/netcall) so a bare mention in a comment/regex doesn't false-block; niche/regional names match bare. |
 | `secret-read-guard.sh` H17 | PreToolUse(Read\|Glob\|Grep) | 🔒 block reading a secret file (`.env` / `.pem` / `id_rsa`) → keeps secrets out of context/logs (defense-in-depth: mirrors `permissions.deny` on claude, the ONLY read-guard on a harness without a permissions engine). Escape: `// secret-exception:` |
+| `graphify-first.sh` H18 | PreToolUse(Grep\|Bash) | 🔒 in a repo with a built code-graph (`graphify-out/graph.json`), the first grep-style search is blocked once → nudge `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; repeat passes for an exact-string lookup). Repos without a graph are never gated. |
 
 ## Settings wiring
 
@@ -92,6 +93,7 @@ hook-event names):
       { "matcher": "EnterPlanMode", "hooks": [{"type":"command","command":".../buy-vs-build-reminder.sh"}] },
       { "matcher": "Read|Grep|Glob|Bash", "hooks": [{"type":"command","command":".../acquire-dedup-guard.sh"}] },
       { "matcher": "Read|Glob|Grep", "hooks": [{"type":"command","command":".../secret-read-guard.sh"}] },
+      { "matcher": "Grep|Bash", "hooks": [{"type":"command","command":".../graphify-first.sh"}] },
       { "matcher": "WebSearch|WebFetch", "hooks": [{"type":"command","command":".../web-route-guard.sh"}] }
     ],
     "UserPromptSubmit": [{ "hooks": [{"type":"command","command":".../stop_services_reminder.sh"}] }],

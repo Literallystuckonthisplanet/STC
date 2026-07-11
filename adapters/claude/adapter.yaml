@@ -126,6 +126,7 @@ hooks:
     H15_exec_offload:          { supported: true, matcher: ["Bash"],                                  binding: { file: exec-offload-guard.sh } }
     H16_integration_docs_gate: { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: integration-docs-gate.sh } }
     H17_secret_read_guard:     { supported: true, matcher: ["Read|Glob|Grep"],                         binding: { file: secret-read-guard.sh } }   # L8 read-side; pairs with permissions.deny (claude runs BOTH — deny is faster when it short-circuits pre-tool, this hook covers any harness gap)
+    H18_graphify_first:        { supported: true, matcher: ["Grep|Bash"],                               binding: { file: graphify-first.sh } }   # in a repo with a built code-graph, nudge `graphify query` over grep-chains (acknowledge-once)
 
 # ============================================================
 # LAYER 4 — commands

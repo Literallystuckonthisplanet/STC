@@ -11,6 +11,39 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — first ×3 review pass (code-reviewer + security-arch + qa) on STC itself
+The review pipeline was run against its own codebase for the first time. Real
+findings fixed (each with a regression test; suite 34 → 42):
+- **infra-graph skill-artifact slug collision** (`infra_graph_render.py`) —
+  every skill's source file is literally `SKILL.md`, so `art_slug` collapsed all
+  15 skills into one `art-skill-md` stub (last wins; 14 skill notes pointed at
+  the wrong artifact). Now disambiguates on the parent dir → `art-<name>-skill`.
+- **stale hook wiring after a retired capability** (`deploy.py`) — a hook
+  capability fully removed from a render left its `settings.json` entry behind
+  forever (pointing at a script `_prune_orphans` had just deleted). `apply` now
+  sweeps STC-managed entries whose cap is no longer emitted (guarded on a
+  non-empty patch), mirroring uninstall.
+- **corrupt `hooks` key silently dropped config** (`deploy.py`) — a non-dict
+  `hooks` value made `_merge_settings_patch` return early, discarding the
+  statusLine/permissions writes too, under a "✓ applied" report. Now resets it
+  with a loud warning and still applies the rest.
+- **destructive-git block was trivially bypassable** (`block-dangerous-git.sh`,
+  H01) — the match was literal / case-sensitive / single-space, so
+  `GIT RESET --HARD`, `git  reset  --hard`, or a tab slipped past. Now
+  whitespace-normalized + case-insensitive (`-i`); verified functionally.
+- **public-leak guard was incomplete + not wired to git** (`checks.py`) — it
+  scanned only emails/IPs/private-keys, not API tokens; added the token-format
+  set (ghp_/ntn_/sk-ant/AKIA/xox/…, min-length so placeholders don't trip), and
+  a versioned `deploy/git-hooks/pre-commit` that runs it on every commit
+  (activate: `git config core.hooksPath deploy/git-hooks`).
+- **`stc_block` dangling-marker data loss** — a BEGIN with a hand-deleted END
+  swallowed the user's trailing content on the next `inject_block`; now treated
+  as "no block" (append fresh, tail preserved).
+- **infra-graph external-code ignore was a blanket subtraction** — `A10`/`S26`
+  were removed unconditionally, which would also hide a *genuine* orphan; now
+  context-scoped (only next to OWASP/YC markers). `RE_RETIRED` arrow class
+  tightened to `→|->`.
+
 ### Fixed — H01 release-ack marker was global, not per-session
 - `block-dangerous-git.sh` built its push-to-main ack path from `${SESSION_ID}`,
   which a hook never receives in its environment — it arrives in the stdin JSON.
@@ -96,9 +129,11 @@ release notes.
   code no longer reads as an Anthropic-API integration.
 
 ### Testing
-- Suite grew 15 → 34 tests (frozen-adapter skip, reference-integrity,
-  personal-data leak-guard, glm-on-claude, `SKILL.md` for both deliveries,
-  orphan-prune + user-file safety).
+- Suite grew 15 → 42 tests (frozen-adapter skip, reference-integrity,
+  personal-data leak-guard + token patterns, glm-on-claude, `SKILL.md` for both
+  deliveries, orphan-prune + user-file safety, and the ×3-review regression
+  shields: art_slug, retired-cap sweep, corrupt-hooks, dangling marker,
+  multi-letter/context-scoped graph scan).
 
 ### Changed — session-end flow: memory rotation replaces handoff/save-and-compact
 - **New rule I26 (`behavior.md` § Memory rotation).** Project facts are saved

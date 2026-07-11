@@ -19,6 +19,14 @@ release notes.
   Regression test added. Applied: removed the unused `github` MCP (all GitHub
   work goes through the git CLI) and `gsheets` from the private config.
 
+### Added — llm-wiki feedback loop wired into the session lifecycle
+- The Karpathy llm-wiki pattern now runs itself instead of being a manual ritual:
+  H18 nudges `graphify query` in a graphed repo → a useful answer is
+  `save-result`'d during work → `session.md` §3 (session end) runs `graphify
+  reflect` to fold saved outcomes into `LESSONS.md`. Ingest/Query/Lint mapped
+  onto add/query/reflect; the lessons compound across sessions. (graphify 0.9.x
+  has no single `wiki` command, so the loop is the reflect/feedback path.)
+
 ### Added — H18 graphify-first (enforce code-graph over grep-chains)
 - New hook `graphify-first.sh`: in a repo that already has a built code-graph
   (`graphify-out/graph.json`), the first grep-style search (Grep tool, or a Bash

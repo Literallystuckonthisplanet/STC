@@ -59,6 +59,12 @@ themselves you execute:
      backend reflect the change: `python3 ${DEPLOY_SCRIPT} apply --target ${HARNESS_LIST}`
      (skip if infra wasn't touched). Then regenerate the infra graph if the
      code-labels changed: `python3 ${STC_CORE}/scripts/infra_graph_render.py`.
+   - **llm-wiki feedback loop:** if you worked in a repo with a built code-graph
+     (`graphify-out/`) and had useful `graphify query` answers, they should have
+     been `graphify save-result`'d as you went (H18 nudges the query; the good
+     answer gets saved). At session end run `graphify reflect` there to fold the
+     saved outcomes into `LESSONS.md` — the graph's lessons compound across
+     sessions instead of being re-derived. Skip if you didn't use a graph.
 2. Stop the project's services: kill dev servers on `${DEV_PORTS}` and run
    `docker compose down` (or the project's documented shutdown command).
 

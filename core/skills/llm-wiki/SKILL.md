@@ -103,6 +103,11 @@ healthy as it grows.
   feedback loop). NOTE: graphify 0.9.x has **no single `wiki` command** — the
   wiki-building step is done by the agent following this skill, not one CLI call.
   This is the **primary** path in STC (graphify is a required capability).
+  **How STC wires the loop (so it runs itself):** H18 (`graphify-first`) nudges
+  `graphify query` in a graphed repo; a useful answer is `save-result`'d as you
+  work; at session end (`session.md` §3) `graphify reflect` folds the saved
+  outcomes into `LESSONS.md`. So the lessons-wiki compounds across sessions
+  without a separate ritual — Ingest/Query/Lint mapped onto add/query/reflect.
 - **Manual** — an editor (Obsidian) + an agent following this skill, over
   your own `raw/` + wiki directory. The pattern is editor-agnostic; the wiki
   is just markdown.

@@ -11,6 +11,16 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — H16 integration-docs-gate false-positive on bare service names
+- The tier-1 LEXICON keyed an integration off ANY occurrence of a service name,
+  so a generic-English name (openai/stripe/aws/sheets/…) in a comment, a string,
+  a regex, or a **secret-pattern definition** produced a false docs-first block
+  (hit while adding token regexes to the leak-guard). Generic-English names now
+  require a **USAGE** signal (import / API host / `*_api_key` / SDK client /
+  network call); niche/regional names (cdek/modulbank/vk/…) still match on a
+  bare mention. Same class as the earlier H15/H16 language-keyword fixes.
+  Functional test covers the pass/block cases; logged in the defect ledger.
+
 ### Fixed — first ×3 review pass (code-reviewer + security-arch + qa) on STC itself
 The review pipeline was run against its own codebase for the first time. Real
 findings fixed (each with a regression test; suite 34 → 42):

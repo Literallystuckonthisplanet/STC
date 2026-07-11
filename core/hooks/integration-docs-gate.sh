@@ -54,29 +54,29 @@ esac
 
 KEY=""
 
-# (1) LEXICON of named external services → canonical key. EXTENSIBLE: a new
-# service → a new line. These are stock examples; a project's OWN integrations
-# (especially niche/local ones) belong in .claude-integrations (tier 1.5) so
-# the hook stays project-neutral.
+# USAGE — a signal that the edit REALLY uses an integration, not just mentions
+# its name in a comment, a string, a regex, or a secret-pattern DEFINITION
+# (the H16 false-positive: `"OpenAI-style key"` + an `sk-` regex in a secret
+# scanner is not an OpenAI integration). Signals: an import/require, the
+# vendor's API host, a `*_api_key`/secret/token assignment, an SDK client, or a
+# network call. Generic-English service names below are gated on this; niche /
+# regional names are not (their mention is almost always a real integration).
+USAGE=0
 case "$HAY" in
-  *stripe*)            KEY="stripe" ;;
-  *paypal*)            KEY="paypal" ;;
-  *twilio*)            KEY="twilio" ;;
-  *sendgrid*)          KEY="sendgrid" ;;
-  *mailgun*)           KEY="mailgun" ;;
+  *fetch*|*axios*|*"http.request"*|*"http.client"*|*httpx*|*"requests."*|*urllib*|*"got("*|*"ky("*|*webhook* \
+  |*"import "*|*"require("*|*"from '"*|*'from "'*|*_api_key*|*_secret*|*_token*|*".com/"*|*sdk*|*"client("*) USAGE=1 ;;
+esac
+
+# (1a) NICHE / regional / payment services — a bare mention is enough (these
+# words don't collide with ordinary English/code, so no USAGE gate). EXTENSIBLE;
+# a project's OWN integrations belong in .claude-integrations (tier 1.5).
+case "$HAY" in
   *telegram*|*tgbot*)  KEY="telegram" ;;
   *whatsapp*)          KEY="whatsapp" ;;
   *vkid*|*vk-oauth*|*vk_oauth*|*vk.com*|*vk-api*) KEY="vk" ;;
   *yandex*map*|*ymaps*) KEY="yandex-maps" ;;
   *2gis*)              KEY="2gis" ;;
   *dadata*)            KEY="dadata" ;;
-  *gspread*|*google*sheet*|*sheets.googleapis*) KEY="sheets" ;;
-  *openai*)            KEY="openai" ;;
-  *api.anthropic*|*@anthropic-ai*|*"import anthropic"*|*"from anthropic "*|*anthropic.anthropic*|*anthropic_api_key*) KEY="anthropic" ;;  # real SDK/API only — a bare mention or an @anthropic.com e-mail address must NOT trigger
-  *amazonaws*|*aws-sdk*|*@aws-sdk*|*boto3*) KEY="aws" ;;
-  *cloudflare*)        KEY="cloudflare" ;;
-  *@notionhq*|*notion*api*) KEY="notion" ;;
-  # --- regional/payment stock examples (extend per project via .claude-integrations) ---
   *cdek*|*сдэк*)            KEY="cdek" ;;
   *boxberry*)               KEY="boxberry" ;;
   *modulbank*|*модуль*банк*) KEY="modulbank" ;;
@@ -90,6 +90,32 @@ case "$HAY" in
   *gigachat*)               KEY="gigachat" ;;
   *yandexgpt*|*yandex*gpt*) KEY="yandexgpt" ;;
 esac
+
+# (1b) GENERIC-English service names — real English/code words (openai, aws,
+# stripe, sheets, …) that appear in prose/tests/regexes. Only an integration
+# WITH a USAGE signal, so a bare mention no longer blocks. anthropic already had
+# its own strict form; the rest join the gate.
+if [ -z "$KEY" ] && [ "$USAGE" = "1" ]; then
+  case "$HAY" in
+    *stripe*)            KEY="stripe" ;;
+    *paypal*)            KEY="paypal" ;;
+    *twilio*)            KEY="twilio" ;;
+    *sendgrid*)          KEY="sendgrid" ;;
+    *mailgun*)           KEY="mailgun" ;;
+    *gspread*|*google*sheet*|*sheets.googleapis*) KEY="sheets" ;;
+    *openai*)            KEY="openai" ;;
+    *amazonaws*|*aws-sdk*|*@aws-sdk*|*boto3*) KEY="aws" ;;
+    *cloudflare*)        KEY="cloudflare" ;;
+    *@notionhq*|*notion*api*) KEY="notion" ;;
+  esac
+fi
+# anthropic — real SDK/API only (a bare mention or an @anthropic.com e-mail must
+# NOT trigger); kept as an explicit strict match independent of the USAGE gate.
+if [ -z "$KEY" ]; then
+  case "$HAY" in
+    *api.anthropic*|*@anthropic-ai*|*"import anthropic"*|*"from anthropic "*|*anthropic.anthropic*|*anthropic_api_key*) KEY="anthropic" ;;
+  esac
+fi
 
 # (1.5) Per-project REGISTRY — a safety net for services OUTSIDE the lexicon.
 # File `.claude-integrations` at the project root: one key per line, `#` = comment.

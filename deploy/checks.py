@@ -153,7 +153,6 @@ def _no_personal_data_in_core(core_dir):
     # `ghp_...`, `${TOKEN}` do not trip it — only a real key's length matches).
     # Mirrors the proven patterns in core/hooks/secret-scan-memory.sh; core/ is
     # public so a real key pasted into a doc example must fail the deploy.
-    # // ds-exception: defining secret-detection regexes, not integrating any API.
     token_res = [
         (re.compile(r"\bghp_[A-Za-z0-9]{36}\b"), "GitHub PAT"),
         (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{60,}\b"), "GitHub fine-grained PAT"),

@@ -71,7 +71,7 @@ Beyond the 6-guard map (legitimate extras):
 | `web-route-guard.sh` H13 | PreToolUse(WebSearch\|WebFetch) | 🔒 FR-17 web-via-subagent (block main, pass sub-agent) |
 | `buy-vs-build-reminder.sh` H14 | PreToolUse(EnterPlanMode) + PreToolUse(Write\|Edit\|MultiEdit) | 💉 FR-24/DEP-4 buy-vs-build inject on plan entry **+ 🔒 FR-27 exec-slice HARD GATE**: the first code edit after plan mode is blocked (exit 2) until the exec-slice table is acknowledged (acknowledge-once) |
 | `exec-offload-guard.sh` H15 | PreToolUse(Bash) | 🔒 expensive-Bash-offload block (noisy data-scripts import/seed/scrape/sync → ephemeral agent; audit without --json) |
-| `integration-docs-gate.sh` H16 | PreToolUse(Write\|Edit\|MultiEdit) | 🔒 FR-26 docs-first block: editing a named integration's code without saved research → block (lifted by research-save or `// docs-checked:`) |
+| `integration-docs-gate.sh` H16 | PreToolUse(Write\|Edit\|MultiEdit) | 🔒 FR-26 docs-first block: editing a named integration's code without saved research → block (lifted by research-save or `// docs-checked:`). Generic-English service names (openai/stripe/aws/…) require a USAGE signal (import/API-host/`_api_key`/netcall) so a bare mention in a comment/regex doesn't false-block; niche/regional names match bare. |
 | `secret-read-guard.sh` H17 | PreToolUse(Read\|Glob\|Grep) | 🔒 block reading a secret file (`.env` / `.pem` / `id_rsa`) → keeps secrets out of context/logs (defense-in-depth: mirrors `permissions.deny` on claude, the ONLY read-guard on a harness without a permissions engine). Escape: `// secret-exception:` |
 
 ## Settings wiring

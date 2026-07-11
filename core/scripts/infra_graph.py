@@ -69,11 +69,14 @@ RE_CODE_MENTION = re.compile(r"\b([ISAHRTN]\d{2})\b")
 # infra labels — they appear in prose and must not read as orphans:
 #   A10 — OWASP Top-10 "A10 SSRF" (in the security-arch agent/skill).
 #   S26 — a YC batch tag ("YC S26", in the code-graph skill's graphify credit).
-# A future real A10/S26 would carry a <!-- label --> → land in `defined`, so
-# subtracting them from `mentioned` never hides a genuine definition.
+# The exclusion is CONTEXT-SCOPED (only when the external marker is on the same
+# line), NOT a blanket set-subtraction: a blanket subtract would also hide a
+# GENUINE orphan — a real A10/S26 whose own <!-- label --> got lost while text
+# references remain — which is the exact failure this check exists to catch.
 NON_INFRA_MENTIONS = {"A10", "S26"}
+EXTERNAL_CTX = re.compile(r"OWASP|SSRF|YC\s+[SWF]\d|batch", re.I)
 # retired-code registry: a line like "- I04 → H09 (date): ..."
-RE_RETIRED = re.compile(r"-\s*([A-Z]\d{2})\s*[→\->]\s*([A-Z]\d{2})\b")
+RE_RETIRED = re.compile(r"-\s*([A-Z]\d{2})\s*(?:→|->)\s*([A-Z]\d{2})\b")
 RETIRED_REGISTRY = os.path.join(MEMORY_DIR, "reference_retired_codes.md")
 
 # md heading (## or #)
@@ -394,12 +397,17 @@ def check(all_funcs, dup_index, text_blobs, retired):
     defined = set(all_funcs.keys())
     mentioned = set()
     for _path, content in text_blobs:
-        mentioned.update(RE_CODE_MENTION.findall(content))
+        for line in content.splitlines():
+            for code in RE_CODE_MENTION.findall(line):
+                # skip a collision code ONLY when its external-taxonomy context is
+                # on this line (OWASP A10 SSRF / YC S26). A genuine orphan is a
+                # reference with no such context → it still surfaces.
+                if code in NON_INFRA_MENTIONS and EXTERNAL_CTX.search(line):
+                    continue
+                mentioned.add(code)
     # RELATED targets are also "mentions"
     for _src, targets in RELATED.items():
         mentioned.update(targets)
-    # external-taxonomy collisions (OWASP A10, YC S26) are prose, not infra codes
-    mentioned -= NON_INFRA_MENTIONS
 
     orphans = sorted(
         c for c in (mentioned - defined) if c not in retired

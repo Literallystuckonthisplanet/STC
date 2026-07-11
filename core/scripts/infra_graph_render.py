@@ -71,6 +71,12 @@ def mem_slug(path):
 
 def art_slug(path):
     base = os.path.basename(path)
+    # Every skill's source file is literally SKILL.md (a loader requirement), so a
+    # bare-basename slug collapses all skills into one `art-skill-md` stub — the
+    # last one wins and 14 skill notes point at the wrong artifact. Disambiguate
+    # a generic basename on its parent dir: skills/<name>/SKILL.md → art-<name>-skill.
+    if base == "SKILL.md":
+        base = os.path.basename(os.path.dirname(path)) + "-skill"
     return "art-" + re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
 
 

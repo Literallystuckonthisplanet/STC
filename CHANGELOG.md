@@ -11,6 +11,34 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — H01 release-ack marker was global, not per-session
+- `block-dangerous-git.sh` built its push-to-main ack path from `${SESSION_ID}`,
+  which a hook never receives in its environment — it arrives in the stdin JSON.
+  The marker therefore collapsed to a single global `/tmp/stc-release-`, so one
+  session's "releasing" acknowledgement leaked into every other session. The hook
+  now parses `.session_id` from stdin so the marker is genuinely per-session.
+
+### Added — deploy prunes orphaned artifacts on apply
+- `apply` now removes files a prior deploy wrote that the current render no longer
+  emits (e.g. a retired command like `handoff.stc.md`), by diffing the previous
+  manifest against the render. Scoped hard to STC-owned shapes (`.stc.md` /
+  `.stc.sh` / `SKILL.md`) so a user file can never be removed even on a manifest
+  glitch. Previously a dropped artifact lingered in the harness forever (removed
+  by hand). Regression test covers prune + the user-file-safety invariant.
+
+### Fixed — infra graph: full code-label coverage, no false orphans
+- The graph engine dropped R-codes defined in `project_docs.md` (it was scanned
+  under a single "I" type letter) — the scan now accepts multiple letters ("IR"),
+  so `R05`/`R08` resolve. Added the missing `<!-- Rnn -->` labels to the three
+  reference catalogs (`R01` failure-modes, `R03` defect-ledger, `R06` abuse-cases)
+  and `<!-- I19 -->` to the design-system rule. External-taxonomy collisions
+  (`A10` = OWASP Top-10 SSRF, `S26` = a YC batch tag) are excluded from the
+  mention scan so they no longer read as orphans. The retired registry
+  (I04/S05/S09) resolves from `core/memory`. Result: **0 orphans, 0 duplicates**
+  (was 6 orphans + numbering gaps R/I/S); only the historical `S10` gap remains
+  (a code that never materialized in the canon). The `infra_graph_render.py` map
+  renders cleanly into the doc backend.
+
 ### Added — FR-27 exec-slice planning (which model runs each block)
 - New planning lever in `pev.md` § Plan step 4: every M/L task block is tagged
   with its cheapest safe executor — `sub-haiku` / `sub-sonnet` / `cheap-session`
@@ -68,8 +96,9 @@ release notes.
   code no longer reads as an Anthropic-API integration.
 
 ### Testing
-- Suite grew 15 → 33 tests (frozen-adapter skip, reference-integrity,
-  personal-data leak-guard, glm-on-claude, `SKILL.md` for both deliveries).
+- Suite grew 15 → 34 tests (frozen-adapter skip, reference-integrity,
+  personal-data leak-guard, glm-on-claude, `SKILL.md` for both deliveries,
+  orphan-prune + user-file safety).
 
 ### Changed — session-end flow: memory rotation replaces handoff/save-and-compact
 - **New rule I26 (`behavior.md` § Memory rotation).** Project facts are saved

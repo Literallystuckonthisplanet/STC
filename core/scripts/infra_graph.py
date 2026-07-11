@@ -65,6 +65,13 @@ RE_MD_LABEL = re.compile(r"<!--\s*([A-Z]\d{2}(?:\s+[A-Z]\d{2})*)\s*-->")
 RE_SH_LABEL = re.compile(r"#\s*([A-Z]\d{2})\s+[—-]\s+hook:\s*(.*)")
 # any code mention in text (for the orphan check)
 RE_CODE_MENTION = re.compile(r"\b([ISAHRTN]\d{2})\b")
+# Codes that collide with the STC label grammar but are EXTERNAL taxonomies, not
+# infra labels — they appear in prose and must not read as orphans:
+#   A10 — OWASP Top-10 "A10 SSRF" (in the security-arch agent/skill).
+#   S26 — a YC batch tag ("YC S26", in the code-graph skill's graphify credit).
+# A future real A10/S26 would carry a <!-- label --> → land in `defined`, so
+# subtracting them from `mentioned` never hides a genuine definition.
+NON_INFRA_MENTIONS = {"A10", "S26"}
 # retired-code registry: a line like "- I04 → H09 (date): ..."
 RE_RETIRED = re.compile(r"-\s*([A-Z]\d{2})\s*[→\->]\s*([A-Z]\d{2})\b")
 RETIRED_REGISTRY = os.path.join(MEMORY_DIR, "reference_retired_codes.md")
@@ -99,6 +106,7 @@ RELATED = {
     "H14": [],
     "H15": [],
     "H16": [],
+    "R01": ["R06"],
     "R06": ["S12", "S13"],
     "R07": ["I02", "I05"],
     "R08": ["R05", "I13", "I15"],
@@ -117,11 +125,15 @@ RELATED = {
 MEM = lambda name: os.path.join(MEMORY_DIR, name)
 RULE = lambda name: os.path.join(CORE_DIR, "rules", name)
 
+# The `letters` field may hold MORE THAN ONE type letter: project_docs.md
+# defines both I-rules (ADR/task/ERD conventions) and R-references (R05/R08, the
+# project-memory format), so it is scanned under "IR" — a single letter would
+# drop the R-codes and flag them as orphans.
 SCAN_FILES = [
     (RULE("session.md"), "I", "rule", "always"),
     (RULE("behavior.md"), "I", "rule", "always"),
     (RULE("pev.md"), "I", "rule", "always"),
-    (RULE("project_docs.md"), "I", "rule", "always"),
+    (RULE("project_docs.md"), "IR", "rule", "lazy"),
     (MEM("playbook.md"), "R", "memory-lazy", "lazy"),
     (MEM("code_standard.md"), "R", "memory-lazy", "lazy"),
     (MEM("skills_triggers.md"), "R", "memory-lazy", "lazy"),
@@ -263,8 +275,9 @@ def _first_paragraph(body_lines):
     return " ".join(para).strip()
 
 
-def parse_md_file(path, letter, loading):
-    """Return (funcs, found_codes)."""
+def parse_md_file(path, letters, loading):
+    """Return (funcs, found_codes). `letters` is one or more type letters (e.g.
+    "I" or "IR") — a label whose first char is in `letters` is kept."""
     with open(path, "r", encoding="utf-8") as f:
         raw = f.read().splitlines()
     funcs, found = [], []
@@ -273,7 +286,7 @@ def parse_md_file(path, letter, loading):
         if not m:
             continue
         for code in m.group(1).split():
-            if not code.startswith(letter):
+            if code[0] not in letters:
                 continue
             rec = FuncRec(code)
             rec.loading = loading
@@ -385,6 +398,8 @@ def check(all_funcs, dup_index, text_blobs, retired):
     # RELATED targets are also "mentions"
     for _src, targets in RELATED.items():
         mentioned.update(targets)
+    # external-taxonomy collisions (OWASP A10, YC S26) are prose, not infra codes
+    mentioned -= NON_INFRA_MENTIONS
 
     orphans = sorted(
         c for c in (mentioned - defined) if c not in retired

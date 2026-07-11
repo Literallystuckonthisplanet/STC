@@ -78,7 +78,7 @@ ready-made solution first.
   new plan entry → `project_docs.md`.
 - For a **large** task, name the files you will touch and the verification
   you will run. If you cannot name them, you are not ready to start.
-- **Design system (UI tasks):** a UI task → read the project's `DESIGN.md`
+- **Design system (UI tasks):** <!-- I19 --> a UI task → read the project's `DESIGN.md`
   before generating; map the element onto a token/scale, no token → add a
   token (not raw). No `DESIGN.md` yet → adopt the process first
   (`templates/design-system/process.md`), do not generate UI on stock

@@ -1,4 +1,5 @@
 # Defect ledger — self-improving review
+<!-- R03 -->
 
 A reference catalog. Not loaded into always-context; read when a defect is
 caught and during catalog revision.

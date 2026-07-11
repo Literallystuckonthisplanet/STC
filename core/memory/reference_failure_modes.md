@@ -1,4 +1,5 @@
 # Failure-modes catalog (typical pitfalls + solutions, per use-case)
+<!-- R01 -->
 
 A reference catalog. Not loaded into always-context; read when writing a
 spec for EACH use-case, and as a debug-reflex before any edit to business

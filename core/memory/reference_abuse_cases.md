@@ -1,4 +1,5 @@
 # Abuse-case catalog (forbidden scenarios / bypass vectors)
+<!-- R06 -->
 
 A reference catalog. Not loaded into always-context; read when writing a
 spec/AC/test-cases for any S1+ project, and during a security pass.

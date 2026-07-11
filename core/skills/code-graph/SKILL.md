@@ -27,7 +27,7 @@ Not installed → install per the upstream (safishamsi/graphify), then
 
 ## When to use
 
-- **Entering an unfamiliar repo** → `ingest`, then `query`/`explain` to get
+- **Entering an unfamiliar repo** → `extract .`, then `query`/`explain` to get
   the lay of the land faster than reading files linearly.
 - **"How does X connect to Y" / "what calls this"** → `path` (shortest path
   between two nodes) or `affected` (reverse traversal — what a change to X
@@ -41,7 +41,7 @@ Not installed → install per the upstream (safishamsi/graphify), then
 ## When NOT to use
 
 - A trivial repo (a few files, obvious structure) — the graph is overhead.
-- A one-off single-file lookup — grep is faster than ingest.
+- A one-off single-file lookup — grep is faster than a full extract.
 - The question is about a *running* system's behavior, not its code
   structure → use Playwright/e2e, not the code graph.
 
@@ -51,8 +51,10 @@ Not installed → install per the upstream (safishamsi/graphify), then
 unless noted. Output lands in `graphify-out/` (gitignored in target repos).
 
 ### Build / refresh
-- `${G} ingest` — initial build. Extracts code → graph.json + report +
+- `${G} extract .` — initial build. Extracts code → graph.json + report +
   communities. Heaviest step; run once per repo, then maintain incrementally.
+  (`--backend`/`--model` pick the clustering LLM.) NOTE: there is no `ingest`
+  command in graphify 0.9.x — build is `extract`, refresh is `update`.
 - `${G} update` — re-extract changed code files, update the graph (no LLM
   needed unless new communities). Use after edits. `--force` overwrites even
   if the rebuild has fewer nodes (after a deletion-heavy refactor).
@@ -72,11 +74,14 @@ unless noted. Output lands in `graphify-out/` (gitignored in target repos).
 - `${G} explain "<node>"` — plain-language explanation of a node + neighbors.
 - `${G} diagnose multigraph` — report same-endpoint edge-collapse risk.
 
-### LLM Wiki (the Karpathy pattern over the graph)
-- `${G} wiki` — build an agent-crawlable markdown wiki from the graph. See
-  the `llm-wiki` skill for the underlying pattern.
-- `${G} reflect` — generate/update `LESSONS.md` from the graph's
-  `memory/` (the work-memory feedback loop).
+### Lessons / feedback (the Karpathy pattern over the graph)
+- `${G} reflect` — generate/update `LESSONS.md` from the graph's `memory/`
+  (the work-memory feedback loop; aggregates saved `save-result` outcomes).
+- `${G} add <url>` — fetch a source into `./raw` and fold it into the graph
+  (the Ingest step of the llm-wiki pattern for external docs/papers).
+  NOTE: graphify 0.9.x has **no `wiki` command** — the llm-wiki pattern is
+  realised via `add` (ingest) + `query` + `save-result`/`reflect` (lessons),
+  not a single `wiki` builder. See the `llm-wiki` skill for the pattern.
 
 ### Cross-repo / git
 - `${G} merge-graphs <g1> <g2>` — merge two graph.json files into one
@@ -103,7 +108,7 @@ This folder is **gitignored in target repos** (it is derived, not source).
 
 ## Workflow
 
-1. **First contact with a repo** → `${G} ingest`. Then a couple of
+1. **First contact with a repo** → `${G} extract .`. Then a couple of
    `query`/`explain` to orient.
 2. **During work** → `query` for "how/why" questions instead of escalating
    grep. `affected` before a non-trivial change.
@@ -118,6 +123,7 @@ This folder is **gitignored in target repos** (it is derived, not source).
 - graphify auto-detects the LLM backend for community labeling
   (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`). No per-query cost for `query`/
   `affected`/`path`/`explain` (graph traversal) — LLM cost is only on
-  `ingest` (clustering), `label`, `wiki`, `reflect`.
+  `extract` (clustering), `label`, `reflect`.
 - For the *knowledge-wiki* angle (compile-once, not RAG), see the `llm-wiki`
-  skill — graphify `wiki`/`reflect` implement that pattern over a code graph.
+  skill — over a code graph the pattern is realised via `add` (ingest) +
+  `query` + `reflect` (there is no single `wiki` command in graphify 0.9.x).

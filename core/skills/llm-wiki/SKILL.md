@@ -1,6 +1,6 @@
 ---
 name: llm-wiki
-description: "The Karpathy LLM-Wiki pattern: compile knowledge ONCE into a maintained markdown wiki, not re-derive it on every query like RAG. Three operations (Ingest / Query / Lint), three layers (raw sources / wiki / schema). Use for long-running research, a second-brain, or a knowledge base over a codebase/docs. graphify wiki/reflect is the primary implementation in STC."
+description: "The Karpathy LLM-Wiki pattern: compile knowledge ONCE into a maintained markdown wiki, not re-derive it on every query like RAG. Three operations (Ingest / Query / Lint), three layers (raw sources / wiki / schema). Use for long-running research, a second-brain, or a knowledge base over a codebase/docs. Over a code graph the pattern is realised via graphify add/query/reflect (no single 'wiki' command)."
 ---
 
 # LLM Wiki (the Karpathy pattern)
@@ -96,10 +96,13 @@ healthy as it grows.
 
 ## Implementations (in STC)
 
-- **graphify** (`code-graph` skill) — `graphify wiki` builds an
-  agent-crawlable markdown wiki from the code graph; `graphify reflect`
-  generates/maintains `LESSONS.md` from the graph's work-memory. This is the
-  **primary** path in STC (graphify is a required capability).
+- **graphify** (`code-graph` skill) — realises the pattern over a code graph:
+  `graphify add <url>` folds a source into the graph (**Ingest**), `graphify
+  query "<q>"` answers with graph context (**Query**), `graphify save-result` +
+  `graphify reflect` maintain `LESSONS.md` from the work-memory (the **Lint**/
+  feedback loop). NOTE: graphify 0.9.x has **no single `wiki` command** — the
+  wiki-building step is done by the agent following this skill, not one CLI call.
+  This is the **primary** path in STC (graphify is a required capability).
 - **Manual** — an editor (Obsidian) + an agent following this skill, over
   your own `raw/` + wiki directory. The pattern is editor-agnostic; the wiki
   is just markdown.

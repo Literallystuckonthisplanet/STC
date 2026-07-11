@@ -118,8 +118,9 @@ error table.
 
 **`code-graph`** *(graphify CLI, REQUIRED)* — turn a codebase into a queryable
 knowledge graph (build once, query on demand — the graph compounds, grep does
-not). graphify `${G} ingest` on first contact with a repo → `query`/`explain`
-to orient, `affected "<node>"` for a change's blast radius before a refactor,
+not). graphify `${G} extract .` on first contact with a repo (build; there is
+no `ingest` command in 0.9.x) → `query`/`explain` to orient, `affected
+"<node>"` for a change's blast radius before a refactor,
 `save-result` after a good Q&A for the feedback loop. Part of the STC base
 set, like Playwright for e2e. Wraps the graphify CLI (`${GRAPHIFY_CLI}`).
 
@@ -129,8 +130,8 @@ RAG ("no accumulation"). Three operations (Ingest integrates a source into
 ~10–15 wiki pages + updates `index.md`/`log.md`; Query synthesizes with
 citations and files good answers back; Lint health-checks contradictions/
 stale/orphans/missing-links). Three layers: raw sources (immutable) / wiki
-(LLM-owned) / schema (AGENTS.md). graphify `wiki`/`reflect` is the primary
-implementation in STC (over a code graph).
+(LLM-owned) / schema (AGENTS.md). Over a code graph the pattern is realised via
+graphify `add`/`query`/`reflect` (no single `wiki` command in 0.9.x).
 
 ## git guard (a hook, not a skill)
 <!-- H01 -->

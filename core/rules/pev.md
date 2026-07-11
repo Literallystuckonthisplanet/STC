@@ -184,28 +184,13 @@ separate reason to compact — do not starve it for economy.
 When in doubt → pick the more thorough mode. Agent checks fire by triggers
 (see playbook), not tied to scale.
 
-## Skills — when to launch (trigger summary)
+## Skills — when to launch
 
-Triggers here (always-context); detailed descriptions →
-`skills_triggers.md` (lazy).
-
-| Skill | Moment / trigger | Who initiates |
-|---|---|---|
-| `diagnose` | a bug/regression ("it broke", "not working") | I do, after asking "what's the pass/fail loop?" |
-| `zoom-out` | starting work in unfamiliar code (before Plan step 2); also folded into agent/worktree prompts (build-agent contract, `reuse-before-reinvent` → playbook § Agent prompt contract) | I do |
-| `grill-me` | a large task with ≥3 open forks, before Plan step 4 | I offer it to the user |
-| `tdd` | business logic (calculations/validation/transforms), Do phase | joint decision (Plan step 3) |
-| `code-review` | reviewing a diff that contains logic (tactics) | I do |
-| `verify` | the change is UI/style only | I do |
-| design system | a UI task: before generating (Plan) + anti-generic check at Verify | I do |
-| `improve-architecture` | roughly every 3 completed large tasks (strategy, whole codebase) | I offer it to the user |
-| `prototype` | "show me options", "which is better", "compare approaches" | I offer it to the user |
-| `to-spec` + `to-tasks` | large: spec + tasks (after the plan is finalised); medium: tasks only (when taken into work) | I do |
-| compact / session-end | "compact/save the context", session end (a hook reminds) | I do |
-| `caveman` | "briefly", "fewer tokens"; agent pipelines | the user, or I in sub-agent prompts |
-
-Agent checks (`code-reviewer`, `security-arch`, `e2e`, `security-deps`,
-legal review) — see § Verify above.
+The "which skill, when" trigger summary table + per-skill nuances live in
+`skills_triggers.md` (lazy — read it when choosing a skill). Kept out of
+always-context on purpose (detailed tables → lazy). Agent checks
+(`code-reviewer`, `security-arch`, `e2e`, `security-deps`, legal review) —
+see § Verify above.
 
 ## When the loop does not apply
 

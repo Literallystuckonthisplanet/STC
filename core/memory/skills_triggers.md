@@ -2,12 +2,33 @@
 name: skills-triggers
 layer: memory            # lazy reference — read when choosing a skill
 scope: global
-description: "Skills — descriptions and nuances. LAZY: read when selecting a skill. The summary 'which skill when' table lives in pev.md § Skills (always-context)."
+description: "Skills — the 'which skill when' trigger summary table + per-skill descriptions and nuances. LAZY: read when selecting a skill. pev.md § Skills carries only a one-line pointer here (keeps always-context lean)."
 ---
 
-**This file holds skill details (lazy).** The summary table "which skill when"
-lives in `pev.md` § Skills (always-context). Here — nuances absent from that
-table.
+**This file holds the skill trigger summary table + per-skill details (lazy).**
+Read it when selecting a skill. `pev.md` § Skills keeps only a one-line pointer
+to this file, so the always-context stays lean (detailed tables → lazy, per
+playbook § Memory-instruction style).
+
+## Trigger summary — which skill, when
+
+| Skill | Moment / trigger | Who initiates |
+|---|---|---|
+| `diagnose` | a bug/regression ("it broke", "not working") | I do, after asking "what's the pass/fail loop?" |
+| `zoom-out` | starting work in unfamiliar code (before Plan step 2); also folded into agent/worktree prompts (build-agent contract, `reuse-before-reinvent` → playbook § Agent prompt contract) | I do |
+| `grill-me` | a large task with ≥3 open forks, before Plan step 4 | I offer it to the user |
+| `tdd` | business logic (calculations/validation/transforms), Do phase | joint decision (Plan step 3) |
+| `code-review` | reviewing a diff that contains logic (tactics) | I do |
+| `verify` | the change is UI/style only | I do |
+| design system | a UI task: before generating (Plan) + anti-generic check at Verify | I do |
+| `improve-architecture` | roughly every 3 completed large tasks (strategy, whole codebase) | I offer it to the user |
+| `prototype` | "show me options", "which is better", "compare approaches" | I offer it to the user |
+| `to-spec` + `to-tasks` | large: spec + tasks (after the plan is finalised); medium: tasks only (when taken into work) | I do |
+| compact / session-end | "compact/save the context", session end (a hook reminds) | I do |
+| `caveman` | "briefly", "fewer tokens"; agent pipelines | the user, or I in sub-agent prompts |
+
+Agent checks (`code-reviewer`, `security-arch`, `e2e`, `security-deps`, legal
+review) — see pev § Verify / § Agent triggers below in this file.
 
 Installed commands live in `${COMMANDS_DIR}/`. Built-in harness skills
 (verify, code-review, simplify, run, schedule, loop, etc.) are not duplicated
@@ -129,5 +150,5 @@ File: `${HOOKS_DIR}/block-dangerous-git.sh`. Full hook map + the
 `core/hooks/README.md`.
 
 **Why:** skills without a clear launch moment die — the user does not remember
-to call them, so triggers are lifted into always-context (pev § Skills) or
-into event-triggered hooks (ADR-001), and only details stay here.
+to call them, so the trigger summary lives here (§ Trigger summary, pointed to
+from pev § Skills) or triggers move into event-triggered hooks (ADR-001).

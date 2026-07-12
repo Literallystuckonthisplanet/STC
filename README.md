@@ -2,7 +2,7 @@
 
 [![release](https://img.shields.io/github/v/tag/Literallystuckonthisplanet/STC?label=release&sort=semver&color=blue)](https://github.com/Literallystuckonthisplanet/STC/tags)
 [![last commit](https://img.shields.io/github/last-commit/Literallystuckonthisplanet/STC)](https://github.com/Literallystuckonthisplanet/STC/commits/main)
-[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![license](https://img.shields.io/badge/license-AGPL--3.0%20%2B%20commercial-blue)](LICENSING.md)
 ![stack](https://img.shields.io/badge/stack-Python%20%C2%B7%20Bash-informational)
 ![harness](https://img.shields.io/badge/harness-Claude%20Code-8A2BE2)
 
@@ -373,4 +373,13 @@ Development currently focuses on the **`claude`** harness. The **`zcode`** adapt
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+STC Core is **dual-licensed**: [**AGPL-3.0**](LICENSE) (free, OSI-approved open
+source) for the community, and a **commercial license** for closed-source or
+proprietary use. Most users — individuals, researchers, open-source projects,
+companies self-hosting and willing to share modifications — use it free under the
+AGPL-3.0. Embedding it in a closed product or running it as a hosted service
+without sharing changes needs the commercial license.
+
+See [`LICENSING.md`](LICENSING.md) for which applies to you, and
+[`COMMERCIAL-LICENSE.md`](COMMERCIAL-LICENSE.md) for the commercial terms.
+Commercial inquiries: Anton Gavryushin — <gavryushin@gmail.com>.

@@ -11,6 +11,20 @@ release notes.
 
 ## [Unreleased]
 
+### Changed — relicensed MIT → AGPL-3.0 + commercial (dual-license)
+- STC Core is now **dual-licensed**: AGPL-3.0 (OSI-approved open source) for the
+  community + a commercial license for closed-source/proprietary use. Rationale
+  (researched): the AGPL+commercial model (MySQL, Grafana, Sidekiq; and where
+  MongoDB/Elastic/Redis landed after the SSPL/BSL backlash) fits a solo maintainer
+  wanting "community free, companies pay" without the fork-risk of source-available
+  licenses. `LICENSE` now carries the full AGPL-3.0 text. Added `LICENSING.md`
+  (which license applies to whom), `COMMERCIAL-LICENSE.md` (**DRAFT** — pending
+  legal review), `THIRD_PARTY_LICENSES.md` (retains the obra/Superpowers MIT notice
+  for the diagnose/tdd/worktree skills), and `CLA.md` (contributor agreement so
+  contributions can be offered under both licenses). README license badge + section
+  updated. NOTE: already-published MIT commits remain usable under MIT; this changes
+  the license going forward.
+
 ### Docs — README badges + hook-count sync
 - Added status badges to the README header (release tag, last commit, license,
   stack, harness). Synced the stale hook count "17 / H01–H17" → "19 / H01–H19"

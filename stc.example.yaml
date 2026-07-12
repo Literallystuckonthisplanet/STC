@@ -101,7 +101,7 @@ mcp:
 # ------------------------------------------------------------
 # graphify (standalone CLI — REQUIRED core capability, NOT an MCP server)
 # Safishamsi/graphify runs as a skill/CLI, discovered via GRAPHIFY_CLI.
-# Install: `uv tool install "graphifyy[mcp]"` (note the package is "graphifyy").
+# Install: `uv tool install "graphify[mcp]"`.
 # The path below is resolved by hooks/skills as ${GRAPHIFY_CLI:-graphify}.
 # For headless LLM-backed labeling, graphify reads ANTHROPIC_API_KEY (its
 # "claude" backend reaches Anthropic-compatible endpoints like GLM's).

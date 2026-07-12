@@ -159,7 +159,7 @@ STC is deliberately light on dependencies, but a few external tools are load-bea
 
 | Tool / pattern | Author | Link | Role in STC |
 |---|---|---|---|
-| **graphify** | safishamsi (YC S26) | [github.com/safishamsi/graphify](https://github.com/safishamsi/graphify) | **Required** core capability. Turns a codebase into a queryable knowledge graph (tree-sitter AST + LLM entity clustering). Powers the `code-graph` skill (S18) — `extract .` once (build), then `query`/`explain`/`affected` for blast-radius before a refactor (no `ingest` command in 0.9.x). Standalone CLI, not an MCP server. Install: `uv tool install "graphifyy[mcp]"`. |
+| **graphify** | safishamsi (YC S26) | [github.com/safishamsi/graphify](https://github.com/safishamsi/graphify) | **Required** core capability. Turns a codebase into a queryable knowledge graph (tree-sitter AST + LLM entity clustering). Powers the `code-graph` skill (S18) — `extract .` once (build), then `query`/`explain`/`affected` for blast-radius before a refactor (no `ingest` command in 0.9.x). Standalone CLI, not an MCP server. Install: `uv tool install "graphify[mcp]"`. |
 | **LLM-Wiki pattern** | Andrej Karpathy | [gist.github.com/karpathy/442a6bf555914893e9891c11519de94f](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) | The pattern behind the `llm-wiki` skill (S19): treat the LLM as a knowledge compiler (compile-once, not RAG). Three operations (Ingest/Query/Lint), three layers (raw / wiki / schema). Over a code graph it is realised via graphify `add`/`query`/`reflect` (no single `wiki` command in 0.9.x). |
 | **Superpowers** | Jesse Vincent (obra) | [github.com/obra/superpowers](https://github.com/obra/superpowers) (MIT) | Methodology source. STC does **not** depend on it — every capability is self-contained in `core/` (Decision 4). Three skills were **merged** from the user's own commands + the superpowers equivalent: `diagnose` (← systematic-debugging), `tdd` (← test-driven-development), `worktree` (← using-git-worktrees). Each carries a "Supporting sources" block for the monthly upstream-drift check. |
 | **Context7** | Upstash | [npmjs.com/package/@context7/mcp](https://www.npmjs.com/package/@context7/mcp) | The `docs` agent + docs-first contract. Vendor-neutral docs knowledge base. Powers H16 (integration-docs-gate) and the read-first-router buy-vs-build reminders. Secret via `CONTEXT7_API_KEY`. |
@@ -173,7 +173,7 @@ STC is deliberately light on dependencies, but a few external tools are load-bea
 
 Hooks are the **enforcement layer** (ADR-001: a rule in always-text recidivs; a rule in a hook does not). A hook reads tool-call JSON from stdin and either **hard-blocks** (`exit 2`), **JIT-injects** context (`hookSpecificOutput.additionalContext`), or **passes** (`exit 0`). They are the guarantee behind the rules — the rule states the intent, the hook enforces it.
 
-~7 hooks "always inject" context at session/tool events; ~12 "guard on action" and block dangerous or wasteful operations. (H11 output-hygiene ships in `core/` but is set `supported: false` on the claude harness — which already collapses large output — so claude deploys **18** active hooks.)
+Six hooks "always inject" context at session/tool events; thirteen "guard on action" and block dangerous or wasteful operations. (H11 output-hygiene ships in `core/` but is set `supported: false` on the claude harness — which already collapses large output — so claude deploys **18** active hooks.)
 
 | ID | Event | What it does | Type |
 |---|---|---|---|
@@ -194,6 +194,8 @@ Hooks are the **enforcement layer** (ADR-001: a rule in always-text recidivs; a 
 | **H15** exec-offload-guard | PreToolUse(Bash) | Blocks expensive data-scripts (import/seed/publish/scrape/sync; audits without `--json`) → must offload to an ephemeral agent. | guard |
 | **H16** integration-docs-gate | PreToolUse(Write\|Edit\|MultiEdit) | Blocks editing a named integration's code without saved research (failure-modes catalog or notes/research). Lifted by a research save or a `// docs-checked:` marker. | guard |
 | **H17** secret-read-guard | PreToolUse(Read\|Glob\|Grep) | Blocks reading secret files (`.env`/`.pem`/`id_rsa`). Harness-neutral equivalent of Claude's `permissions.deny` (ZCode has no perms engine). Override via `// secret-exception:`. | guard |
+| **H18** graphify-first | PreToolUse(Grep\|Bash) | In a repo with a built code-graph (`graphify-out/graph.json`), blocks the first grep-style search once → nudges `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; exact-string lookups pass). Repos without a graph are never gated. | guard |
+| **H19** precompact-memory-guard | PreCompact | Before compaction (manual `/compact` or auto), rotates project memory first (I26) so the summary loses nothing. The safety net behind "facts → memory now". | guard |
 
 On ZCode, where there is no `permissions.deny` engine, **H17 is the only read-guard** for secrets. On Claude Code, both run (deny is faster when it short-circuits; the hook covers any harness gap).
 
@@ -329,7 +331,7 @@ python3 deploy/tests/test_render.py    # zero-dependency stdlib runner
 python3 -m pytest deploy/tests/        # the suite is pytest-compatible
 ```
 
-The suite (33 tests) pins every deploy bug from the history — the three render bugs (event-hook matcher, `$NATIVE_DIR` resolution, `+x` bit), the double-wiring merge, idempotent re-deploy, legacy-hook absorption, the per-harness provider, naming consistency, session-path warnings, the frozen-adapter skip, the reference-integrity / personal-data / glm-on-claude prechecks, and `SKILL.md` for both deliveries — so they cannot silently return.
+The suite (43 tests) pins every deploy bug from the history — the three render bugs (event-hook matcher, `$NATIVE_DIR` resolution, `+x` bit), the double-wiring merge, idempotent re-deploy, legacy-hook absorption, the per-harness provider, naming consistency, session-path warnings, the frozen-adapter skip, the reference-integrity / personal-data / glm-on-claude prechecks, and `SKILL.md` for both deliveries — so they cannot silently return.
 
 ## Repository layout
 
@@ -367,9 +369,9 @@ See [`docs/PROGRESS.md`](docs/PROGRESS.md) for the full build log and design dec
 
 ## Status
 
-Early beta. The `0.1.0` line carries the deploy pipeline; breaking changes can happen between minor bumps until `1.0.0`. Contributions and ideas welcome.
+Early beta — the `0.1.x` line (current release in the badge above) carries the deploy pipeline and 19 hooks; breaking changes can happen between minor bumps until `1.0.0`. Contributions and ideas welcome.
 
-Development currently focuses on the **`claude`** harness. The **`zcode`** adapter is **frozen** — it stays in-tree as the reference degrade realisation (and the two-axis abstraction is unchanged), but default deploys skip it; deploy it explicitly with `--target zcode` if you need it.
+Development currently focuses on the **`claude`** harness (the reference realisation: 18 active hooks, 15 skills, 9 agents, 8 commands). The **`zcode`** adapter is **frozen** — it stays in-tree as the reference degrade realisation (and the two-axis abstraction is unchanged), but default deploys skip it; deploy it explicitly with `--target zcode` if you need it.
 
 ## License
 

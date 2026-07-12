@@ -1,5 +1,11 @@
 # STC Core — Standard Template Construct
 
+[![release](https://img.shields.io/github/v/tag/Literallystuckonthisplanet/STC?label=release&sort=semver&color=blue)](https://github.com/Literallystuckonthisplanet/STC/tags)
+[![last commit](https://img.shields.io/github/last-commit/Literallystuckonthisplanet/STC)](https://github.com/Literallystuckonthisplanet/STC/commits/main)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+![stack](https://img.shields.io/badge/stack-Python%20%C2%B7%20Bash-informational)
+![harness](https://img.shields.io/badge/harness-Claude%20Code-8A2BE2)
+
 > _A Standard Template Construct stores the blueprints. The deploy pipeline reproduces them._
 >
 > In Warhammer 40k lore, an STC is a relic from the Dark Age of Technology — a terminal that holds complete, reproducible construction blueprints. You feed it a request, it emits a buildable design adapted to the materials at hand.
@@ -20,7 +26,7 @@
   - [Capability ≠ realisation](#capability--realisation)
   - [Always-context vs on-demand](#always-context-vs-on-demand)
 - [Third-party tools and credits](#third-party-tools-and-credits)
-- [The 17 hooks](#the-17-hooks)
+- [The 19 hooks](#the-19-hooks)
 - [The rules (always-context)](#the-rules-always-context)
 - [Memory structure](#memory-structure)
 - [Skills, agents, commands](#skills-agents-commands)
@@ -163,11 +169,11 @@ STC is deliberately light on dependencies, but a few external tools are load-bea
 | **GLM** | Zhipu / BigModel | [open.bigmodel.cn](https://open.bigmodel.cn/api/anthropic) | Model provider (`core/models/glm.yaml`). Anthropic-compatible Messages endpoint, mounts into any harness speaking the Anthropic protocol. |
 | **Claude** | Anthropic | [anthropic.com](https://api.anthropic.com) | Model provider (`core/models/claude.yaml`). The natural pairing with the claude harness but not bound to it. |
 
-## The 17 hooks
+## The 19 hooks
 
 Hooks are the **enforcement layer** (ADR-001: a rule in always-text recidivs; a rule in a hook does not). A hook reads tool-call JSON from stdin and either **hard-blocks** (`exit 2`), **JIT-injects** context (`hookSpecificOutput.additionalContext`), or **passes** (`exit 0`). They are the guarantee behind the rules — the rule states the intent, the hook enforces it.
 
-~7 hooks "always inject" context at session/tool events; ~10 "guard on action" and block dangerous or wasteful operations.
+~7 hooks "always inject" context at session/tool events; ~12 "guard on action" and block dangerous or wasteful operations. (H11 output-hygiene ships in `core/` but is set `supported: false` on the claude harness — which already collapses large output — so claude deploys **18** active hooks.)
 
 | ID | Event | What it does | Type |
 |---|---|---|---|
@@ -273,7 +279,7 @@ The deployer is built to be safe to re-run on a live harness. Every scenario bel
 `render.py` is a **pure function**: `render_harness(stc, registry, provider, adapter, core_dir, repo_dir) -> RenderResult`. It NEVER writes to disk — the orchestrator owns the write step, so render is testable and safe to dry-run. It runs 8 layer renderers in order, each populating the same `RenderResult`:
 
 1. **`_render_always_context`** — the bundle (the `.stc.md` file with the `@import` lines into `~/.stc/core/...`) + the single marker `@import` line that goes into the user's always-context file.
-2. **`_render_hooks`** — the 17 hook scripts (with `${VAR}` substitution) + the matcher wiring. Delivery mode decides whether wiring becomes a `settings.json` patch (files mode) or a self-contained `hooks/hooks.json` inside the plugin dir (plugin mode).
+2. **`_render_hooks`** — the 19 hook scripts (with `${VAR}` substitution) + the matcher wiring. Delivery mode decides whether wiring becomes a `settings.json` patch (files mode) or a self-contained `hooks/hooks.json` inside the plugin dir (plugin mode).
 3. **`_render_commands`** — the slash command markdown.
 4. **`_render_subagents`** — typed agent files (native) or degraded dispatch instructions.
 5. **`_render_skills`** — the skill directories.
@@ -332,7 +338,7 @@ STC/
 ├── core/
 │   ├── rules/          # 4 always-context rule files
 │   ├── memory/         # MEMORY.md + playbook + code_standard + 4 reference catalogs + skills_triggers
-│   ├── hooks/          # 17 hook scripts (H01–H17) + README
+│   ├── hooks/          # 19 hook scripts (H01–H19) + README
 │   ├── skills/         # 15 skills (methodology + utility)
 │   ├── agents/         # registry.yaml + 9 agent prompt bodies
 │   ├── commands/       # 8 slash commands

@@ -11,6 +11,13 @@ release notes.
 
 ## [Unreleased]
 
+### Docs — README badges + hook-count sync
+- Added status badges to the README header (release tag, last commit, license,
+  stack, harness). Synced the stale hook count "17 / H01–H17" → "19 / H01–H19"
+  across the TOC, the hooks section, the renderer description, and the repo-layout
+  tree; noted that H11 is inert on claude (18 active there). The Status section is
+  kept (it states maturity + which harness is active/frozen) and is still accurate.
+
 ### Changed — llm-wiki `reflect` is on-demand, not a session-end step
 - Correction to the "llm-wiki feedback loop" entry below (which overstated the loop
   as fully self-running). `graphify reflect` calls the LLM and therefore **costs** —

@@ -11,6 +11,16 @@ release notes.
 
 ## [Unreleased]
 
+### Changed — llm-wiki `reflect` is on-demand, not a session-end step
+- Correction to the "llm-wiki feedback loop" entry below (which overstated the loop
+  as fully self-running). `graphify reflect` calls the LLM and therefore **costs** —
+  hanging it on the session-end trigger would bill silently and skip on a tab-close
+  (the same session-end unreliability being removed elsewhere this cycle). `reflect`
+  is now **on-demand only**: run it when the user explicitly asks to refresh
+  `LESSONS.md`, flagging the cost. The free half of the loop (H18-nudged `query` +
+  `save-result`) still accumulates the graph work-memory continuously. Updated
+  `session.md` §3 and the `llm-wiki` skill.
+
 ### Added — H19 precompact-memory-guard (rotate memory before compaction)
 - New hook `precompact-memory-guard.sh` on the `PreCompact` event (fires before a
   manual `/compact` AND before auto-compaction): injects the I26 memory-rotation
@@ -51,13 +61,14 @@ release notes.
   Regression test added. Applied: removed the unused `github` MCP (all GitHub
   work goes through the git CLI) and `gsheets` from the private config.
 
-### Added — llm-wiki feedback loop wired into the session lifecycle
-- The Karpathy llm-wiki pattern now runs itself instead of being a manual ritual:
-  H18 nudges `graphify query` in a graphed repo → a useful answer is
-  `save-result`'d during work → `session.md` §3 (session end) runs `graphify
-  reflect` to fold saved outcomes into `LESSONS.md`. Ingest/Query/Lint mapped
-  onto add/query/reflect; the lessons compound across sessions. (graphify 0.9.x
-  has no single `wiki` command, so the loop is the reflect/feedback path.)
+### Added — llm-wiki feedback loop over the code graph
+- The Karpathy llm-wiki pattern is realised over graphify: H18 nudges `graphify
+  query` in a graphed repo → a useful answer is `save-result`'d during work (both
+  free, no LLM) → `graphify reflect` folds saved outcomes into `LESSONS.md`.
+  Ingest/Query/Lint mapped onto add/query/reflect. (graphify 0.9.x has no single
+  `wiki` command, so the loop is the reflect/feedback path.) NOTE: `reflect` is a
+  paid, on-demand step — see the "Changed — llm-wiki reflect is on-demand" entry
+  above (this original entry's "runs itself at session end" wording was corrected).
 
 ### Added — H18 graphify-first (enforce code-graph over grep-chains)
 - New hook `graphify-first.sh`: in a repo that already has a built code-graph

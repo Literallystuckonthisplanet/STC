@@ -62,9 +62,13 @@ themselves you execute:
    - **llm-wiki feedback loop:** if you worked in a repo with a built code-graph
      (`graphify-out/`) and had useful `graphify query` answers, they should have
      been `graphify save-result`'d as you went (H18 nudges the query; the good
-     answer gets saved). At session end run `graphify reflect` there to fold the
-     saved outcomes into `LESSONS.md` — the graph's lessons compound across
-     sessions instead of being re-derived. Skip if you didn't use a graph.
+     answer gets saved — free, no LLM). Do NOT auto-run `graphify reflect` here:
+     `reflect` calls the LLM (it costs, unlike query/save-result) and hanging it
+     on the unreliable session-end trigger would bill silently and skip on a
+     tab-close. `reflect` is **on-demand only** — run it (folding the saved
+     outcomes into `LESSONS.md`) when the user explicitly asks to refresh lessons,
+     stating it is a paid step. The free half of the loop (query + save-result)
+     keeps accumulating regardless.
 2. Stop the project's services: kill dev servers on `${DEV_PORTS}` and run
    `docker compose down` (or the project's documented shutdown command).
 

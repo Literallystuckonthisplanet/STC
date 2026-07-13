@@ -158,7 +158,15 @@ Rule: what a linter catches does NOT go into manual/agent review.
 ### SEC — baseline security (typical for any web)
 - [SEC-1] Injections: parameterized queries (SQL/NoSQL); output escaping
   (XSS). 👁🤖
-- [SEC-2] Secrets — only in env; never in code/bundle/logs. 👁
+- [SEC-2] Secrets — only in env; never in code/bundle/logs. 🤖👁
+  A key that ever reached code, git history, a deployed build, a log, or a
+  chat is **LEAKED, not removable**: deleting it from the file leaves the value
+  in history / the shipped build → treat it as compromised and **ROTATE**
+  (revoke + reissue), then wire the new value via env. The vibe-coding failure
+  mode: a key pasted inline "just to test" reaches a public repo in minutes
+  (scanner bots find it faster). Machine gate: **H01** scans the staged diff on
+  every commit and hard-blocks a real key format (length-gated, mirrors H05);
+  `secret-ok` on the line is the explicit vouch for a deliberate public value.
 - [SEC-3] Transport: HTTPS everywhere; security headers (CSP, HSTS). 👁
 - [SEC-4] Access control to functions — on the server, not "hid the button in
   the UI". 👁

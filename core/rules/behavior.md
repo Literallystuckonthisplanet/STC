@@ -31,6 +31,14 @@ here is a pointer; the hook is the guarantee.
   placeholder (`<TOKEN>`, `${API_TOKEN}`). Treat the user's real values as
   toxic.
 - `.env` files are never committed. `.gitignore` must cover them.
+- **Leaked = compromised, not removable:** if a real key ever reached project
+  code, git history, a deployed build, a log, or chat, deleting it is NOT a fix
+  — the value is already out. **Rotate it** (revoke + reissue), then wire the
+  new value via `${SECRETS_ENV}`. This is the vibe-coding trap: an inline key
+  "just to test" hits a public repo in minutes. **Enforced: H01** scans the
+  staged diff before every `git commit` and hard-blocks a real key format
+  (length-gated, `secret-ok` on the line vouches for a deliberate public value).
+  Code-standard rationale: [SEC-2].
 
 ## Memory rotation — project memory stays fresh
 <!-- I26 -->

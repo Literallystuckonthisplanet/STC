@@ -167,6 +167,7 @@ subagents:
     security-deps:  { supported: true,  binding: { model_tier: fast, tools: [Bash, Read, WebSearch],                 skill_link: security-deps } }
     e2e:            { supported: true,  binding: { model_tier: mid,  tools: [Bash, Read, Glob, playwright_browser],  skill_link: e2e } }
     cleanup:        { supported: true,  binding: { model_tier: fast, tools: [Read, Edit, Write, Bash, Grep, Glob],   skill_link: null } }
+    builder:        { supported: true,  binding: { model_tier: mid,  tools: [Read, Edit, Write, Bash, Grep, Glob],   skill_link: null } }   # FR-28 executor tier: ONE plan block per spec/brief, worktree-friendly, DECIDED/FORK protocol
     # Investigation
     research:       { supported: true,  binding: { model_tier: mid,  tools: [Read, Glob, Grep, WebSearch, WebFetch], skill_link: research } }
     docs:           { supported: true,  binding: { model_tier: fast, tools: [context7_resolve, context7_query],      skill_link: docs } }

@@ -68,6 +68,13 @@ agents:
     skill_link: null              # mechanical executor; no separate methodology skill
     dispatches: "A mechanical/codemod executor against a clear spec (rename across repo, lint-fix batch, code-standard cleanup). Does NOT decide what to change — applies a handed list and verifies by static checks."
 
+  builder:
+    model_tier: mid
+    tools: [Read, Edit, Write, Bash, Grep, Glob]
+    affinity: any
+    skill_link: null              # the brief (spec section) is the methodology
+    dispatches: "Executes ONE plan block against a ready spec/brief — the sonnet executor tier of FR-28 orchestrator mode (main plans and dispatches; builder writes the code, worktree-friendly). Decides local trivia (DECIDED lines), STOPS on architectural/business forks and returns a FORK report instead of guessing."
+
   # ------------------------------------------------------------
   # Investigation
   # ------------------------------------------------------------

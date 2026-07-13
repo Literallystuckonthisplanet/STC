@@ -243,6 +243,15 @@ def _merge_settings_patch(patch, native_dir, overwrite, skip_collisions):
         perms = live.setdefault("permissions", {})
         user_deny = [d for d in perms.get("deny", []) if d not in stc_deny]
         perms["deny"] = user_deny + stc_deny
+    # session defaults (FR-28) — STC-owned start mode + main-session model.
+    # Written unconditionally (STC owns these keys while session_defaults is
+    # configured); the pre-apply backup snapshot covers restore, and uninstall
+    # removes them only if still equal to what STC wrote.
+    sd = patch.get("_stc_session_defaults") or {}
+    if sd.get("defaultMode"):
+        live.setdefault("permissions", {})["defaultMode"] = sd["defaultMode"]
+    if sd.get("model"):
+        live["model"] = sd["model"]
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(live, fh, indent=2, ensure_ascii=False)
 
@@ -592,6 +601,10 @@ def _uninstall_one(target, manifest):
                     del live["permissions"]["deny"]
             if not live["permissions"]:
                 del live["permissions"]
+        # strip STC session defaults (FR-28) — only if still the value STC wrote
+        # (a hand-changed value after deploy belongs to the user; leave it).
+        if jn == "settings.json":
+            _strip_session_defaults(live, entry.get("session_defaults") or {})
         if jn == ".mcp.json" and live.get("mcpServers"):
             live["mcpServers"] = {k: v for k, v in live["mcpServers"].items() if not k.startswith("stc-")}
             if not live["mcpServers"]:
@@ -600,6 +613,21 @@ def _uninstall_one(target, manifest):
     del manifest[target]
     json.dump(manifest, open(MANIFEST, "w", encoding="utf-8"), indent=2)
     return manifest
+
+
+def _strip_session_defaults(live, sd):
+    """Remove STC-written session defaults (FR-28) from a live settings dict —
+    but ONLY while each value still equals what STC wrote. A value the user
+    re-pointed after deploy belongs to the user and survives uninstall.
+    Mutates `live` in place."""
+    perms = live.get("permissions")
+    if sd.get("defaultMode") and isinstance(perms, dict) \
+            and perms.get("defaultMode") == sd["defaultMode"]:
+        del perms["defaultMode"]
+        if not perms:
+            del live["permissions"]
+    if sd.get("model") and live.get("model") == sd["model"]:
+        del live["model"]
 
 
 def _purge_stc_home():
@@ -766,12 +794,14 @@ def _write_manifest(rr, target, native_dir):
     # the STC deny rules we contributed, so uninstall can strip exactly those
     # (not the user's own deny rules).
     stc_deny = (rr.json_patches.get("settings.json", {}).get("permissions", {}) or {}).get("_stc_deny") or []
+    session_defaults = rr.json_patches.get("settings.json", {}).get("_stc_session_defaults") or {}
     manifest[target] = {
         "native_dir": native_dir,
         "files": list(rr.files.keys()),
         "json": list(rr.json_patches.keys()),
         "always_context": ac_file,
         "permissions_deny": stc_deny,
+        "session_defaults": session_defaults,
     }
     json.dump(manifest, open(MANIFEST, "w", encoding="utf-8"), indent=2)
 

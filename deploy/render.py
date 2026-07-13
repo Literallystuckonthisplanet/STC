@@ -734,6 +734,33 @@ def _render_permissions(adapter, result):
     result.json_patches["settings.json"]["permissions"]["_stc_deny"] = deny
 
 
+def _render_session_defaults(adapter, stc, result):
+    """Render deploy.session_defaults into the settings.json patch (FR-28).
+
+    The orchestrator process assumes every session starts in plan mode on the
+    expensive model: plan + orchestrate in main, execute in cheap sub-agents.
+    Before FR-28 these two keys lived only as hand-edits in settings.json —
+    invisible to deploy, silently lost on a reinstall. Gated the same way as
+    _render_permissions: a harness without a native permissions engine has no
+    settings.json for these keys to live in.
+    """
+    sd = (stc.get("deploy", {}) or {}).get("session_defaults") or {}
+    if not sd:
+        return
+    perms = adapter.get("permissions", {}) or {}
+    if perms.get("native") is False:
+        return
+    patch = {}
+    if sd.get("default_mode"):
+        patch["defaultMode"] = sd["default_mode"]
+    if sd.get("model"):
+        patch["model"] = sd["model"]
+    if not patch:
+        return
+    result.json_patches.setdefault("settings.json", {})
+    result.json_patches["settings.json"]["_stc_session_defaults"] = patch
+
+
 def _render_glue(repo_dir, adapter, result):
     facts = adapter.get("harness_facts", {})
     sl = facts.get("statusline", {})
@@ -782,6 +809,7 @@ def render_harness(stc, registry, provider, adapter, core_dir, repo_dir):
     _render_skills(core_dir, adapter, varmap, result, skills_dir)
     _render_mcp(adapter, stc, result)
     _render_permissions(adapter, result)
+    _render_session_defaults(adapter, stc, result)
     _render_glue(repo_dir, adapter, result)
 
     # plugin-delivery: stamp the content hash into the seed now that all files

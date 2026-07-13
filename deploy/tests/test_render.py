@@ -834,6 +834,58 @@ def test_merge_non_dict_hooks_still_writes_permissions():
         "permissions.deny must still be written when hooks was corrupt"
 
 
+def test_session_defaults_rendered_and_merged():
+    # FR-28: deploy.session_defaults must land in the settings.json patch and
+    # merge into the live file as permissions.defaultMode + top-level model.
+    import tempfile
+    stc = {"deploy": {"session_defaults": {"default_mode": "plan", "model": "opus"}}}
+    adapter = {"permissions": {"deny": []}}  # native engine (native != false)
+    rr = R.RenderResult()
+    R._render_session_defaults(adapter, stc, rr)
+    sd = rr.json_patches.get("settings.json", {}).get("_stc_session_defaults")
+    assert sd == {"defaultMode": "plan", "model": "opus"}, f"patch wrong: {sd}"
+
+    d = tempfile.mkdtemp()
+    json.dump({"permissions": {"deny": ["Read(./secret)"]}},
+              open(os.path.join(d, "settings.json"), "w"))
+    D._merge_settings_patch(rr.json_patches["settings.json"], d,
+                            overwrite=False, skip_collisions=False)
+    out = json.load(open(os.path.join(d, "settings.json")))
+    assert out["permissions"]["defaultMode"] == "plan", out
+    assert out["model"] == "opus", out
+    assert out["permissions"]["deny"] == ["Read(./secret)"], "user deny must survive"
+
+
+def test_session_defaults_skipped_without_native_permissions():
+    # A harness without a native permissions engine (zcode) gets NO settings
+    # patch for session defaults — those keys would be dead config there.
+    stc = {"deploy": {"session_defaults": {"default_mode": "plan", "model": "opus"}}}
+    rr = R.RenderResult()
+    R._render_session_defaults({"permissions": {"native": False}}, stc, rr)
+    assert "settings.json" not in rr.json_patches, rr.json_patches
+
+
+def test_uninstall_strips_session_defaults_only_if_unchanged():
+    # uninstall removes STC-written defaults, but a value the user changed
+    # after deploy belongs to the user and must survive.
+    sd = {"defaultMode": "plan", "model": "opus"}
+    # case 1: unchanged → stripped
+    live = {"permissions": {"defaultMode": "plan"}, "model": "opus"}
+    D._strip_session_defaults(live, sd)
+    assert live == {}, f"unchanged defaults must be stripped: {live}"
+
+    # case 2: user re-pointed both after deploy → left alone
+    live = {"permissions": {"defaultMode": "acceptEdits"}, "model": "sonnet"}
+    D._strip_session_defaults(live, sd)
+    assert live == {"permissions": {"defaultMode": "acceptEdits"}, "model": "sonnet"}, \
+        f"user-changed values must survive uninstall: {live}"
+
+    # case 3: defaultMode unchanged but deny rules remain → permissions kept
+    live = {"permissions": {"defaultMode": "plan", "deny": ["Read(./x)"]}}
+    D._strip_session_defaults(live, sd)
+    assert live == {"permissions": {"deny": ["Read(./x)"]}}, live
+
+
 def test_stc_block_dangling_begin_preserves_user_tail():
     import tempfile
     d = tempfile.mkdtemp()
@@ -893,6 +945,50 @@ def test_leak_guard_detects_api_token():
     open(os.path.join(d, "core", "memory", "x.md"), "w").write("key ghp_" + "a" * 36 + " here")
     errs = C._no_personal_data_in_core(os.path.join(d, "core"))
     assert any("GitHub PAT" in e for e in errs), f"must detect a planted PAT: {errs}"
+
+
+def test_git_hook_blocks_secret_in_commit():
+    """SEC-2/I05 commit tripwire (block-dangerous-git.sh B1): a real key format
+    in the staged diff must hard-block `git commit` (exit 2); a clean diff and a
+    `secret-ok`-vouched line must pass (exit 0). Runs the actual hook so the bash
+    scan can't silently regress."""
+    import tempfile, subprocess, shutil
+    if not shutil.which("git"):
+        return  # git unavailable in this env — skip
+    hook = os.path.join(REPO, "core", "hooks", "block-dangerous-git.sh")
+    assert os.path.exists(hook), "hook missing"
+    env = dict(os.environ, USER_LANG="en")
+
+    def run_commit(repo, cmd="git commit -m x"):
+        payload = json.dumps({"session_id": "s", "tool_input": {"command": cmd}})
+        return subprocess.run(["bash", hook], input=payload, cwd=repo,
+                              capture_output=True, text=True, env=env)
+
+    def new_repo():
+        r = tempfile.mkdtemp()
+        for c in (["init", "-q"], ["config", "user.email", "t@t"],
+                  ["config", "user.name", "t"]):
+            subprocess.run(["git", *c], cwd=r, capture_output=True)
+        return r
+
+    # 1) clean staged diff → passes
+    r = new_repo()
+    open(os.path.join(r, "app.js"), "w").write("const a = 1;\n")
+    subprocess.run(["git", "add", "app.js"], cwd=r, capture_output=True)
+    assert run_commit(r).returncode == 0, "clean commit must pass"
+
+    # 2) staged AWS key → blocked, value not echoed
+    open(os.path.join(r, "app.js"), "a").write('const k="AKIA1234567890ABCDEF";\n')
+    subprocess.run(["git", "add", "app.js"], cwd=r, capture_output=True)
+    res = run_commit(r)
+    assert res.returncode == 2, f"secret commit must block: {res.returncode}"
+    assert "AKIA1234567890ABCDEF" not in res.stderr, "must NOT echo the value"
+
+    # 3) same line vouched with secret-ok → passes
+    open(os.path.join(r, "app.js"), "w").write('const k="AKIA1234567890ABCDEF"; // secret-ok\n')
+    subprocess.run(["git", "add", "app.js"], cwd=r, capture_output=True)
+    assert run_commit(r).returncode == 0, "secret-ok line must vouch and pass"
+    shutil.rmtree(r, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

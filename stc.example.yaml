@@ -65,6 +65,15 @@ deploy:
   # by default. Add `zcode` here + unfreeze its adapter.yaml to enable it.
   targets: [claude]
 
+  # Session defaults STC owns in the harness settings (FR-28 orchestrator mode):
+  # sessions start in plan mode on the expensive model; execution is routed to
+  # cheap sub-agents. Deploy writes these into the harness settings.json;
+  # uninstall removes them only if still unchanged. Omit the block (or a key)
+  # to leave the harness defaults alone.
+  session_defaults:
+    default_mode: plan             # → permissions.defaultMode (plan | default | ...)
+    model: opus                    # main-session model alias (opus | sonnet | ...)
+
 # ------------------------------------------------------------
 # Doc backend (only used if deploy.doc_backend != none)
 # ------------------------------------------------------------

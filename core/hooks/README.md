@@ -74,6 +74,7 @@ Beyond the 6-guard map (legitimate extras):
 | `integration-docs-gate.sh` H16 | PreToolUse(Write\|Edit\|MultiEdit) | 🔒 FR-26 docs-first block: editing a named integration's code without saved research → block (lifted by research-save or `// docs-checked:`). Generic-English service names (openai/stripe/aws/…) require a USAGE signal (import/API-host/`_api_key`/netcall) so a bare mention in a comment/regex doesn't false-block; niche/regional names match bare. |
 | `secret-read-guard.sh` H17 | PreToolUse(Read\|Glob\|Grep) | 🔒 block reading a secret file (`.env` / `.pem` / `id_rsa`) → keeps secrets out of context/logs (defense-in-depth: mirrors `permissions.deny` on claude, the ONLY read-guard on a harness without a permissions engine). Escape: `// secret-exception:` |
 | `graphify-first.sh` H18 | PreToolUse(Grep\|Bash) | 🔒 in a repo with a built code-graph (`graphify-out/graph.json`), the first grep-style search is blocked once → nudge `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; repeat passes for an exact-string lookup). Repos without a graph are never gated. |
+| `exit-plan-grill.sh` H21 | PreToolUse(ExitPlanMode) | 💉 leaving plan mode → soft nudge to sharpen the definition-of-done via `grill-me` for medium+ tasks (a precise DoD now = fewer scope forks mid-build = less expensive main-context dialogue). acknowledge-once/session, sub-agents pass, never blocks. Pairs with plan-mode-default (every session starts in plan). |
 
 ## Settings wiring
 

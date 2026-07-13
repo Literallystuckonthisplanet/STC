@@ -132,6 +132,7 @@ hooks:
     H17_secret_read_guard:     { supported: true, matcher: ["Read|Glob|Grep"],                         binding: { file: secret-read-guard.sh } }   # L8 read-side; pairs with permissions.deny (claude runs BOTH — deny is faster when it short-circuits pre-tool, this hook covers any harness gap)
     H18_graphify_first:        { supported: true, matcher: ["Grep|Bash"],                               binding: { file: graphify-first.sh } }   # in a repo with a built code-graph, nudge `graphify query` over grep-chains (acknowledge-once)
     H19_precompact_memory:     { supported: true, matcher: ["*"], event: "PreCompact",                 binding: { file: precompact-memory-guard.sh } }   # before compaction (manual/auto): rotate memory first (I26) so the summary loses nothing
+    H21_exit_plan_grill:       { supported: true, matcher: ["ExitPlanMode"],                            binding: { file: exit-plan-grill.sh } }   # leaving plan mode → soft nudge to sharpen the DoD via grill-me (medium+ tasks); a precise DoD now = fewer scope forks mid-build. acknowledge-once, never blocks
 
 # ============================================================
 # LAYER 4 — commands

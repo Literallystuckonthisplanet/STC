@@ -6,10 +6,11 @@ lives ONCE, harness-neutral. How a harness REALISES it varies:
 - **Claude Code** (and any harness with typed sub-agents) → renders each
   `<name>.md` + its `registry.yaml` binding into an agent file the main agent
   dispatches by name.
-- **A general-purpose-only harness** (e.g. ZCode: only `general-purpose` +
-  `Explore`) → no typed agents exist; the capability is realised by the
-  matching **skill** (`core/skills/<name>/SKILL.md`) + a `general-purpose`
-  dispatch with that skill's prompt.
+- **A general-purpose-only harness** (no typed sub-agents) → the capability is
+  realised by the matching **skill** (`core/skills/<name>/SKILL.md`) loaded into
+  a `general-purpose` dispatch. (The only such adapter — `zcode` — is FROZEN;
+  its built-in `Explore` is a harness agent, NOT an STC agent, so STC canon
+  never routes work to it.)
 - **A vendor-specific capability** (`affinity: claude-only`, e.g.
   harness-docs) is inert on other harnesses — replaced by the harness's own
   equivalent.

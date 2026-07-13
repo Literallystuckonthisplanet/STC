@@ -11,9 +11,13 @@
 #
 # INJECT (additionalContext, NOT a block), once-per-target: a repeat target →
 #   "already gathered this in the session, don't duplicate". Keys:
-#   read:<file>:<offset> · grep:<pattern>:<path> · glob:<pattern>:<path> ·
+#   read:<file> · grep:<pattern>:<path> · glob:<pattern>:<path> ·
 #   bash:<normalized command> (only if the command is a search: grep/rg/ag/find).
-#   Different offset/pattern = different target.
+#   For Read the TARGET is the FILE (any range): re-reading the same file — even
+#   a different chunk/offset — nudges, because the file is already in context.
+#   This is the near-dup fix (2026-07-12): keying on file+offset made the guard
+#   "forget" — a slightly different range read the same file in again silently.
+#   Different pattern/path = different target (grep/glob/bash unchanged).
 # Logs: /tmp/stc-acquire-<session>.log (seen hashes) +
 #   /tmp/stc-acquire-<session>-<hash>.nudged (nudged once). No escape hatch
 #   (not a block — repeat if the data changed / you need it fresh).
@@ -24,7 +28,7 @@ session=$(echo "$input" | jq -r '.session_id // "nosess"' 2>/dev/null)
 ti() { echo "$input" | jq -r ".tool_input.$1 // \"\"" 2>/dev/null; }
 
 case "$tool" in
-  Read)  key="read:$(ti file_path):$(ti offset)" ;;
+  Read)  key="read:$(ti file_path)" ;;   # near-dup: the FILE is the target (any range) — re-reading it any-which-way nudges
   Grep)  key="grep:$(ti pattern):$(ti path):$(ti glob)" ;;
   Glob)  key="glob:$(ti pattern):$(ti path)" ;;
   Bash)  cmd=$(ti command)

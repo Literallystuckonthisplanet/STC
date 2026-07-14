@@ -58,7 +58,7 @@ The 18 hooks are routed by the harness `settings.json` matcher groups into
 | **memory-write** (edit under memory/) | `secret-scan-memory.sh` H05 🔒 + `memory-guard.sh` H09 💉 | H05: block a secret write. H09: inject I04 checklist (dedup/place/format). Two files deliberately — single-responsibility. |
 | **read-first router** (edit project code) | `read-first-router.sh` H10 | 💉 domain reminders (DS / security / docs / data / tdd / legal / reuse) |
 | **git guard** (Bash) | `block-dangerous-git.sh` H01 | 🔒 dangerous patterns + 🔒 I08 push-to-main + 💉 I17 commit-verify |
-| **agent guard** (Task) | `agent-reuse-contract.sh` H04 | 🔒 I21 build-agent reuse-contract + 💉 I20 reviewer baseline |
+| **agent guard** (Task) | `agent-reuse-contract.sh` H04 | 🔒 I21 build-agent reuse-contract + 🔒 FR-28 fork-protocol marker (executors must stop on architectural/business forks, DECIDED lines for trivia) + 💉 I20 reviewer baseline |
 | **session guards** (UserPromptSubmit / SessionStart / Stop) | `stop_services_reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 | H03: SELF-EXEC + I05b secret-in-prompt + compact/session-end. H06: always-context inject + post-compact recovery. H08: link integrity. |
 
 Beyond the 6-guard map (legitimate extras):
@@ -69,12 +69,12 @@ Beyond the 6-guard map (legitimate extras):
 | `output-hygiene-guard.sh` H11 | PreToolUse(Bash) | 🔒 I24/FR-15 block raw output dumps (cat/sed/head/tail/git diff/find/grep -r) |
 | `acquire-dedup-guard.sh` H12 | PreToolUse(Read\|Grep\|Glob\|Bash) | 💉 FR-17 soft anti-duplicate (already-gathered nudge) |
 | `web-route-guard.sh` H13 | PreToolUse(WebSearch\|WebFetch) | 🔒 FR-17 web-via-subagent (block main, pass sub-agent) |
-| `buy-vs-build-reminder.sh` H14 | PreToolUse(EnterPlanMode) + PreToolUse(Write\|Edit\|MultiEdit) | 💉 FR-24/DEP-4 buy-vs-build inject on plan entry **+ 🔒 FR-27 exec-slice HARD GATE**: the first code edit after plan mode is blocked (exit 2) until the exec-slice table is acknowledged (acknowledge-once) |
+| `buy-vs-build-reminder.sh` H14 | PreToolUse(EnterPlanMode) + PreToolUse(Write\|Edit\|MultiEdit) | 💉 FR-24/DEP-4 buy-vs-build inject on plan entry **+ 🔒 FR-28 ORCHESTRATOR GATE**: after plan mode, EVERY main edit of a project file blocks once per file (retry passes — the stated WHY is the audit trail); sub-agents (the executor tier) pass; memory/docs/*.md/.env/STC-infra excluded; no-plan sessions ungated |
 | `exec-offload-guard.sh` H15 | PreToolUse(Bash) | 🔒 expensive-Bash-offload block (noisy data-scripts import/seed/scrape/sync → ephemeral agent; audit without --json) |
 | `integration-docs-gate.sh` H16 | PreToolUse(Write\|Edit\|MultiEdit) | 🔒 FR-26 docs-first block: editing a named integration's code without saved research → block (lifted by research-save or `// docs-checked:`). Generic-English service names (openai/stripe/aws/…) require a USAGE signal (import/API-host/`_api_key`/netcall) so a bare mention in a comment/regex doesn't false-block; niche/regional names match bare. |
 | `secret-read-guard.sh` H17 | PreToolUse(Read\|Glob\|Grep) | 🔒 block reading a secret file (`.env` / `.pem` / `id_rsa`) → keeps secrets out of context/logs (defense-in-depth: mirrors `permissions.deny` on claude, the ONLY read-guard on a harness without a permissions engine). Escape: `// secret-exception:` |
 | `graphify-first.sh` H18 | PreToolUse(Grep\|Bash) | 🔒 in a repo with a built code-graph (`graphify-out/graph.json`), the first grep-style search is blocked once → nudge `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; repeat passes for an exact-string lookup). Repos without a graph are never gated. |
-| `exit-plan-grill.sh` H21 | PreToolUse(ExitPlanMode) | 💉 leaving plan mode → soft nudge to sharpen the definition-of-done via `grill-me` for medium+ tasks (a precise DoD now = fewer scope forks mid-build = less expensive main-context dialogue). acknowledge-once/session, sub-agents pass, never blocks. Pairs with plan-mode-default (every session starts in plan). |
+| `exit-plan-grill.sh` H21 | PreToolUse(ExitPlanMode) | 🔒 FR-28 exit-plan-gate: leaving plan mode blocks once unless the plan carries AC/DoD + a block→executor decomposition + an explicit forks-resolved line (plan text from tool_input.plan or the freshest `$NATIVE_DIR/plans/*.md`). Acknowledge-once — the deliberate re-exit passes; sub-agents pass. Pairs with plan-mode-default (every session starts in plan) + H14 (orchestrator gate). |
 
 ## Settings wiring
 

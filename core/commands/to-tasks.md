@@ -23,11 +23,13 @@ If no doc backend is configured (`deploy.doc_backend == none`), say so and stop.
 ## Task line format
 
 ```
-- [ ] <task title> [project:: <Project>] [block:: A0] [exec:: sub-haiku] [priority:: Medium] [adr:: <url>]
+- [ ] <task title> [project:: <Project>] [block:: A0] [exec:: builder] [priority:: Medium] [adr:: <url>]
 ```
 
 Field conventions and statuses (`[ ]` open / `[/]` in progress / `[x]` done)
-live in the doc backend's tasks index.
+live in the doc backend's tasks index. The tasks file is the **dispatch
+board** of orchestrator mode (FR-28): take a block → `[/]` → dispatch →
+accept → `[x]`.
 
 ## Steps
 
@@ -40,9 +42,11 @@ From the argument or context.
 From Plan-step 4 collect the marked items. For each:
 
 - Title (without the markup suffixes).
-- Exec slice → inline `exec` field (NOT in the title): `sub-haiku`
-  (mechanical) / `sub-sonnet` (isolated judgment) / `cheap-session` (dialogue,
-  low risk) / `main` (architecture/uncertainty). See pev Step 4.
+- Exec slice → inline `exec` field (NOT in the title): `builder` (feature
+  code per spec — the DEFAULT for code blocks) / `cleanup` (mechanical) /
+  `sub-sonnet` (isolated judgment: review/tests/research) / `cheap-session`
+  (dialogue, low risk) / `main` (**exception only** — the line must carry the
+  WHY, e.g. `[exec:: main — merge conflicts]`). See pev Step 4 (FR-28).
 - Block-coding (A0, A1, B0…) → inline `block` field.
 - Priority if stated → inline `priority` (else Medium).
 

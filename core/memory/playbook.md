@@ -317,6 +317,14 @@ defer them to a "resync".
 The main loop = the main model + persistent context (every file is paid for
 every turn + recompressed on compact). Levers are placed where they fire:
 
+**Why an expensive main is fine (FR-28 orchestrator mode):** the cost driver
+is OUTPUT volume × model price. Orchestration output is small — plans,
+dispatches, decisions, acceptance; the voluminous output (code, diffs, test
+runs) is produced by the builder/cleanup tiers on sonnet/haiku. Main on the
+expensive model buys exactly what's worth paying for: architecture, fork
+decisions, verification judgment. Enforcement: H14 (orchestrator gate), H21
+(exit-plan-gate), H04 (agent contract).
+
 **Fire by anchors in always-context (PEV):**
 - **Offload reading (lever #1):** heavy reading/search/analysis → an
   ephemeral agent (mechanics: cheaper model + caveman, judgment: main model),
@@ -491,10 +499,10 @@ because <reason>`.
 ## Agent prompt contract
 <!-- I21 -->
 
-When delegating to a **build-capable** sub-agent (`general-purpose` / `claude`),
-open the prompt with a contract — otherwise the agent starts cold and
-reinvents what the repo already has. **Hook H04 blocks the launch** if the
-`reuse-before-reinvent` marker is absent.
+When delegating to a **build-capable** sub-agent (`general-purpose` / `claude`
+/ `builder`), open the prompt with a contract — otherwise the agent starts
+cold and reinvents what the repo already has. **Hook H04 blocks the launch**
+if the `reuse-before-reinvent` or `fork-protocol` marker is absent.
 
 Contract preamble:
 1. **zoom-out** — the agent reads the relevant area to get the lay of the land.
@@ -502,9 +510,21 @@ Contract preamble:
    (auth / data access / error handling / utilities / API response format /
    money & dates / id-SKU formats) → found it, reuse it; a second way to do
    the same thing = only with an explicit recorded justification.
-3. **return contract** — what comes back: a `file:line` summary, not raw
-   output; an answer ≤ 1500 tokens (tight; this is inter-agent traffic).
-   Caveman-compressed if `${SUBAGENT_COMPRESSION}` is on.
+3. **fork-protocol** (FR-28) — decision points mid-block: local technical
+   trivia → decide + a `DECIDED:` line in the report; an architectural/
+   business fork, or the brief contradicting reality → **STOP + a `FORK:`
+   report** (options / trade-offs / recommendation) — the parent decides,
+   fixes an ADR line in the spec, re-dispatches. The executor never silently
+   picks a side on a fork.
+4. **return contract** — what comes back: status / AC met / checks / DECIDED
+   / FORK + a `file:line` summary, not raw output; an answer ≤ 1500 tokens
+   (tight; this is inter-agent traffic). Caveman-compressed if
+   `${SUBAGENT_COMPRESSION}` is on.
+
+For `builder` dispatches (FR-28 orchestrator mode): the brief = the block's
+spec section (`/to-spec`); link it in the prompt rather than restating it,
+and mark `tdd` when the block carries business logic. Update the task line
+(`[/]` → `[x]`) around the dispatch — the tasks file is the dispatch board.
 
 **Read-only agents are exempt:** `Explore`/`research`/`code-reviewer`/
 `security-*`/`docs`/`qa`/`e2e` don't write code, so they don't need the

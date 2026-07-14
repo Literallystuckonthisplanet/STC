@@ -589,6 +589,31 @@ environment when STC lands on top of it?*
   of truth; a vault-mode editor over `doc_backend.root` is a view, no lock-in.
 - MCP runtime-fallback (server down) is runtime, not deploy.
 
+## ✅ FR-28 — orchestrator mode (DONE 2026-07-14)
+
+The process shift on top of the exec-slice line (FR-27): plan on the
+expensive model, execute on cheap tiers, main = orchestration only.
+
+- **deploy `session_defaults`** — deploy owns `permissions.defaultMode: plan`
+  + `model: opus` in settings.json (manifest-tracked, uninstall strips only
+  unchanged values). The plan-mode-default H14/H21 always assumed is now
+  STC-owned, not a hand-edit.
+- **H21 → exit-plan-gate (hard):** ExitPlanMode blocks once unless the plan
+  carries AC/DoD + block→executor decomposition + a forks-resolved line; M/L
+  need `/to-spec` + `/to-tasks` artifacts written (the decomposition is a doc,
+  not chat).
+- **H14 → orchestrator gate (session-long):** after plan mode, main editing a
+  project file blocks once PER FILE (retry passes — the WHY lands in the
+  transcript); sub-agents pass; memory/docs/*.md/.env/STC-infra excluded.
+- **`builder` agent (sonnet)** — executes ONE plan block per spec/brief;
+  DECIDED/FORK protocol; H04 requires `fork-protocol` + `reuse-before-reinvent`
+  in build-agent prompts.
+- **Fork routing:** local trivia → executor (DECIDED); architectural → main
+  decides + ADR line in the spec; business → the user; plan-breaking
+  constraint → re-plan the affected blocks, independent blocks keep running.
+- Rules: pev.md Step 4 + Do (orchestration loop); playbook (prompt contract,
+  token economy); to-tasks (builder default; `main` needs an inline WHY).
+
 ## Stages still ahead
 - Stage 5: stc.yaml + end-to-end (real `apply` against `~/.claude`/`~/.zcode`,
   resolving the live 19 collisions; the consent gate opens here)

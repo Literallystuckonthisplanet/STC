@@ -11,6 +11,44 @@ release notes.
 
 ## [Unreleased]
 
+### Added — FR-28 orchestrator mode (plan on the expensive model, execute on cheap tiers)
+- **The process shift:** every session starts in plan mode on the expensive
+  model; a plan may not leave plan mode half-baked; after the plan, main is an
+  ORCHESTRATOR — code is executed by cheap sub-agents or in worktrees, main
+  edits code only as a justified exception (few-line Verify touch-ups, merge
+  conflicts, `.env`). Forks mid-execution: local trivia → the executor decides
+  (`DECIDED:` report line); architectural → the executor STOPS with a `FORK:`
+  report (options/trade-offs/recommendation), main decides + fixes an ADR line
+  in the spec; business (user-visible, money, personal data, legal) → the user
+  decides; a plan-breaking constraint → re-plan the affected blocks.
+- **deploy `session_defaults`** (`stc.yaml deploy.session_defaults`): deploy now
+  owns `permissions.defaultMode: plan` + `model: opus` in settings.json
+  (manifest-tracked; uninstall strips only unchanged values). Previously
+  hand-edits, lost on reinstall.
+- **H21 exit-plan-grill → exit-plan-gate:** hard acknowledge-once block on
+  ExitPlanMode unless the plan carries AC/DoD + a block→executor decomposition
+  + an explicit forks-resolved line (plan text from `tool_input.plan` or the
+  freshest `$NATIVE_DIR/plans/*.md`); for M/L the spec+tasks artifacts
+  (`/to-spec` + `/to-tasks`) must be written — the decomposition lives in the
+  doc backend, not in chat.
+- **H14 exec-slice gate → orchestrator gate:** the one-shot "produce the table"
+  ack becomes a session-long gate — after plan mode every main edit of a
+  project file blocks once PER FILE (retry passes; the stated WHY lands in the
+  transcript as a free audit trail). Sub-agents pass (they ARE the executors);
+  memory/docs/`*.md`/`.env`/STC-infra excluded; no-plan sessions ungated.
+- **`builder` agent (sonnet)** — the executor tier: implements ONE plan block
+  against a spec/brief (reuse-before-reinvent, TDD on marked logic, lazy
+  code-standard read, DESIGN.md for UI, verify-before-report, worktree
+  discipline, DECIDED/FORK output). `cleanup` (haiku) stays the mechanical tier.
+- **H04 agent guard:** build-capable dispatches (`general-purpose`/`claude`/
+  `builder`) now also require the `fork-protocol` marker in the prompt,
+  alongside `reuse-before-reinvent`.
+- **Rules/docs:** pev.md Step 4 (main is not an executor tier) + Do phase
+  rewritten as the orchestration loop (dispatch from the tasks file, brief =
+  spec section, report acceptance, fork protocol); playbook §Agent prompt
+  contract + §Token economy; to-tasks (builder default, `main` needs an inline
+  WHY).
+
 ### Changed — relicensed MIT → AGPL-3.0 + commercial (dual-license)
 - STC Core is now **dual-licensed**: AGPL-3.0 (OSI-approved open source) for the
   community + a commercial license for closed-source/proprietary use. Rationale

@@ -93,38 +93,67 @@ ready-made solution first.
   up, always say:
   > "Plan ready. Read it and check it is ideal. If you want to change it,
   > say so. I will not start coding until you approve."
-- **Exec slice — who runs this (mandatory for M/L, per plan block).** Mark
-  each block with its CHEAPEST safe executor so work doesn't default to main
-  on the expensive model:
-  - `sub-haiku` — mechanical, no judgment (repo search, applying a ready
-    spec, template-wide edits, running scripts) → ephemeral agent.
-  - `sub-sonnet` — judgment but isolated, no dialogue needed (review, tests,
-    research, docs) → ephemeral agent.
+- **Exec slice — who runs this (mandatory for M/L, per plan block).** <!-- FR-28 -->
+  Under orchestrator mode **main is NOT an executor tier for code** — it plans,
+  dispatches, verifies, and decides forks. Route each block to its executor:
+  - `cleanup` (haiku) — mechanical, no judgment (codemods, renames, applying
+    an enumerated list, running scripts) → ephemeral agent.
+  - `builder` (sonnet) — feature code against a ready spec/brief; the DEFAULT
+    for code blocks. Isolated blocks touching shared files → dispatch it into
+    a **worktree** (isolation is orthogonal to tier).
+  - `sub-sonnet` reviewers/investigators (code-reviewer, qa, e2e, research,
+    docs, security-*) — judgment but isolated (review, tests, research, docs).
   - `cheap-session` — needs dialogue with the user but low error-risk
     (routine feature on a ready spec, copy, configs). I prepare a brief file
     (what / why / files / AC / steps / stop-conditions + a link to
     project-memory); the user opens a sonnet session on it. No context lost.
-  - `main` — architecture, open forks, high uncertainty. In doubt → main, but
-    **write WHY main** (so "main by default" can't creep back silently).
+  - `main` — **exception only, always with a written WHY**: a few-line
+    touch-up during Verify, a merge-conflict resolution, `.env`/secrets.
+    Architecture and open forks are main's JOB — but as decisions feeding a
+    spec, not as main typing the code.
   When showing a plan, present this as a table (block / size / executor /
-  model) so the user sees what can move to a parallel cheap session before
-  start. **Enforced: H14** — after plan mode the FIRST code edit is hard-blocked
-  once until you produce the table (acknowledge-once; not a passive nudge).
-  **Worktree parallelism is orthogonal:** an isolated block still gets a full
-  spec + git-diff/test check regardless of tier.
+  model). **Enforced: H14 (orchestrator gate)** — after plan mode, every main
+  edit of a project file is hard-blocked once per file (retry passes after
+  the WHY is stated); **H21 (exit-plan-gate)** — the plan cannot leave plan
+  mode without AC/DoD + this decomposition + a forks-resolved line.
 
-## 2. Do
+## 2. Do — orchestration
+<!-- FR-28 -->
 
-- Execute the plan one item at a time. Stay in scope — stray changes belong
-  in a separate task.
-- Changes go through the plan, not directly through code: update the plan →
-  show → get approval → only then change code.
-- A discovered constraint is new information; surface it and re-plan, do not
-  paper over it.
-- **TDD:** if Step 3 agreed on TDD → run `/tdd`. Red (write the test) →
-  green (minimal code) → refactor. Only business logic (calculations,
-  validation, transforms). UI, configs, copy — without TDD.
-- Commit per task (see `behavior.md` § Commits).
+Main runs the loop; executors write the code:
+
+- **Dispatch from the tasks file, not from memory of the chat.** The plan's
+  blocks live as task lines (`/to-tasks`) and spec sections (`/to-spec`).
+  Take a block → mark `[/]` → dispatch → accept → mark `[x]`. The brief =
+  the block's spec section; the agent prompt links to it (plus the agent
+  preamble: zoom-out + reuse-before-reinvent + fork-protocol + return
+  contract — H04 blocks a build-agent launch without it).
+- Executor per the plan's exec slice: `builder` / `cleanup` agent, a worktree
+  for shared-file isolation, or a cheap-session brief. Independent sub-blocks
+  (no dependency between them) may run in parallel worktrees (I07).
+- **Accept a report, not raw output:** status / AC met / checks / DECIDED /
+  FORK / file:line summary. Then main verifies (§3) and merges/commits.
+- **Fork protocol (mid-execution decision points):**
+  - *Local technical trivia* — the executor decides itself and reports a
+    `DECIDED:` line; main just reads them at acceptance.
+  - *Architectural fork* (data structure, API contract, new dependency,
+    deviation from spec) — the executor STOPS and returns a `FORK:` report
+    (options / trade-offs / recommendation). **Main decides** — this is what
+    the expensive model is for — fixes the decision as an ADR line in the
+    spec, re-dispatches the block.
+  - *Business fork* (what the user sees, money, personal data, legal) — main
+    does NOT decide: surface to the user in plain language (options +
+    recommendation), fix the answer in the spec.
+  - *A discovered constraint breaks the plan* — new information; re-plan the
+    affected blocks (mini plan pass), update spec/tasks. Independent blocks
+    keep running; never paper over it.
+- Stay in scope — stray changes belong in a separate task. Changes go through
+  the plan: update the plan/spec → show → approval → re-dispatch.
+- **TDD:** if Step 3 agreed on TDD → the block's brief carries the `tdd` mark;
+  the builder runs red → green → refactor inside the block. Only business
+  logic (calculations, validation, transforms). UI, configs, copy — without.
+- Commit per accepted block (see `behavior.md` § Commits) — commits and
+  merges stay with main.
 
 ## 3. Verify
 <!-- I17 -->

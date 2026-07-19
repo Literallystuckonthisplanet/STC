@@ -2,10 +2,9 @@
 # H17 — hook: secret-read-guard (defense-in-depth on READ)
 # PreToolUse(Read|Glob|Grep): blocks reading secret files (.env / .pem / id_rsa).
 #
-# Why: Layer-8 permissions.deny does this on Claude Code natively, but ZCode
-# has no permissions engine. This hook is the harness-neutral equivalent — the
-# SAME 5 rules rendered into settings.json on claude, and the ONLY read-guard
-# on zcode. On claude it runs alongside permissions.deny (belt + suspenders);
+# Why: Layer-8 permissions.deny does this on Claude Code natively. This hook
+# is the harness-neutral equivalent — the SAME 5 rules rendered into settings.json
+# on claude. On claude it runs alongside permissions.deny (belt + suspenders);
 # a native deny that never reaches the tool is faster, but this hook covers the
 # path where a harness ignores/has no permissions layer.
 #

@@ -525,12 +525,22 @@ def _settings_collisions(patch, live):
                         f"settings.json [{event}]",
                         f"STC matcher '{matcher}' overlaps user matcher '{u_match}' "
                         f"(user command: {_user_cmd(u)})."))
-    if "_stc_statusline" in patch and live.get("statusLine"):
+    live_statusline = live.get("statusLine")
+    # a live statusLine that's already STC's own (idempotent re-deploy, or the
+    # non-collision path _merge_settings_patch just wrote it through) is NOT a
+    # collision — only a genuinely different USER command is. Without this
+    # check every re-apply after the first would falsely refuse, forcing
+    # --overwrite forever just to keep STC's own statusLine in place.
+    stc_statusline_basename = os.path.basename(patch.get("_stc_statusline", ""))
+    live_is_stc_own = (isinstance(live_statusline, dict) and stc_statusline_basename
+                       and os.path.basename(live_statusline.get("command", ""))
+                           == stc_statusline_basename)
+    if "_stc_statusline" in patch and live_statusline and not live_is_stc_own:
         out.append(Collision(
             "statusline",
             "settings.json",
             f"user already has a statusLine config pointing at "
-            f"{live['statusLine'].get('command', '?')}; STC wants its own."))
+            f"{live_statusline.get('command', '?')}; STC wants its own."))
     return out
 
 

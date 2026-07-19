@@ -48,7 +48,7 @@ the harness as a skill (it copies its skill file into the harness config dir):
 
 ```bash
 graphify --version                 # verify the binary
-graphify install --platform claude # wire into Claude Code (also: codex|opencode|cursor|gemini|zcode|...)
+graphify install --platform claude # wire into Claude Code (also: codex|opencode|cursor|gemini|...)
 ```
 
 It auto-detects `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for community labeling.

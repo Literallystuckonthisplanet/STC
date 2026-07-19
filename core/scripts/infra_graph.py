@@ -26,6 +26,7 @@ Usage:
   python3 infra_graph.py            # collect + print a summary
   python3 infra_graph.py --json     # emit the graph as JSON (funcs + artifacts)
   python3 infra_graph.py --check    # collect + run the orphan/gap/dup checks
+  python3 infra_graph.py --snapshot # write memory/SNAPSHOT.md (one line per code)
 """
 
 import glob
@@ -258,11 +259,25 @@ def _heading_above(lines, label_idx):
 
 
 def _section_body(lines, label_idx):
+    """Lines following the label, up to the next heading.
+
+    A label sometimes sits directly ABOVE a heading (a file/section marker
+    placed before its own title, e.g. a template's top-of-file `<!-- T01 -->`)
+    rather than inside a section body — there the "body" between the label
+    and that heading is empty by construction. Descend one level (past the
+    heading) so the description is the heading's own first paragraph instead
+    of reading as empty; a genuinely bodyless section still returns [].
+    """
+    k = label_idx + 1
+    while k < len(lines) and lines[k].strip() == "":
+        k += 1
+    if k < len(lines) and RE_HEADING.match(lines[k]):
+        k += 1
     body = []
-    for k in range(label_idx + 1, len(lines)):
-        if RE_HEADING.match(lines[k]):
+    for j in range(k, len(lines)):
+        if RE_HEADING.match(lines[j]):
             break
-        body.append(lines[k])
+        body.append(lines[j])
     return body
 
 
@@ -301,12 +316,31 @@ def parse_md_file(path, letters, loading):
     return funcs, found
 
 
+def _sh_comment_body(raw, label_idx):
+    """Comment lines immediately following the hook label, '#' stripped.
+
+    Sh has no heading syntax, so reusing the md `_section_body` (which stops
+    at any line matching `^#{1,6}\\s+`) treated every following `# comment`
+    line as a heading and truncated the body to nothing — every hook read as
+    "(no description found)". A bare '#' line (a paragraph break in the
+    header comment) becomes "" here, same signal `_first_paragraph` already
+    uses to end a paragraph.
+    """
+    body = []
+    for k in range(label_idx + 1, len(raw)):
+        line = raw[k].lstrip()
+        if not line.startswith("#"):
+            break  # code starts — end of the header comment block
+        body.append(line[1:].strip())
+    return body
+
+
 def parse_sh_file(path, loading):
     """Return (funcs, found_codes). A hook label = '# Hxx — hook: <name>'."""
     with open(path, "r", encoding="utf-8") as f:
         raw = f.read().splitlines()
     funcs, found = [], []
-    for line in raw:
+    for idx, line in enumerate(raw):
         m = RE_SH_LABEL.match(line)
         if not m:
             continue
@@ -314,11 +348,8 @@ def parse_sh_file(path, loading):
         rec = FuncRec(code)
         rec.loading = loading
         rec.name = m.group(2).strip() or code
-        # description: the next non-empty, non-comment lines up to a blank line
-        idx = raw.index(line) if line in raw else -1
-        if idx >= 0:
-            body = _section_body(raw, idx)
-            rec.description = _first_paragraph(body)[:MAX_DESC]
+        body = _sh_comment_body(raw, idx)
+        rec.description = _first_paragraph(body)[:MAX_DESC]
         funcs.append(rec)
         found.append(code)
     return funcs, found
@@ -433,6 +464,86 @@ def check(all_funcs, dup_index, text_blobs, retired):
 
 
 # ---------------------------------------------------------------------------
+# Snapshot — a compact one-line-per-code catalog (SNAPSHOT.md)
+# ---------------------------------------------------------------------------
+
+# markdown noise that clutters a one-line description: bold/italic markers and
+# backticks (kept in the source prose for readability there, not here).
+RE_MD_NOISE = re.compile(r"[*`]")
+RE_WS = re.compile(r"\s+")
+SNAPSHOT_WHAT_MAX = 130  # keep the row scannable; full text lives in the source file
+
+
+def _code_key(code):
+    return (code[0], int(code[1:]))
+
+
+def _snapshot_what(rec):
+    """One short phrase for the row. Reuses the description already extracted
+    by the md/sh parsers (first paragraph under the label) — no new scanning."""
+    text = RE_WS.sub(" ", RE_MD_NOISE.sub("", rec.description)).strip()
+    text = text.lstrip("-").strip()
+    if not text:
+        return "(no description found in source)"
+    if len(text) > SNAPSHOT_WHAT_MAX:
+        text = text[: SNAPSHOT_WHAT_MAX - 1].rstrip() + "…"
+    return text.replace("|", "/")
+
+
+def build_snapshot(all_funcs, artifacts, retired, findings):
+    """Return the SNAPSHOT.md text: one line per code (function), header with
+    counts that must match `--check`/`--json`/`--summary` exactly (no code
+    dropped), a legend for gaps/retired so the numbering holes read as
+    explained, not lost."""
+    by_type = {}
+    for code in all_funcs:
+        by_type[code[0]] = by_type.get(code[0], 0) + 1
+    counts_str = ", ".join(
+        f"{TYPE_NAMES.get(l, l)}={n}" for l, n in sorted(by_type.items())
+    )
+
+    lines = [
+        "# STC infra snapshot",
+        "",
+        "Auto-generated by `infra_graph.py --snapshot` (re-run by `deploy.py apply`"
+        " — do not hand-edit, edits are overwritten on the next apply).",
+        "",
+        f"**{len(all_funcs)} functions** ({counts_str}) · **{len(artifacts)} artifacts**"
+        f" · **{len(retired)} retired**. Every code the scanner sees is a row below —"
+        " cross-check with `infra_graph.py --check`/`--summary`.",
+        "",
+    ]
+    if findings.get("gaps"):
+        gap_str = "; ".join(
+            f"{letter}{n:02d}" for letter, nums in sorted(findings["gaps"].items()) for n in nums
+        )
+        lines.append(
+            f"Numbering gaps (never assigned — not orphans, not missing): {gap_str}."
+        )
+    if retired:
+        gap_str = ", ".join(sorted(retired, key=_code_key))
+        lines.append(
+            f"Retired (migrated elsewhere, no longer live code): {gap_str} —"
+            " see `reference_retired_codes.md`."
+        )
+    lines += [
+        "",
+        "`CODE | TYPE | FILE | WHAT | RELATED`",
+        "",
+    ]
+    for code in sorted(all_funcs, key=_code_key):
+        rec = all_funcs[code]
+        type_name = TYPE_NAMES.get(rec.letter, rec.letter)
+        if rec.artifact_path:
+            file_ref = os.path.relpath(rec.artifact_path, CORE_DIR)
+        else:
+            file_ref = "—"
+        related = ", ".join(RELATED.get(code, [])) or "—"
+        lines.append(f"{code} | {type_name} | {file_ref} | {_snapshot_what(rec)} | {related}")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -460,6 +571,15 @@ def main():
         print("numbering gaps:", findings["gaps"] or "(none)")
         print("duplicates:", list(findings["dups"]) or "(none)")
         print("retired:", findings["retired"] or "(none)")
+        return 0
+
+    if mode == "--snapshot":
+        text = build_snapshot(all_funcs, artifacts, retired, findings)
+        out_path = os.path.join(MEMORY_DIR, "SNAPSHOT.md")
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        size = len(text.encode("utf-8"))
+        print(f"OK: snapshot → {out_path} ({len(all_funcs)} codes, {len(text.splitlines())} lines, {size} bytes)")
         return 0
 
     # default: summary

@@ -5,6 +5,11 @@
 # binding here (how a harness REALISES the capability):
 #   - model_tier   — fast (haiku-class) | mid (sonnet-class) | heavy (opus-class)
 #                    A harness maps a tier to its concrete model id at deploy.
+#   - effort_tier  — low | mid | high — reasoning effort when the agent runs
+#                    (drives token spend). A harness maps it to its native
+#                    per-agent effort knob at deploy (claude: frontmatter
+#                    `effort: low|medium|high`); harnesses without the knob
+#                    ignore it.
 #   - tools        — the capability set the agent needs (harness-neutral names).
 #                    A harness maps these to its concrete tool ids at deploy
 #                    via `subagents.tool_map` in its adapter. A neutral name
@@ -15,8 +20,7 @@
 #   - affinity     — claude-only | any  (claude-only = vendor-specific; on a
 #                    general-purpose-only harness the capability is inert)
 #   - skill_link   — the methodology skill that holds the same know-how, used
-#                    as the realisation when typed sub-agents are unavailable
-#                    (e.g. ZCode dispatches general-purpose with this skill).
+#                    as the realisation when typed sub-agents are unavailable.
 #
 # Why a registry separate from the prompt-bodies: the body is the know-how
 # (lives once, neutral); the binding is per-harness plumbing. A harness that
@@ -33,6 +37,7 @@ schema_version: 1
 agents:
   code-reviewer:
     model_tier: mid
+    effort_tier: mid
     tools: [Read, Write]
     affinity: any
     skill_link: code-reviewer
@@ -40,6 +45,7 @@ agents:
 
   security-arch:
     model_tier: mid
+    effort_tier: high
     tools: [Read, Bash, WebSearch, Glob, Grep]
     affinity: any
     skill_link: security-arch
@@ -47,6 +53,7 @@ agents:
 
   qa:
     model_tier: mid
+    effort_tier: mid
     tools: [Read, Write, Bash]
     affinity: any
     skill_link: qa
@@ -54,6 +61,7 @@ agents:
 
   security-deps:
     model_tier: fast
+    effort_tier: low
     tools: [Bash, Read, WebSearch]
     affinity: any
     skill_link: security-deps
@@ -61,6 +69,7 @@ agents:
 
   e2e:
     model_tier: mid
+    effort_tier: mid
     tools: [Bash, Read, Glob, playwright_browser]
     affinity: any
     skill_link: e2e
@@ -68,6 +77,7 @@ agents:
 
   cleanup:
     model_tier: fast
+    effort_tier: low
     tools: [Read, Edit, Write, Bash, Grep, Glob]
     affinity: any
     skill_link: null              # mechanical executor; no separate methodology skill
@@ -75,6 +85,7 @@ agents:
 
   builder:
     model_tier: mid
+    effort_tier: mid
     tools: [Read, Edit, Write, Bash, Grep, Glob]
     affinity: any
     skill_link: null              # the brief (spec section) is the methodology
@@ -85,6 +96,7 @@ agents:
   # ------------------------------------------------------------
   research:
     model_tier: mid
+    effort_tier: high
     tools: [Read, Glob, Grep, WebSearch, WebFetch]
     affinity: any
     skill_link: research
@@ -92,6 +104,7 @@ agents:
 
   docs:
     model_tier: fast
+    effort_tier: low
     tools: [context7_resolve, context7_query]
     affinity: any
     skill_link: docs
@@ -102,6 +115,7 @@ agents:
   # ------------------------------------------------------------
   harness-docs:
     model_tier: fast
+    effort_tier: low
     tools: [WebFetch]
     affinity: claude-only          # answers about Claude Code specifically
     skill_link: null

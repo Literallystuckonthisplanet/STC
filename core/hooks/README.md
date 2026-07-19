@@ -5,7 +5,7 @@ proven by mining 66 sessions); the same rule in a hook **does not**. This is
 ADR-001: rules migrate from always-text to event-triggered hooks at the exact
 flow point where they apply.
 
-The hook model (Claude Code / ZCode / any harness supporting PreToolUse +
+The hook model (Claude Code / any harness supporting PreToolUse +
 related events):
 
 - **PreToolUse / PostToolUse / UserPromptSubmit / Stop / SessionStart / SessionEnd** — the event types.
@@ -49,8 +49,12 @@ H08 (link-integrity), H13 (web-route), H14 (buy-vs-build), H18 (graphify-first).
 
 ## The 6 event-guards (flow-point → file)
 
-The 18 hooks are routed by the harness `settings.json` matcher groups into
-~6 flow points. One file = one guard (single-responsibility, auditable).
+`core/hooks/` holds 20 guard scripts: H01–H19 plus H21 (H20 was never
+assigned — a historical numbering gap, not a removed hook; do not invent a
+script to fill it). On the claude harness 19 of the 20 are wired into the
+`settings.json` matcher groups across ~6 flow points; H11 ships in `core/`
+but is `supported: false` on the claude adapter (see "Beyond the 6-guard
+map" below). One file = one guard (single-responsibility, auditable).
 
 | Flow point | Hook(s) | What it enforces |
 |---|---|---|
@@ -66,7 +70,7 @@ Beyond the 6-guard map (legitimate extras):
 | Hook | Event | What |
 |---|---|---|
 | `playwright_reminder.sh` H02 | PreToolUse(mcp__playwright__*) | 💉 FR-22 channel router (CLI / real-browser / e2e-subagent) + FR-18 preflight |
-| `output-hygiene-guard.sh` H11 | PreToolUse(Bash) | 🔒 I24/FR-15 block raw output dumps (cat/sed/head/tail/git diff/find/grep -r) |
+| `output-hygiene-guard.sh` H11 | PreToolUse(Bash) | 🔒 I24/FR-15 block raw output dumps (cat/sed/head/tail/git diff/find/grep -r). **Disabled on claude** (`supported: false` in `adapters/claude/adapter.yaml`, 2026-07-12): the claude harness already collapses/persists large tool output, so the guard is redundant there and over-fires on grouped commands (`find`/`grep -r` inside a `{ … } > file` block). Kept in `core/` for clutter-prone harnesses (VS Code). |
 | `acquire-dedup-guard.sh` H12 | PreToolUse(Read\|Grep\|Glob\|Bash) | 💉 FR-17 soft anti-duplicate (already-gathered nudge) |
 | `web-route-guard.sh` H13 | PreToolUse(WebSearch\|WebFetch) | 🔒 FR-17 web-via-subagent (block main, pass sub-agent) |
 | `buy-vs-build-reminder.sh` H14 | PreToolUse(EnterPlanMode) + PreToolUse(Write\|Edit\|MultiEdit) | 💉 FR-24/DEP-4 buy-vs-build inject on plan entry **+ 🔒 FR-28 ORCHESTRATOR GATE**: after plan mode, EVERY main edit of a project file blocks once per file (retry passes — the stated WHY is the audit trail); sub-agents (the executor tier) pass; memory/docs/*.md/.env/STC-infra excluded; no-plan sessions ungated |
@@ -80,8 +84,7 @@ Beyond the 6-guard map (legitimate extras):
 
 The harness `settings.json` (global, per-user) wires hooks by matcher. The
 adapter (`adapters/<harness>/`) produces the rendered `settings.json` from the
-STC source. Example matcher routing (Claude Code shape — ZCode uses the same
-hook-event names):
+STC source. Example matcher routing (Claude Code shape):
 
 ```json
 {
@@ -112,8 +115,8 @@ Each hook references `${VARS}` resolved by `deploy.py` from `stc.yaml`:
 |---|---|---|
 | `${MEMORY_DIR}` | adapter (memory location per harness) | H05, H08, H09, H10, H16 |
 | `${DOCS_ROOT}` | `doc_backend.root` | H16 (notes/research) |
-| `${HARNESS_DIR}` | adapter (`~/.claude` / `~/.zcode`) | H06, H07, H10 |
-| `${HARNESS_NAME}` | adapter (`claude` / `zcode`) | H16 (infra-scope skip) |
+| `${HARNESS_DIR}` | adapter (`~/.claude`) | H06, H07, H10 |
+| `${HARNESS_NAME}` | adapter (`claude`) | H16 (infra-scope skip) |
 | `${USER_LANG}` | `user.language` | all (message language) |
 | `${USER_NAME}` | `user.name` | H03 |
 | `${DEV_PORTS}` | `workspace.dev_ports` | H03 |

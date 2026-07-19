@@ -64,6 +64,15 @@ through Context7 (a global knowledge base for AI agents, any library). The
 docs-first channel — use it BEFORE coding against a library API. Hook H10
 (read-first router) nudges it on integration/payment/webhook files.
 
+**`code-review`** — the built-in adversarial review (Boris Cherny: the same
+pass Anthropic runs on its own PRs), **free** at effort levels
+`low`/`medium`/`high`/`xhigh`: low/medium give fewer high-confidence findings,
+high/xhigh broaden coverage. Default for a diff with logic → `/code-review
+xhigh`. It **complements** the ×3 agent pipeline (`code-reviewer` +
+`security-arch` + `qa`), does not replace it — those read the code fresh with
+no context, deliberately. **`ultra` is PAID** (cloud multi-agent) — do **not**
+offer it (budget = subscription). Ties to `effortLevel` in settings.
+
 **`zoom-out`** — returns a map of modules/calls in the language of the domain
 glossary. Uses the project's `LANGUAGE.md` / `CONTEXT.md` glossary — if
 absent, it works more coarsely. Can be self-launched — in the main thread
@@ -113,7 +122,7 @@ encoding mandatory, exec optional); for a medium task — one line when taken
 into work.
 
 **`install-mcp`** — how to add an MCP server in the target harness (Claude:
-`claude mcp add`; ZCode: edit `.mcp.json`). Includes scope table and the
+`claude mcp add`). Includes scope table and the
 error table.
 
 **`code-graph`** *(graphify CLI, REQUIRED)* — turn a codebase into a queryable

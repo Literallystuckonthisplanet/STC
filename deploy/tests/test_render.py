@@ -887,6 +887,116 @@ def test_merge_non_dict_hooks_still_writes_permissions():
         "permissions.deny must still be written when hooks was corrupt"
 
 
+def test_merge_refuses_corrupt_settings_json():
+    """REGRESSION (2026-07-16): a settings.json truncated mid-write (CCR
+    crashed writing it) was silently treated as an EMPTY file by
+    `C._load_json(path) or {}` — the merge proceeded, wrote back only the
+    keys STC manages, and permanently discarded every other key the user had
+    (effortLevel, statusLine, enableWorkflows, ...) with a cheerful
+    "✓ applied" and no warning. The merge must now refuse and leave the
+    corrupt file untouched instead of guessing."""
+    import tempfile
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "settings.json")
+    truncated = '{\n  "hooks": {},\n  "effortLevel": "high",\n  "enableWork'
+    open(p, "w").write(truncated)
+    patch = {"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "_stc_managed": True, "_stc_cap": "H01",
+         "hooks": [{"type": "command", "command": "$NATIVE_DIR/hooks/block-dangerous-git.stc.sh"}]}]}}
+    ok = D._merge_settings_patch(patch, d, overwrite=True, skip_collisions=False)
+    assert ok is False, "merge into a corrupt settings.json must report failure"
+    assert open(p).read() == truncated, "corrupt file must be left untouched, not silently rewritten"
+
+
+def test_merge_refuses_corrupt_mcp_json():
+    """Same guard, .mcp.json side (test_merge_refuses_corrupt_settings_json
+    is the settings.json regression; .mcp.json shares the exact same
+    `C._load_json(path) or {}` pattern and the exact same bug)."""
+    import tempfile
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, ".mcp.json")
+    truncated = '{\n  "mcpServers": {\n    "user-server": {"command": "x"'
+    open(p, "w").write(truncated)
+    ok = D._merge_mcp_patch({"mcpServers": {"stc-foo": {"command": "y"}}}, d)
+    assert ok is False, "merge into a corrupt .mcp.json must report failure"
+    assert open(p).read() == truncated, "corrupt file must be left untouched, not silently rewritten"
+
+
+def test_statusline_written_without_overwrite_flag():
+    """REGRESSION: `_stc_statusline` used to write live["statusLine"] only
+    when `overwrite=True` — meant for RESOLVING a genuine collision, not for
+    "turn the feature on". A plain `apply` (no prior statusLine, no
+    collision) therefore deployed statusline.stc.sh but never pointed
+    settings.json at it. Absent/idempotent cases must write regardless of
+    `overwrite`; a genuine different user statusLine must still require it."""
+    import tempfile
+
+    # case 1: no live statusLine at all (fresh install) → written even
+    # without --overwrite.
+    d = tempfile.mkdtemp()
+    json.dump({"hooks": {}}, open(os.path.join(d, "settings.json"), "w"))
+    D._merge_settings_patch({"_stc_statusline": "statusline.stc.sh"}, d,
+                            overwrite=False, skip_collisions=False)
+    out = json.load(open(os.path.join(d, "settings.json")))
+    assert out.get("statusLine", {}).get("command") == f"{d}/statusline.stc.sh", out
+
+    # case 2: live statusLine already IS STC's own (idempotent re-deploy) →
+    # still refreshed without --overwrite.
+    d2 = tempfile.mkdtemp()
+    json.dump({"hooks": {}, "statusLine": {"type": "command",
+              "command": f"{d2}/statusline.stc.sh"}},
+              open(os.path.join(d2, "settings.json"), "w"))
+    D._merge_settings_patch({"_stc_statusline": "statusline.stc.sh"}, d2,
+                            overwrite=False, skip_collisions=False)
+    out2 = json.load(open(os.path.join(d2, "settings.json")))
+    assert out2["statusLine"]["command"] == f"{d2}/statusline.stc.sh", out2
+
+    # case 3: live statusLine points at a genuinely different USER command →
+    # NOT overwritten unless --overwrite is given.
+    d3 = tempfile.mkdtemp()
+    json.dump({"hooks": {}, "statusLine": {"type": "command",
+              "command": "/some/other/user-statusline.sh"}},
+              open(os.path.join(d3, "settings.json"), "w"))
+    D._merge_settings_patch({"_stc_statusline": "statusline.stc.sh"}, d3,
+                            overwrite=False, skip_collisions=True)
+    out3 = json.load(open(os.path.join(d3, "settings.json")))
+    assert out3["statusLine"]["command"] == "/some/other/user-statusline.sh", \
+        "a genuine user statusLine must survive without --overwrite"
+
+
+def test_statusline_own_not_reported_as_collision():
+    """REGRESSION: after the fix above lets a plain `apply` write statusLine
+    without --overwrite, a SECOND plain `apply` (idempotent re-deploy) must
+    not then refuse — detect_collisions() flagged ANY live statusLine as a
+    collision, including one that's already STC's own, forcing --overwrite
+    on every re-apply forever. A genuinely different USER statusLine must
+    still be reported."""
+    import tempfile
+    d = tempfile.mkdtemp()
+
+    # STC's own statusLine already in place (as the fixed merge would leave
+    # it) → NOT a collision.
+    json.dump({"hooks": {}, "statusLine": {"type": "command",
+              "command": f"{d}/statusline.stc.sh"}},
+              open(os.path.join(d, "settings.json"), "w"))
+    rr = R.RenderResult()
+    rr.json_patches["settings.json"] = {"hooks": {}, "_stc_statusline": "statusline.stc.sh"}
+    collisions = C.detect_collisions(rr, d, "claude")
+    kinds = [c.kind for c in collisions]
+    assert "statusline" not in kinds, f"STC's own statusLine must not collide: {collisions}"
+
+    # a genuinely different user statusLine → still reported.
+    d2 = tempfile.mkdtemp()
+    json.dump({"hooks": {}, "statusLine": {"type": "command",
+              "command": "/some/other/user-statusline.sh"}},
+              open(os.path.join(d2, "settings.json"), "w"))
+    rr2 = R.RenderResult()
+    rr2.json_patches["settings.json"] = {"hooks": {}, "_stc_statusline": "statusline.stc.sh"}
+    collisions2 = C.detect_collisions(rr2, d2, "claude")
+    kinds2 = [c.kind for c in collisions2]
+    assert "statusline" in kinds2, f"a genuine user statusLine must still collide: {collisions2}"
+
+
 def test_session_defaults_rendered_and_merged():
     # FR-28: deploy.session_defaults must land in the settings.json patch and
     # merge into the live file as permissions.defaultMode + top-level model.

@@ -78,6 +78,11 @@ ready-made solution first.
   new plan entry → `project_docs.md`.
 - For a **large** task, name the files you will touch and the verification
   you will run. If you cannot name them, you are not ready to start.
+- **Observability (L tasks with a prod surface).** <!-- OBS --> Before building a
+  feature that ships to prod, answer one line: **how will we learn it
+  broke?** — which signal, urgent vs durable-log, and the negative/implicit
+  events (a flow that silently emits nothing). Plan the instrumentation into
+  the code now, not after an incident. Details → `code_standard.md` § OBS.
 - **Design system (UI tasks):** <!-- I19 --> a UI task → read the project's `DESIGN.md`
   before generating; map the element onto a token/scale, no token → add a
   token (not raw). No `DESIGN.md` yet → adopt the process first
@@ -97,14 +102,19 @@ ready-made solution first.
   Under orchestrator mode **main is NOT an executor tier for code** — it plans,
   dispatches, verifies, and decides forks. Route each block to its executor:
   - `cleanup` (haiku) — mechanical, no judgment (codemods, renames, applying
-    an enumerated list, running scripts) → ephemeral agent.
+    an enumerated list, running scripts) → ephemeral agent. Also: mechanical
+    git routine (batch commits from an enumerated list, backup pushes,
+    worktree cleanup) + running the project's existing operational scripts
+    (backfill / content sync / e2e snapshot re-baseline) returning counters,
+    not stdout.
   - `builder` (sonnet) — feature code against a ready spec/brief; the DEFAULT
     for code blocks. Isolated blocks touching shared files → dispatch it into
     a **worktree** (isolation is orthogonal to tier).
   - `sub-sonnet` reviewers/investigators (code-reviewer, qa, e2e, research,
     docs, security-*) — judgment but isolated (review, tests, research, docs).
   - `cheap-session` — needs dialogue with the user but low error-risk
-    (routine feature on a ready spec, copy, configs). I prepare a brief file
+    (routine feature on a ready spec, copy, configs, content/landing text
+    edits). I prepare a brief file
     (what / why / files / AC / steps / stop-conditions + a link to
     project-memory); the user opens a sonnet session on it. No context lost.
   - `main` — **exception only, always with a written WHY**: a few-line
@@ -116,6 +126,21 @@ ready-made solution first.
   edit of a project file is hard-blocked once per file (retry passes after
   the WHY is stated); **H21 (exit-plan-gate)** — the plan cannot leave plan
   mode without AC/DoD + this decomposition + a forks-resolved line.
+- **«Правила проекта: задача → модель → режим» + «Промпт для новой сессии» —
+  mandatory in every plan shown to the user.** <!-- FR-29 -->
+  Two required parts of any plan presented to Anton:
+  1. A section headed **«Правила проекта: задача → модель → режим»** — a table
+     mapping each kind of work → which model (opus/sonnet/haiku) → run mode
+     (main / subagent, batched / parallel). This is the Exec-slice table above,
+     but named and framed for the user in his own terms (task → model →
+     main-or-subagent), not agent jargon.
+  2. At the very end of the plan, a copy-paste **«Промпт для новой сессии»**
+     block (fenced) so work can resume cleanly in a fresh session: project,
+     absolute path to the plan, key files/folders, hard constraints, and the
+     session model to switch to.
+  **Enforced: H21 (exit-plan-gate)** greps for this section (RU/EN markers
+  `Правила проекта|задача → модель|task → model`) — a plan without it does not
+  leave plan mode without a conscious retry.
 
 ## 2. Do — orchestration
 <!-- FR-28 -->
@@ -153,7 +178,10 @@ Main runs the loop; executors write the code:
   the builder runs red → green → refactor inside the block. Only business
   logic (calculations, validation, transforms). UI, configs, copy — without.
 - Commit per accepted block (see `behavior.md` § Commits) — commits and
-  merges stay with main.
+  merges stay with main. Exception: mechanical git batches with zero judgment
+  (enumerated batch commits, backup pushes, worktree cleanup) may go to
+  `cleanup`; content commits never — the commit message needs the task's
+  history.
 
 ## 3. Verify
 <!-- I17 -->

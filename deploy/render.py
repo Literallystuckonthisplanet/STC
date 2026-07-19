@@ -463,6 +463,12 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
             fm = {"name": name, "description": dispatch}
             if model_id:
                 fm["model"] = model_id
+            # effort_tier (registry, neutral low|mid|high) → harness knob
+            # `effort:` (per-agent reasoning effort; unknown fields are
+            # ignored by harnesses without the knob)
+            effort_tier = registry["agents"].get(name, {}).get("effort_tier")
+            if effort_tier:
+                fm["effort"] = {"low": "low", "mid": "medium", "high": "high"}[effort_tier]
             # tools == "*" → inherit-all: OMIT the key (no harness spells this
             # as a value). Anything the agent must NOT get goes in the binding's
             # disallowed_tools, which is how least-privilege survives inherit-all.

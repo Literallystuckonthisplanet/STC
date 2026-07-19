@@ -113,6 +113,28 @@ Rule: what a linter catches does NOT go into manual/agent review.
 - [ERR-8] Sensible messages on failures/timeouts ("Server error, try again
   later"), not a white screen. 📐
 
+### OBS — observability (know what ships and how it behaves in prod)
+Errors caught (ERR) is not the same as knowing your system is healthy. The
+asymmetry to kill: heavy gates guard the code BEFORE commit, and nothing
+tells you it broke AFTER, in prod. Answer this at DEV time, not after.
+- [OBS-1] Before shipping a feature that reaches prod, answer three questions
+  and instrument the answers IN the code as you build, not bolted on later:
+  (a) what do I want to know is happening? (b) what is the healthy signal —
+  what SHOULD happen? (c) what does "good" vs "bad" look like in the data? 👁
+- [OBS-2] Negative/implicit events are the trap: a broken flow emits NO data
+  by default — a registration not completed, an order not created, a page
+  that took 8s. A non-working system produces no signal on its own. Decide
+  which silences must become observable (a funnel drop, a missing expected
+  event, a latency threshold) and log them explicitly. 👁
+- [OBS-3] The signal must reach a human or an agent WITHOUT hand-reading
+  logs: urgent (prod down, money/order errors) → push (alert/telegram); the
+  rest → a durable log an agent can pull and diagnose from. Capturing an
+  error nobody looks at until next week is not observability. 👁
+- [OBS-4] Scale observability to the profile — don't fire a cannon at a
+  sparrow: an S0 landing needs uptime + error capture, no metrics stack; an
+  S1 app with money needs the payment/order paths instrumented; the weight
+  follows the risk, not fashion. 👁
+
 ### READ — readability ("every if is understandable on its own")
 - [READ-1] Early return (guard clauses) instead of nested ifs (3+ conditions
   on entry → mandatory). 👁

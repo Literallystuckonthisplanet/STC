@@ -19,6 +19,9 @@
 - [ ] Product description: what, for whom, what constraints
 - [ ] Stack: language, frameworks, DB, hosting, external services
 - [ ] Domain and infrastructure (where it lives, how it deploys)
+- [ ] **Deploy script:** the moment the project gets a deployment target, the
+      FIRST step is `deploy/deploy.sh` built from the pattern (dry-run, confirm,
+      local build, rollback) — deploying without the script does not start (I08)
 - [ ] List of external APIs/services to connect
 - [ ] Block plan (see below)
 - [ ] **Design system:** classify project type → instantiate `DESIGN.md` from

@@ -78,6 +78,14 @@ the file stays a fresh snapshot (not an append-log).
   merging all worktrees — a full check cycle over `git diff main...branch
   --name-only`, even if the worktree-agent already verified. Why/detail →
   `[[playbook]]` § Worktree checks.
+- **Overlap zones — main only:** DB migrations, `package.json` + lockfile,
+  shared types, configs, `.env.example` are never edited by a worktree builder.
+  A builder that needs such a change STOPS and returns a FORK — main applies it.
+- **Merge protocol:** merge worktree branches strictly ONE at a time; rebase the
+  branch on fresh `main` before merging; run the check cycle after EACH merge,
+  not once at the end. Lockfiles are never merged textually — merge
+  `package.json`, then regenerate (`pnpm install`). Branches are short-lived;
+  don't stack drift.
 
 ## Git push and production
 <!-- I08 -->
@@ -88,6 +96,15 @@ the file stays a fresh snapshot (not an append-log).
 - **Production edits** → only via dev → commit → push + explicit OK. No direct
   SSH edits (env/files/pm2 reload) on the server without the go-ahead — even
   for a config/env change. *(not hook-covered — keep in mind)*
+- **Deploy = the project's versioned script** (`deploy/deploy.sh`) — the ONLY
+  way to deploy. Never ad-hoc rsync/pm2/ssh steps typed in chat, including
+  "quick fixes". The release gate (explicit OK) stays; the script is what runs
+  after it. No script yet → create one from the pattern BEFORE deploying.
+- **The script fails → fix the script** (and commit the fix), then rerun —
+  never fall back to manual steps. The procedure changed → the change goes INTO
+  the script, same commit discipline. **Critical deploy errors** (prod down,
+  data at risk) → STOP, no improvised recovery on prod — surface to the user
+  for a joint разбор; rollback only via the script's rollback mode.
 - **Backup** → scheduled (every 3 days) into a `backup` branch of the private
   repo. All repos are private. *(TODO: the launchd job is not yet built —
   carry this forward, do not assume it runs.)*

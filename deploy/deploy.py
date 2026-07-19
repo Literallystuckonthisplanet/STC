@@ -178,8 +178,12 @@ def _merge_settings_patch(patch, native_dir, overwrite, skip_collisions):
     patch entry is one capability with its own script, so matching must compare
     against that entry's basename, else all Bash-matcher groups would collapse.
     Genuine user hooks never match STC hook filenames and are preserved verbatim.
+
+    Returns True on success, False if the merge was refused (see below).
     """
     path = os.path.join(native_dir, "settings.json")
+    if not _refuse_merge_into_corrupt_json(path):
+        return False
     live = C._load_json(path) or {}
     # resolve $NATIVE_DIR in every hook command BEFORE merge. Render emits
     # "$NATIVE_DIR/hooks/foo.stc.sh" (disk-agnostic, testable); Claude Code does
@@ -232,9 +236,26 @@ def _merge_settings_patch(patch, native_dir, overwrite, skip_collisions):
                                     and x.get("_stc_cap") not in current_caps)]
             if not hooks[event]:
                 del hooks[event]
-    if "_stc_statusline" in patch and overwrite:
-        live["statusLine"] = {"type": "command",
-                              "command": f"{native_dir}/{patch['_stc_statusline']}"}
+    if "_stc_statusline" in patch:
+        # DECIDED: write unconditionally UNLESS the live statusLine is a
+        # genuine, different USER config (a real collision) that the operator
+        # chose to keep via --skip-collisions. Gating this behind `overwrite`
+        # unconditionally (the old code) meant a plain `apply` — no collision,
+        # first install or idempotent re-deploy — never wrote statusLine at
+        # all; only `--overwrite` did, which is meant for RESOLVING
+        # collisions, not for "turn the feature on". detect_collisions()
+        # already decides what counts as a real collision (live.get(
+        # "statusLine") set to something else); cmd_apply refuses before
+        # reaching here unless overwrite/skip_collisions resolved it, so by
+        # this point "cur is STC's own or absent" is the common case and
+        # must always win.
+        desired_cmd = f"{native_dir}/{patch['_stc_statusline']}"
+        cur = live.get("statusLine")
+        cur_is_stc_own = (isinstance(cur, dict)
+                          and os.path.basename(cur.get("command", ""))
+                              == os.path.basename(patch["_stc_statusline"]))
+        if cur is None or cur_is_stc_own or overwrite:
+            live["statusLine"] = {"type": "command", "command": desired_cmd}
     # permissions.deny — STC static read-guards. Merged into the user's existing
     # deny list (dedup), never replacing user rules. Tagged so uninstall strips
     # only the STC-contributed ones.
@@ -254,6 +275,32 @@ def _merge_settings_patch(patch, native_dir, overwrite, skip_collisions):
         live["model"] = sd["model"]
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(live, fh, indent=2, ensure_ascii=False)
+    return True
+
+
+def _refuse_merge_into_corrupt_json(path):
+    """Guard for the settings.json / .mcp.json merge functions.
+
+    REGRESSION (2026-07-16): C._load_json() returns None for BOTH "file
+    missing" and "file exists but is not valid JSON" (e.g. truncated by a
+    crashed writer — CCR corrupted settings.json this way). The merge
+    functions do `C._load_json(path) or {}`, so a corrupt-but-present file
+    was silently treated as an empty/fresh one: the merge proceeded, wrote
+    back only the keys STC manages (hooks/permissions/model), and every
+    OTHER key the user had (effortLevel, statusLine, enableWorkflows, ...)
+    was permanently discarded with a cheerful "✓ applied" — no warning.
+
+    A missing file is fine (first deploy) — merge into {}. A present-but-
+    corrupt file is never fine — abort loudly instead of guessing.
+    Returns True if it is safe to proceed, False if the caller must abort.
+    """
+    if os.path.exists(path) and C._load_json(path) is None:
+        print(f"   ✗ {path} exists but failed to parse as JSON — refusing to "
+              f"merge (would silently discard its content, including any "
+              f"non-STC keys). Fix the JSON by hand or restore it from a "
+              f"backup (see ~/.stc/backups/), then re-run apply.")
+        return False
+    return True
 
 
 def _entry_hook_basenames(entry):
@@ -295,6 +342,8 @@ def _is_stc_owned(entry, cap, entry_basenames):
 
 def _merge_mcp_patch(patch, native_dir):
     path = os.path.join(native_dir, ".mcp.json")
+    if not _refuse_merge_into_corrupt_json(path):
+        return False
     live = C._load_json(path) or {}
     servers = live.setdefault("mcpServers", {})
     incoming = patch.get("mcpServers") or {}
@@ -309,6 +358,7 @@ def _merge_mcp_patch(patch, native_dir):
             del servers[name]
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(live, fh, indent=2, ensure_ascii=False)
+    return True
 
 
 def _register_plugin(native_dir):
@@ -441,6 +491,7 @@ def cmd_apply(args):
     for w in C.session_path_warnings(stc):
         print("   ⚠ " + w)
     targets = _resolve_targets(args.target, adapters, stc)
+    _regen_snapshot()
     for t in targets:
         adapter = adapters[t]  # _resolve_targets already validated t ∈ adapters
         native_dir = adapter["native_dir"].replace("${HOME}", os.path.expanduser("~"))
@@ -475,12 +526,16 @@ def cmd_apply(args):
         delivery = adapter.get("harness_facts", {}).get("capability_delivery", "files")
         if delivery == "plugin":
             _register_plugin(native_dir)
-        # 3. JSON merges
+        # 3. JSON merges. A corrupt live file aborts THIS target (manifest not
+        # written, no "✓ applied") rather than silently discarding its content
+        # — see _refuse_merge_into_corrupt_json.
         for jn, jp in rr.json_patches.items():
             if jn == "settings.json":
-                _merge_settings_patch(jp, native_dir, args.overwrite, args.skip_collisions)
+                if not _merge_settings_patch(jp, native_dir, args.overwrite, args.skip_collisions):
+                    return 1
             elif jn == ".mcp.json":
-                _merge_mcp_patch(jp, native_dir)
+                if not _merge_mcp_patch(jp, native_dir):
+                    return 1
         # 4. the single marker @import into the user's always-context file.
         # Render owns the marker content (single source of truth); here we just
         # resolve the $NATIVE_DIR placeholder and inject it.
@@ -684,6 +739,34 @@ def cmd_restore(args):
 # ---------------------------------------------------------------------------
 # internal helpers
 # ---------------------------------------------------------------------------
+
+def _regen_snapshot():
+    """Regenerate core/memory/SNAPSHOT.md from the current code-labels (FR-28
+    block C: a compact one-line-per-code catalog, so a new session can read
+    it instead of re-scanning the whole infra).
+
+    Runs BEFORE `_sync_stc_home()` copies core/ → ~/.stc/core/, so the fresh
+    snapshot rides along in that same copy — no separate write path into
+    ~/.stc/, nothing to keep in sync by hand. A stale snapshot (memory/
+    MEMORY.md points at it) is worse than none — `apply` regenerates it
+    unconditionally, never silently skips.
+    """
+    scripts_dir = os.path.join(CORE, "scripts")
+    sys.path.insert(0, scripts_dir)
+    # DECIDED: default STC_CORE_DIR to this repo's core/ only if unset — scans
+    # the SOURCE tree (matches deploy.py's own CORE), without clobbering an
+    # explicit override a caller may have set.
+    os.environ.setdefault("STC_CORE_DIR", CORE)
+    import infra_graph as G  # local import: only cmd_apply needs the scanner
+    all_funcs, artifacts, dup_index, text_blobs = G.collect()
+    retired = G.load_retired()
+    findings = G.check(all_funcs, dup_index, text_blobs, retired)
+    text = G.build_snapshot(all_funcs, artifacts, retired, findings)
+    out = os.path.join(CORE, "memory", "SNAPSHOT.md")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(f"   ✓ snapshot regenerated ({len(all_funcs)} codes) → core/memory/SNAPSHOT.md")
+
 
 def _sync_stc_home():
     """Mirror core/ into ~/.stc/core/ so all harnesses share one source.

@@ -33,6 +33,33 @@ release notes.
   names a tool that is neither native nor mapped, so this class of break surfaces
   at deploy instead of at spawn. Three regression tests in `test_render.py`.
 
+### Changed — mechanical routine to cheap tiers; deploy behind a versioned script
+- **Exec slice (`rules/pev.md`):** `cleanup` now also owns mechanical git routine
+  (batch commits from an enumerated list, backup pushes, worktree cleanup) and
+  running a project's existing operational scripts (backfill / content sync /
+  e2e re-baseline) returning counters, not stdout. `cheap-session` gains
+  content/landing text edits — the audit found text sessions to be the heaviest
+  in main.
+- **§2 Do (`rules/pev.md`):** commits/merges still belong to main, with one
+  exception — zero-judgment mechanical git batches may go to `cleanup`. Content
+  commits never: the commit message needs the task's history.
+- **Worktrees / I07 (`rules/behavior.md`):** merge protocol added. Overlap zones
+  (DB migrations, `package.json` + lockfile, shared types, configs,
+  `.env.example`) are main-only — a worktree builder needing one STOPS and
+  returns a FORK. Merge one branch at a time, rebase on fresh `main` first, run
+  the check cycle after EACH merge. Lockfiles are regenerated, never merged
+  textually.
+- **Git push and production / I08 (`rules/behavior.md`):** deploy is the
+  project's versioned `deploy/deploy.sh` and nothing else — no ad-hoc
+  rsync/pm2/ssh typed in chat, including "quick fixes". The release gate
+  (explicit OK) is unchanged; the script is what runs after it. A failing script
+  is fixed and committed, then rerun — never a fallback to manual steps.
+  Critical deploy errors (prod down, data at risk) → STOP and surface for a
+  joint review; rollback only via the script's rollback mode.
+- **`templates/new-project.md` (Phase 0 / I13):** the moment a project gets a
+  deployment target, `deploy/deploy.sh` is the first thing built — deploying
+  without it does not start.
+
 ### Added — FR-28 orchestrator mode (plan on the expensive model, execute on cheap tiers)
 - **The process shift:** every session starts in plan mode on the expensive
   model; a plan may not leave plan mode half-baked; after the plan, main is an

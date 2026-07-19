@@ -8,9 +8,7 @@ lives ONCE, harness-neutral. How a harness REALISES it varies:
   dispatches by name.
 - **A general-purpose-only harness** (no typed sub-agents) → the capability is
   realised by the matching **skill** (`core/skills/<name>/SKILL.md`) loaded into
-  a `general-purpose` dispatch. (The only such adapter — `zcode` — is FROZEN;
-  its built-in `Explore` is a harness agent, NOT an STC agent, so STC canon
-  never routes work to it.)
+  a `general-purpose` dispatch.
 - **A vendor-specific capability** (`affinity: claude-only`, e.g.
   harness-docs) is inert on other harnesses — replaced by the harness's own
   equivalent.

@@ -14,7 +14,7 @@
 # concern about a parallel session's WIP).
 #
 # Render-time vars: ${HARNESS_DIR} (the global agent config dir, e.g.
-# ~/.claude or ~/.zcode), ${USER_LANG} (en|ru, default en).
+# ~/.claude), ${USER_LANG} (en|ru, default en).
 
 INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')

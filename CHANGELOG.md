@@ -11,6 +11,23 @@ release notes.
 
 ## [Unreleased]
 
+### Added — I27: a question about the infra goes to the snapshot, not a scan
+- **`rules/behavior.md` (I27):** what exists in the infra, what a code means,
+  where something is configured — and any edit under `core/` / `~/.stc/` — reads
+  `core/memory/SNAPSHOT.md` first, then opens only the files its FILE column
+  names. Scanning the `core/` tree for this is out. The pointer existed before,
+  but only as prose in `session.md` § always-context composition, i.e. a note
+  about lazy loading rather than a firing rule — so it never fired.
+- **`rules/session.md`:** that prose now points at I27 instead of restating it
+  (one rule, one home).
+- **`scripts/infra_graph.py`:** the generated snapshot gains `name: snapshot`
+  frontmatter. H08 builds its link registry from `name:`, not filenames, so
+  `[[snapshot]]` in `MEMORY.md` had been a dangling link since the file was
+  introduced. Now it resolves.
+- **`core/memory/SNAPSHOT.md` is tracked** — it is the entry point the rules
+  send you to, so it belongs in the repo rather than only on the machine that
+  last ran an apply.
+
 ### Fixed — neutral tool names never reached real harness tools (docs agent could not spawn)
 - **Root cause:** `registry.yaml` names tools harness-neutrally (`context7_resolve`,
   `playwright_browser`) and nothing ever translated them. Claude Code drops a tool

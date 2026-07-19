@@ -241,6 +241,21 @@ write it with a short name in parens: `I08 (git push/prod)`, `R09 (code
 standard)`, `H04 (agent contract)` — not a bare code. The name = the §-heading
 at the label (source of truth = the files). The user doesn't memorize codes.
 
+## Question about the infra → the snapshot, not a scan
+<!-- I27 -->
+
+**Trigger:** what exists in the infra (rule/hook/agent/skill/template/
+reference), what a code-label means, where something is configured, "do we
+have anything for X" — and before editing anything under `core/` / `~/.stc/`.
+**Action:** read `core/memory/SNAPSHOT.md` FIRST (`CODE | TYPE | FILE | WHAT |
+RELATED` — the whole infra in one file) → open only the files its FILE column
+names. Never grep the `core/` tree for this, never answer from a past
+session's memory of the infra.
+
+Generated (`infra_graph.py --snapshot`, re-run by `deploy.py apply`) — never
+hand-edit: wrong content there = fix the source label or the scanner. Gaps and
+retired codes are explained in its header. Anchor: `[[snapshot]]`.
+
 ## Saving research
 <!-- I18 -->
 

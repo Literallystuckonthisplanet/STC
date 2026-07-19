@@ -11,6 +11,28 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — neutral tool names never reached real harness tools (docs agent could not spawn)
+- **Root cause:** `registry.yaml` names tools harness-neutrally (`context7_resolve`,
+  `playwright_browser`) and nothing ever translated them. Claude Code drops a tool
+  name it does not recognise, so `docs` (whose whole toolset was neutral) refused
+  to spawn — *"would be spawned with zero tools"* — and `e2e` had been silently
+  running without a browser.
+- **`adapters/claude/adapter.yaml`:** new `subagents.tool_map` — neutral name →
+  native tool ids, applied at render. `playwright_browser` maps to the 20 real
+  `mcp__playwright__browser_*` ids (local stdio server, name fixed by config).
+- **Inherit-all escape:** Context7 is a claude.ai connector whose id is a random
+  UUID assigned at connect time and present in no local file, so *no* deploy-time
+  value can be right. `tool_map` value `"*"` means exactly that; render then OMITS
+  `tools:`, which is how Claude Code spells inherit-all. It is not written as a
+  literal `"*"` — `tools` is a list of literal names, so that would reproduce the
+  same zero-tools failure.
+- **Least-privilege kept:** bindings gained `disallowed_tools`, rendered as
+  `disallowedTools`. `docs` inherits everything minus Write/Edit/MultiEdit/
+  NotebookEdit/Bash/Task — a documentation lookup writes nothing.
+- **`deploy/checks.py`:** `_tool_binding_validity` fails the deploy when a binding
+  names a tool that is neither native nor mapped, so this class of break surfaces
+  at deploy instead of at spawn. Three regression tests in `test_render.py`.
+
 ### Added — FR-28 orchestrator mode (plan on the expensive model, execute on cheap tiers)
 - **The process shift:** every session starts in plan mode on the expensive
   model; a plan may not leave plan mode half-baked; after the plan, main is an

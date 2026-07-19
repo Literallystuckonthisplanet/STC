@@ -274,6 +274,59 @@ def test_claude_agents_use_anthropic_aliases():
                 break
 
 
+def test_agent_tools_resolve_to_real_tool_names():
+    """REGRESSION (2026-07-19): the docs agent shipped `tools: context7_resolve,
+    context7_query` — neutral names Claude Code does not know. It drops an
+    unrecognised name, and an agent left with none refuses to spawn ("would be
+    spawned with zero tools"). Every rendered tools entry must be a native tool
+    or a real mcp__ id; a neutral name must never reach the agent file.
+    """
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "claude", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["claude"], D.CORE, REPO)
+    for rel, body in rr.files.items():
+        if not (rel.startswith("agents/") and rel.endswith(".stc.md")):
+            continue
+        fm = body.split("---")[1]
+        line = next((l for l in fm.splitlines() if l.startswith("tools:")), None)
+        if not line:
+            continue  # omitted = inherit-all, the sanctioned escape
+        val = fm[fm.index("tools:") + 6:].split("\n---")[0]
+        for tool in (t.strip() for t in val.replace("\n", " ").split(",")):
+            if not tool:
+                continue
+            assert tool in C._NATIVE_TOOL_NAMES or tool.startswith("mcp__"), \
+                f"{rel}: tool '{tool}' is neither native nor an mcp__ id — it " \
+                f"would be dropped at spawn (add it to subagents.tool_map)"
+
+
+def test_unmapped_neutral_tool_is_a_deploy_error():
+    """The check must FAIL the deploy, not let a zero-tools agent ship."""
+    _, _, adapters, _ = D._gather()
+    broken = copy.deepcopy(adapters["claude"])
+    broken["subagents"]["capabilities"]["docs"]["binding"]["tools"] = ["some_neutral_tool"]
+    errs = C._tool_binding_validity("claude", broken)
+    assert any("some_neutral_tool" in e for e in errs), \
+        f"unmapped neutral tool name must be flagged, got {errs}"
+    assert not C._tool_binding_validity("claude", adapters["claude"]), \
+        "the live claude adapter must be clean"
+
+
+def test_inherit_all_agent_keeps_a_denylist():
+    """An agent that degrades to inherit-all (MCP id unknowable at deploy) must
+    still be fenced by disallowedTools — otherwise a read-only lookup agent
+    silently gains Write/Bash."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "claude", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["claude"], D.CORE, REPO)
+    docs = rr.files["agents/docs.stc.md"]
+    fm = docs.split("---")[1]
+    assert "tools:" not in fm, "docs must omit tools: (inherit-all), not carry a literal"
+    assert "disallowedTools:" in fm, "docs inherits all tools with no denylist"
+    for denied in ("Write", "Edit", "Bash"):
+        assert denied in fm, f"docs denylist is missing {denied}"
+
+
 def test_event_hooks_use_star_matcher():
     """REGRESSION (Bug 3 — the root cause of 'H06 never fired'): event hooks
     SessionStart/Stop/UserPromptSubmit must render with matcher='*', NOT the

@@ -418,8 +418,31 @@ def _frontmatter(d):
     return f"---\n{body}\n---\n\n"
 
 
+def _resolve_tools(tools, tool_map):
+    """Expand neutral tool names to this harness's native tool ids.
+
+    A name absent from tool_map passes through (the neutral name IS the native
+    one — Read, Bash, ...). A name mapped to "*" cannot be bound statically
+    (MCP server id assigned at connect time); "*" is returned as a sentinel and
+    the caller then OMITS the `tools:` key, which is how a harness spells
+    inherit-all. Note "*" is not a value: Claude Code reads `tools` as a list of
+    literal names, so a literal "*" resolves to nothing and the agent refuses to
+    spawn — the same zero-tools failure this map exists to prevent.
+    """
+    if not tools or not isinstance(tools, list):
+        return tools
+    resolved = []
+    for t in tools:
+        native = tool_map.get(t, t)
+        if native == "*":
+            return "*"
+        resolved.extend(native if isinstance(native, list) else [native])
+    return resolved
+
+
 def _render_subagents(core_dir, registry, provider, adapter, result, native_agents_dir):
     caps = adapter.get("subagents", {}).get("capabilities", {})
+    tool_map = adapter.get("subagents", {}).get("tool_map", {}) or {}
     for name, cap in caps.items():
         sup = cap.get("supported")
         if sup is False:
@@ -430,7 +453,7 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
         model_id = ""
         if tier and provider.get("tiers"):
             model_id = provider["tiers"].get(tier, "")
-        tools = binding.get("tools")
+        tools = _resolve_tools(binding.get("tools"), tool_map)
         dispatch = registry["agents"].get(name, {}).get("dispatches", cap.get("native", ""))
 
         if sup is True or sup == "true":
@@ -440,8 +463,15 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
             fm = {"name": name, "description": dispatch}
             if model_id:
                 fm["model"] = model_id
-            if tools:
-                fm["tools"] = ", ".join(tools) if isinstance(tools, list) else tools
+            # tools == "*" → inherit-all: OMIT the key (no harness spells this
+            # as a value). Anything the agent must NOT get goes in the binding's
+            # disallowed_tools, which is how least-privilege survives inherit-all.
+            if isinstance(tools, list) and tools:
+                fm["tools"] = ", ".join(tools)
+            elif tools == "*":
+                denied = binding.get("disallowed_tools")
+                if denied:
+                    fm["disallowedTools"] = ", ".join(denied)
             rel = os.path.join(native_agents_dir, f"{name}.stc.md")
             result.files[rel] = _frontmatter(fm) + body.rstrip() + "\n"
             result.manifest.append({"path": rel, "kind": "agent", "source": f"core/agents/{name}.md"})

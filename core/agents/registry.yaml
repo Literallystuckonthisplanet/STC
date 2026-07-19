@@ -6,7 +6,12 @@
 #   - model_tier   — fast (haiku-class) | mid (sonnet-class) | heavy (opus-class)
 #                    A harness maps a tier to its concrete model id at deploy.
 #   - tools        — the capability set the agent needs (harness-neutral names).
-#                    A harness maps these to its concrete tool ids at deploy.
+#                    A harness maps these to its concrete tool ids at deploy
+#                    via `subagents.tool_map` in its adapter. A neutral name
+#                    with no entry there is passed through verbatim — fine for
+#                    names that ARE native (Read, Bash), fatal for the rest:
+#                    Claude Code drops an unrecognised tool and refuses to spawn
+#                    an agent left with zero. Add an MCP-backed name to the map.
 #   - affinity     — claude-only | any  (claude-only = vendor-specific; on a
 #                    general-purpose-only harness the capability is inert)
 #   - skill_link   — the methodology skill that holds the same know-how, used

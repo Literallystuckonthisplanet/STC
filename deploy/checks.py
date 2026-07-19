@@ -346,6 +346,42 @@ def _subagent_consistency(core_dir, registry, adapters):
                     f"adapters/{h}: subagent '{name}' has no entry in "
                     f"core/agents/registry.yaml (no binding/dispatch text)."
                 )
+        errs += _tool_binding_validity(h, adapter)
+    return errs
+
+
+# Tool names that ARE native on every supported harness — a binding may use
+# them without a tool_map entry.
+_NATIVE_TOOL_NAMES = {
+    "Read", "Write", "Edit", "MultiEdit", "Bash", "Glob", "Grep",
+    "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite",
+}
+
+
+def _tool_binding_validity(harness, adapter):
+    """A neutral tool name that is neither native nor in the adapter's
+    tool_map renders verbatim into the agent file, where the harness does not
+    recognise it and silently DROPS it. An agent that loses every tool this way
+    refuses to spawn ("would be spawned with zero tools"). Catch it at deploy.
+    """
+    errs = []
+    subs = adapter.get("subagents", {}) or {}
+    tool_map = subs.get("tool_map", {}) or {}
+    for name, cap in (subs.get("capabilities", {}) or {}).items():
+        if cap.get("supported") is False:
+            continue
+        tools = (cap.get("binding", {}) or {}).get("tools")
+        if not isinstance(tools, list):
+            continue
+        for t in tools:
+            if t in _NATIVE_TOOL_NAMES or t in tool_map or t.startswith("mcp__"):
+                continue
+            errs.append(
+                f"adapters/{harness}: subagent '{name}' binds tool '{t}', which is "
+                f"neither a native tool nor mapped in subagents.tool_map — it would "
+                f"be dropped at spawn. Add it to tool_map (use \"*\" if the MCP "
+                f"server id is only known at connect time)."
+            )
     return errs
 
 

@@ -159,6 +159,53 @@ subagents:
   realization: "typed agent files in agents/*.md (frontmatter name/description/tools); dispatched via Task tool"
   native_path: "${native_dir}/agents/*.md"
   import_syntax: "copy + apply binding (tools, model)"
+  # ----------------------------------------------------------
+  # Neutral tool name (registry/binding) → native Claude Code tool ids.
+  # Claude Code validates `tools:` against its live tool registry at spawn
+  # time; an unrecognised name is DROPPED, and an agent left with nothing
+  # refuses to spawn ("would be spawned with zero tools"). So every neutral
+  # name a binding uses must resolve here.
+  #
+  # The special value "*" means "cannot be bound statically on this harness":
+  # render.py then OMITS the `tools:` key, which is how Claude Code spells
+  # inherit-all ("If omitted, inherits all tools" — code.claude.com/docs/en/
+  # agent-sdk/subagents). "*" is NOT written as a value: `tools` is a list of
+  # literal names, so a literal "*" matches nothing and reproduces the very
+  # zero-tools spawn failure this map exists to prevent (verified 2026-07-19).
+  # Used for MCP servers whose id is assigned at connect time, not by config —
+  # claude.ai connectors get a random UUID (`mcp__<uuid>__<tool>`) that exists
+  # in no local file, so no deploy-time value could ever be correct.
+  # Least-privilege is then restored from the other side: `disallowed_tools`
+  # in the binding subtracts from inherit-all.
+  # ----------------------------------------------------------
+  tool_map:
+    # Context7 = claude.ai connector → random per-connection UUID → inherit-all.
+    # Trade-off accepted (Anton, 2026-07-19): docs is a read-only lookup agent,
+    # its prompt-body is the constraint; least-privilege is not enforceable here.
+    context7_resolve: "*"
+    context7_query:   "*"
+    # Playwright = local stdio server with a config-fixed name → bindable.
+    playwright_browser:
+      - mcp__playwright__browser_navigate
+      - mcp__playwright__browser_navigate_back
+      - mcp__playwright__browser_snapshot
+      - mcp__playwright__browser_take_screenshot
+      - mcp__playwright__browser_click
+      - mcp__playwright__browser_type
+      - mcp__playwright__browser_fill_form
+      - mcp__playwright__browser_select_option
+      - mcp__playwright__browser_hover
+      - mcp__playwright__browser_press_key
+      - mcp__playwright__browser_find
+      - mcp__playwright__browser_wait_for
+      - mcp__playwright__browser_evaluate
+      - mcp__playwright__browser_console_messages
+      - mcp__playwright__browser_network_requests
+      - mcp__playwright__browser_handle_dialog
+      - mcp__playwright__browser_file_upload
+      - mcp__playwright__browser_resize
+      - mcp__playwright__browser_tabs
+      - mcp__playwright__browser_close
   capabilities:
     # Reviewer / QA pipeline (×3 + deps)
     code-reviewer:  { supported: true,  binding: { model_tier: mid,  tools: [Read, Write],                            skill_link: code-reviewer } }
@@ -170,7 +217,11 @@ subagents:
     builder:        { supported: true,  binding: { model_tier: mid,  tools: [Read, Edit, Write, Bash, Grep, Glob],   skill_link: null } }   # FR-28 executor tier: ONE plan block per spec/brief, worktree-friendly, DECIDED/FORK protocol
     # Investigation
     research:       { supported: true,  binding: { model_tier: mid,  tools: [Read, Glob, Grep, WebSearch, WebFetch], skill_link: research } }
-    docs:           { supported: true,  binding: { model_tier: fast, tools: [context7_resolve, context7_query],      skill_link: docs } }
+    # docs resolves to inherit-all (Context7 = claude.ai connector, random id) →
+    # `tools:` is omitted and disallowed_tools carries the least-privilege half:
+    # a documentation lookup never writes, edits or runs anything.
+    docs:           { supported: true,  binding: { model_tier: fast, tools: [context7_resolve, context7_query],      skill_link: docs,
+                                                   disallowed_tools: [Write, Edit, MultiEdit, NotebookEdit, Bash, Task] } }
     # Vendor-specific
     harness-docs:   { supported: true,  binding: { model_tier: fast, tools: [WebFetch], affinity: claude-only, skill_link: null } }
 

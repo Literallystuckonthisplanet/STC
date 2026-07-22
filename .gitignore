@@ -53,3 +53,9 @@ Thumbs.db
 # =========================
 *.log
 tmp/
+
+# =========================
+# Site / deploy tooling caches
+# =========================
+# Cloudflare Wrangler caches hold account credentials — never commit.
+site/.wrangler/

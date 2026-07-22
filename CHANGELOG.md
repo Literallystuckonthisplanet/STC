@@ -11,6 +11,40 @@ release notes.
 
 ## [Unreleased]
 
+### Added — Codex (ChatGPT on macOS) as a native STC harness
+- **`adapters/codex/adapter.yaml`:** a first-class harness alongside `claude`.
+  Codex supports more of STC natively than zcode: typed subagents (TOML), a full
+  hook event set (incl. PreCompact), and `@import` in `AGENTS.md`.
+  - `hook_config_file: hooks.json` (standalone, same shape as `settings.json` hooks).
+  - `mcp_config_file: config.toml` (`[mcp_servers.stc-*]` tables, add-only TOML merge).
+  - `subagent_format: toml` → `~/.codex/agents/*.stc.toml` (`name`/`description`/
+    `developer_instructions`; no `tools` field — the Codex schema has none).
+  - `skills.native_path: ~/.agents/skills` (Codex's native global skills path).
+  - First-wave agents: `builder`, `code-reviewer`, `qa`, `research`.
+- **Deploy pipeline generalized (backward-compatible; claude path unchanged):**
+  - `render.py`: `RenderResult.toml_patches`; hook/MCP target filenames read
+    from `harness_facts`; `*.stc.toml` agent emitter; per-adapter `skills_dir`.
+  - `deploy.py`: data-driven merge dispatch (`settings`/`hooks`/`mcp`/`toml`);
+    TOML backup + manifest + uninstall; new `_merge_hooks_json_patch`.
+  - `checks.py`: collision detection across all patch targets incl. TOML.
+  - `deploy/toml_merge.py` (new): add-only merge via stdlib `tomllib`
+    (parse-to-detect + raw append; pattern borrowed from ECC). Zero new deps.
+- **Hook adaptations (per the Codex contract, verified via `docs/hooks.md`):**
+  - `core/hooks/_apply_patch_normalize.sh` (new): Codex edits go through
+    `apply_patch`, whose file path lives INSIDE the patch text, not in
+    `tool_input.file_path`. The normalizer surfaces it so H05/H07/H09/H10/H16
+    bodies run unchanged.
+  - H08 link-integrity: `Stop` = turn-end in Codex → moved to `UserPromptSubmit`
+    + the session-end text trigger (same grep H03 uses); the Stop path (claude)
+    is kept.
+  - H11 output-hygiene: disabled (Codex collapses tool output in the UI).
+  - H13 web-route: hosted web tools bypass local hooks → instruction/skill.
+- **`core/models/codex.yaml`:** provider on the model axis (agents inherit the
+  parent `gpt-5.6-luna`).
+- **Tests:** `deploy/tests/test_codex_adapter.py` (17 new) — render artifacts,
+  TOML merge idempotency/uninstall, apply_patch normalize, H08 event gating.
+  Full suite green: 54 existing (claude/zcode regression) + 17 new = 71.
+
 ### Added — I27: a question about the infra goes to the snapshot, not a scan
 - **`rules/behavior.md` (I27):** what exists in the infra, what a code means,
   where something is configured — and any edit under `core/` / `~/.stc/` — reads

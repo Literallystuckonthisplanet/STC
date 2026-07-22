@@ -4,13 +4,13 @@
 [![last commit](https://img.shields.io/github/last-commit/Literallystuckonthisplanet/STC)](https://github.com/Literallystuckonthisplanet/STC/commits/main)
 [![license](https://img.shields.io/badge/license-AGPL--3.0%20%2B%20commercial-blue)](LICENSING.md)
 ![stack](https://img.shields.io/badge/stack-Python%20%C2%B7%20Bash-informational)
-![harness](https://img.shields.io/badge/harness-Claude%20Code-8A2BE2)
+![harness](https://img.shields.io/badge/harness-Claude%20Code%20%C2%B7%20Codex-8A2BE2)
 
 > _A Standard Template Construct stores the blueprints. The deploy pipeline reproduces them._
 >
 > In Warhammer 40k lore, an STC is a relic from the Dark Age of Technology — a terminal that holds complete, reproducible construction blueprints. You feed it a request, it emits a buildable design adapted to the materials at hand.
 >
-> This project borrows that idea. An AI coding agent (Claude Code, ZCode, or any harness) works well when its instructions, memory, skills, hooks, and tools are consistent across sessions. STC holds the blueprints of that configuration. A deploy command reproduces them into the concrete harness you use, adapted to its format.
+> This project borrows that idea. An AI coding agent (Claude Code, Codex, or any harness) works well when its instructions, memory, skills, hooks, and tools are consistent across sessions. STC holds the blueprints of that configuration. A deploy command reproduces them into the concrete harness you use, adapted to its format.
 
 ## Table of contents
 
@@ -118,8 +118,8 @@ This is the load-bearing abstraction. Two axes are **orthogonal**:
 
 | Axis | Controls | Lives in | Examples |
 |---|---|---|---|
-| **Harness** (FORM) | file layout, dispatch mechanism, hook wiring, import syntax | `adapters/<harness>/adapter.yaml` | `claude`, `zcode` |
-| **Model** (ENGINE) | concrete model ids per tier, context windows, transport | `core/models/<provider>.yaml` | `glm`, `claude` |
+| **Harness** (FORM) | file layout, dispatch mechanism, hook wiring, import syntax | `adapters/<harness>/adapter.yaml` | `claude`, `codex`, `zcode` |
+| **Model** (ENGINE) | concrete model ids per tier, context windows, transport | `core/models/<provider>.yaml` | `claude`, `codex`, `glm` |
 
 At deploy time, the composition is:
 
@@ -135,6 +135,7 @@ Each harness speaks **one** model family at a time, so `stc.yaml` lets you pin a
 models:
   provider: claude            # default provider (the reference harness's own)
   claude:  claude             # Claude Code on Anthropic sub → sonnet/haiku/opus
+  codex:   codex              # Codex (ChatGPT on macOS) → agents inherit parent model
   zcode:   glm                # ZCode → glm-5.2/glm-5-turbo (adapter currently frozen)
 ```
 
@@ -310,8 +311,9 @@ python3 deploy/deploy.py render --target claude,zcode --dry-run   # both at once
 
 # 3. Deploy into one or many harnesses (writes ~/.stc/ + the native dir; backs up first)
 python3 deploy/deploy.py apply --target claude          # → ~/.claude
+python3 deploy/deploy.py apply --target codex           # → ~/.codex (hooks.json + config.toml + agents/*.stc.toml)
 python3 deploy/deploy.py apply --target zcode           # → ~/.zcode (as a plugin)
-python3 deploy/deploy.py apply --target claude,zcode    # both
+python3 deploy/deploy.py apply --target claude,codex    # both
 python3 deploy/deploy.py apply                          # all targets from stc.yaml
 
 # Roll back a deploy if it went wrong:
@@ -344,11 +346,12 @@ STC/
 │   ├── skills/         # 15 skills (methodology + utility)
 │   ├── agents/         # registry.yaml + 9 agent prompt bodies
 │   ├── commands/       # 8 slash commands
-│   ├── models/         # claude.yaml, glm.yaml (the MODEL axis providers)
+│   ├── models/         # claude.yaml, codex.yaml, glm.yaml (the MODEL axis providers)
 │   ├── templates/      # design-system, new-project, vault
 │   └── scripts/        # agent_cost.py, infra_graph.py, infra_graph_render.py
 ├── adapters/
 │   ├── claude/         # the REFERENCE realisation (files-delivery)
+│   ├── codex/          # native Codex (ChatGPT) — hooks.json + config.toml + *.stc.toml agents
 │   ├── zcode/          # the DEGRADE realisation (plugin-delivery) — currently frozen
 │   └── _template/      # documented skeleton for new harnesses
 ├── deploy/
@@ -371,7 +374,7 @@ See [`docs/PROGRESS.md`](docs/PROGRESS.md) for the full build log and design dec
 
 Early beta — the `0.1.x` line (current release in the badge above) carries the deploy pipeline and 19 hooks; breaking changes can happen between minor bumps until `1.0.0`. Contributions and ideas welcome.
 
-Development currently focuses on the **`claude`** harness (the reference realisation: 18 active hooks, 15 skills, 9 agents, 8 commands). The **`zcode`** adapter is **frozen** — it stays in-tree as the reference degrade realisation (and the two-axis abstraction is unchanged), but default deploys skip it; deploy it explicitly with `--target zcode` if you need it.
+Development currently focuses on the **`claude`** harness (the reference realisation: 18 active hooks, 15 skills, 9 agents, 8 commands). The **`codex`** adapter (ChatGPT on macOS) is a native peer — typed subagents (`*.stc.toml`), a full hook event set, `config.toml` MCP — with a 4-role first wave. The **`zcode`** adapter is **frozen** — it stays in-tree as the reference degrade realisation (and the two-axis abstraction is unchanged), but default deploys skip it; deploy it explicitly with `--target zcode` if you need it.
 
 ## License
 

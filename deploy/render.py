@@ -5,9 +5,10 @@ Pure function: render_harness(stc, core_dir, provider, adapter) -> RenderResult.
 It NEVER writes to disk — the orchestrator (deploy.py) owns the write step, so
 render is testable in isolation and safe to dry-run.
 
-The result is three things:
+The result is four things:
   files        — { native_relpath: text }    markdown/script artifacts to write
-  json_patches — { "settings.json" | ".mcp.json": <dict> }  namespaces to merge
+  json_patches — { "settings.json" | ".mcp.json" | "hooks.json": <dict> }  namespaces to merge
+  toml_patches — { "config.toml": <str> }    STC-owned TOML tables to merge (add-only)
   marker       — { filepath: content }       the single @import block to inject
                                               into the user's always-context file
   manifest     — list of {path, kind, source} for uninstall + idempotent re-deploy
@@ -53,7 +54,8 @@ RENDER_VARS = {
 class RenderResult:
     def __init__(self):
         self.files = {}        # native_relpath -> text
-        self.json_patches = {} # "settings.json" | ".mcp.json" -> dict (to merge)
+        self.json_patches = {} # "<harness json file>" -> dict (to merge)
+        self.toml_patches = {} # "config.toml" -> str (STC tables to merge, add-only)
         self.marker = {}       # abs filepath -> block content
         self.manifest = []     # {path, kind, source}
 
@@ -205,6 +207,39 @@ def _substitute_vars(text, varmap, declared):
     return re.sub(r"\$\{(\w+)\}", repl, text)
 
 
+# Hooks whose body reads .tool_input.file_path / .tool_input.content and so
+# needs the apply_patch normalize line on Codex (path lives in the patch text).
+_APPLY_PATCH_HOOKS = {
+    "block-dangerous-git.sh": False,   # reads .tool_input.command, not file_path
+    "secret-scan-memory.sh": True,
+    "dirty-tree-guard.sh": True,
+    "memory-guard.sh": True,
+    "read-first-router.sh": True,
+    "integration-docs-gate.sh": True,
+    "buy-vs-build-reminder.sh": True,
+    "exit-plan-grill.sh": True,
+}
+
+
+def _inject_apply_patch_normalize(hook_text, fname):
+    """Insert a `source _apply_patch_normalize.sh` line right after the hook's
+    first `INPUT=$(cat)` so apply_patch's path-in-patch-text is surfaced as
+    .tool_input.file_path before the body reads it. No-op if the hook doesn't
+    read stdin, or already carries the line (idempotent re-render).
+    """
+    if not _APPLY_PATCH_HOOKS.get(fname):
+        return hook_text
+    marker = 'INPUT=$(cat)'
+    inject = (
+        f'{marker}\n'
+        f'source "${{STC_NORMALIZE:-$NATIVE_DIR/hooks/_apply_patch_normalize.sh}}" 2>/dev/null || true'
+    )
+    if 'apply_patch_normalize' in hook_text:
+        return hook_text  # already injected (idempotent)
+    # replace only the FIRST occurrence (the stdin read); leave any later $(cat) alone
+    return hook_text.replace(marker, inject, 1)
+
+
 def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
     """Render the 16 hook scripts + the matcher wiring.
 
@@ -238,6 +273,12 @@ def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
         text = _read(src)
         declared = _hook_declared_vars(text)
         text = _substitute_vars(text, varmap, declared)
+        # Codex apply_patch normalize: hooks that read .tool_input.file_path /
+        # .tool_input.content get a source line injected after the first
+        # `INPUT=$(cat)` so apply_patch's path-in-patch-text is surfaced as the
+        # Claude-shape fields the body expects. Only when the adapter asks for it.
+        if facts.get("apply_patch_normalize"):
+            text = _inject_apply_patch_normalize(text, fname)
         out_name = re.sub(r"\.sh$", ".stc.sh", fname)
         rel = os.path.join(native_hooks_dir, out_name)
         result.files[rel] = text
@@ -259,6 +300,15 @@ def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
 
     if not wiring["hooks"]:
         return
+
+    # when the adapter asks for apply_patch normalization, ship the shared
+    # normalizer script alongside the hooks (it is sourced, not a registered hook).
+    if facts.get("apply_patch_normalize"):
+        norm_src = os.path.join(core_dir, "hooks", "_apply_patch_normalize.sh")
+        if os.path.exists(norm_src):
+            norm_rel = os.path.join(native_hooks_dir, "_apply_patch_normalize.stc.sh")
+            result.files[norm_rel] = _substitute_vars(_read(norm_src), varmap, set())
+            result.manifest.append({"path": norm_rel, "kind": "hook", "source": "core/hooks/_apply_patch_normalize.sh"})
 
     if delivery == "plugin":
         # self-contained hooks.json LIVES INSIDE the plugin dir; no merge needed.
@@ -282,7 +332,9 @@ def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
             _json_dump(clean)
         _render_plugin_meta(adapter, plugin_root, result)
     else:
-        result.json_patches["settings.json"] = wiring
+        # target filename is harness-specific (claude: settings.json; codex: hooks.json)
+        hook_target = facts.get("hook_config_file", "settings.json")
+        result.json_patches[hook_target] = wiring
 
 
 def _json_dump(obj):
@@ -443,6 +495,8 @@ def _resolve_tools(tools, tool_map):
 def _render_subagents(core_dir, registry, provider, adapter, result, native_agents_dir):
     caps = adapter.get("subagents", {}).get("capabilities", {})
     tool_map = adapter.get("subagents", {}).get("tool_map", {}) or {}
+    facts = adapter.get("harness_facts", {})
+    agent_format = facts.get("subagent_format", "markdown")  # "markdown" | "toml"
     for name, cap in caps.items():
         sup = cap.get("supported")
         if sup is False:
@@ -460,6 +514,26 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
             # native typed agent file: generate frontmatter + body from core/
             src = os.path.join(core_dir, "agents", f"{name}.md")
             body = _read(src) if os.path.exists(src) else f"# {name}\n"
+
+            if agent_format == "toml":
+                # Codex ~/.codex/agents/*.toml: name/description/developer_instructions.
+                # No `tools` field (Codex TOML schema has none — tool access is via
+                # sandbox_mode, not a tools list). model omitted → inherits parent.
+                # model_reasoning_effort optional; emit when the provider maps a tier.
+                toml_lines = [
+                    f'name = {_toml_quote(name)}',
+                    f'description = {_toml_quote(dispatch)}',
+                ]
+                effort_tier = registry["agents"].get(name, {}).get("effort_tier")
+                if effort_tier:
+                    toml_lines.append(
+                        f'model_reasoning_effort = {_toml_quote({"low": "low", "mid": "medium", "high": "high"}[effort_tier])}')
+                toml_lines.append(f'developer_instructions = {_toml_quote(body.rstrip())}')
+                rel = os.path.join(native_agents_dir, f"{name}.stc.toml")
+                result.files[rel] = "\n".join(toml_lines) + "\n"
+                result.manifest.append({"path": rel, "kind": "agent", "source": f"core/agents/{name}.md"})
+                continue
+
             fm = {"name": name, "description": dispatch}
             if model_id:
                 fm["model"] = model_id
@@ -734,6 +808,7 @@ def _render_mcp(adapter, stc, result):
         servers[f"stc-{name}"] = srv
     if not servers:
         return
+    mcp_target = adapter.get("harness_facts", {}).get("mcp_config_file", ".mcp.json")
     delivery = adapter.get("harness_facts", {}).get("capability_delivery", "files")
     if delivery == "plugin":
         # plugin-provided MCP lives INSIDE the plugin root (.mcp.json), namespaced
@@ -744,8 +819,47 @@ def _render_mcp(adapter, stc, result):
         # ~/.<native>/.mcp.json merge path — which is the Claude files-delivery form.
         result.files[os.path.join(PLUGIN_DIR, ".mcp.json")] = \
             _json_dump({"mcpServers": servers})
+    elif mcp_target.endswith(".toml"):
+        # Codex config.toml: emit STC's [mcp_servers.stc-*] tables as TOML text.
+        # add-only merge (tomllib-detect + raw append) happens in deploy.py.
+        result.toml_patches[mcp_target] = _render_mcp_toml(servers)
     else:
-        result.json_patches[".mcp.json"] = {"mcpServers": servers}
+        result.json_patches[mcp_target] = {"mcpServers": servers}
+
+
+def _toml_quote(s):
+    """Quote a TOML basic string, escaping backslashes and double quotes."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _toml_array(items):
+    """Render a TOML array of strings (inline, like Codex config.toml uses)."""
+    return "[" + ", ".join(_toml_quote(str(i)) for i in items) + "]"
+
+
+def _render_mcp_toml(servers):
+    """Render STC's [mcp_servers.stc-*] tables as TOML text for Codex config.toml.
+
+    Mirrors the JSON shape _render_mcp builds: namespaced stc- names, command +
+    args[] split, secrets by env-var NAME. Codex is stdio-only (no `url` key —
+    lesson from ECC issue #2224). The output is a sequence of self-contained
+    [table] blocks appended at end-of-file by the add-only merge.
+    """
+    blocks = []
+    for name, srv in sorted(servers.items()):
+        lines = [f"[mcp_servers.{name}]"]
+        lines.append(f"command = {_toml_quote(srv.get('command', ''))}")
+        args = srv.get("args") or []
+        if args:
+            lines.append(f"args = {_toml_array(args)}")
+        env = srv.get("env") or {}
+        if env:
+            # env is a TOML sub-table: header first, then one key = value per line.
+            lines.append(f"[mcp_servers.{name}.env]")
+            for k, v in sorted(env.items()):
+                lines.append(f"{k} = {_toml_quote(str(v))}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + "\n"
 
 
 def _render_permissions(adapter, result):
@@ -833,7 +947,14 @@ def render_harness(stc, registry, provider, adapter, core_dir, repo_dir):
         hooks_dir = "hooks"
         agents_dir = "agents"
         commands_dir = "commands"
-        skills_dir = "skills"
+        # skills may live outside native_dir on some harnesses (Codex global
+        # skills path = ~/.agents/skills). The adapter's skills.native_path, when
+        # absolute (starts with ~ or $HOME), overrides the default native_dir/skills.
+        skills_native = (adapter.get("skills", {}) or {}).get("native_path", "")
+        if skills_native and (skills_native.startswith("~") or skills_native.startswith("$")):
+            skills_dir = os.path.expandvars(os.path.expanduser(skills_native))
+        else:
+            skills_dir = "skills"
 
     varmap = resolve_vars(adapter, stc, provider)
     result = RenderResult()

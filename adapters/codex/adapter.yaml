@@ -1,0 +1,256 @@
+# ============================================================
+# STC adapter — Codex (ChatGPT on macOS)
+#
+# The live form of Codex as observed in ~/.codex (read-only). STC's neutral
+# core/ is realised here by:
+#   - native @import in ~/.codex/AGENTS.md          (always_context)
+#   - typed sub-agent files in ~/.codex/agents/*.toml (subagents — TOML form)
+#   - hooks wired in ~/.codex/hooks.json              (hooks — standalone JSON)
+#   - MCP servers in ~/.codex/config.toml             (mcp — [mcp_servers.stc-*])
+#   - skills in ~/.agents/skills/                     (skills — Codex global path)
+#
+# Codex supports MORE of STC natively than zcode: typed subagents (TOML),
+# a full hook event set (incl. PreCompact), and @import in AGENTS.md. The
+# contracts are Claude-close (same stdin fields, hookSpecificOutput.additionalContext
+# inject, exit 2+stderr block) so the neutral hook scripts port nearly verbatim —
+# the one sharp edge is apply_patch (edits carry the file path inside the patch
+# text, not in tool_input.file_path), handled by a shared normalize layer.
+#
+# Reference for the layer model: adapters/claude/adapter.yaml.
+# ============================================================
+
+schema_version: 1
+harness: codex
+canonical_home: "${HOME}/.stc"            # shared STC home, cross-harness
+native_dir:     "${HOME}/.codex"          # written only by deploy.py after consent
+
+# ------------------------------------------------------------
+# Harness-level facts (consumed by render.py + deploy.py + hooks render)
+# ------------------------------------------------------------
+harness_facts:
+  always_context_file: "AGENTS.md"        # ~/.codex/AGENTS.md (global) + per-project
+  supports_native_import: "unverified"    # @import may work; H06 is the guarantee either way
+  import_syntax: "@<path>"
+  rules_delivery: "hook"                  # H06 injects rules on SessionStart (verified: Codex supports additionalContext inject); bundle = pointer
+  supports_typed_subagents: true          # ~/.codex/agents/*.toml
+  subagent_format: "toml"                 # render emits *.stc.toml (name/description/developer_instructions)
+  subagent_dispatch_tool: "Agent"         # Codex subagent spawn tool
+  hook_config_file: "hooks.json"          # standalone hooks JSON (NOT settings.json)
+  hook_event_names:                       # Codex supported subset (verified via docs/hooks.md)
+    - PreToolUse
+    - PostToolUse
+    - UserPromptSubmit
+    - SessionStart
+    - PreCompact
+    - Stop
+  mcp_config_file: "config.toml"          # [mcp_servers.*] tables (add-only TOML merge)
+  capability_delivery: "files"            # loose files, not a plugin
+  statusline:
+    enabled: false                        # no statusLine equivalent in Codex
+  apply_patch_normalize: true             # inject apply_patch→file_path normalizer into file-edit hooks
+
+# ------------------------------------------------------------
+# Render-time variables this adapter contributes (see core/hooks/README.md)
+# ------------------------------------------------------------
+vars:
+  HARNESS_DIR:   "${HOME}/.codex"
+  HARNESS_NAME:  "codex"
+  MEMORY_DIR:    "${HOME}/.codex"         # project memory root (hooks that scan memory use this)
+  STC_CORE:      "${HOME}/.stc/core"      # shared cross-harness rules/memory (H06 injects from here)
+  COMPACT_CMD:   "/compact"               # harness-native compact command
+  SECRETS_ENV:   "${HOME}/.codex/.env"
+  RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
+
+# ============================================================
+# LAYER 1 — always_context
+# ============================================================
+always_context:
+  realization: "AGENTS.md with native @import of the STC always-context bundle (AGENTS.stc.md). H06 injects the 3 firing rules on SessionStart."
+  native_path: "${native_dir}/AGENTS.md"
+  import_syntax: "@<path>"
+  capabilities:
+    memory:
+      supported: true
+      native: "@${native_dir}/AGENTS.stc.md  (the bundle: rule pointers + inlined profile + lazy memory map)"
+      fallback: "H06 session-start-context.sh JIT-inject on SessionStart (ALSO post-compact recovery). Used if @import is unsupported."
+      binding:
+        files: [core/memory/MEMORY.md, core/memory/playbook.md, core/memory/code_standard.md]
+
+# ============================================================
+# LAYER 2 — rules
+# ============================================================
+rules:
+  realization: "rules migrate to hooks at their flow point (ADR-001); only session/behavior keepers stay in always_context"
+  native_path: "inlined into AGENTS.md via @import, or JIT-injected by a hook"
+  capabilities:
+    behavior:
+      supported: true
+      native: "@core/rules/behavior.md (keepers); the rest enforced by hooks"
+    pev:
+      supported: true
+      native: "@core/rules/pev.md (Plan→Do→Verify central process)"
+    project_docs:
+      supported: true
+      native: "@core/rules/project_docs.md (ADR, specs, tasks encoding)"
+    session:
+      supported: true
+      native: "@core/rules/session.md"
+
+# ============================================================
+# LAYER 3 — hooks
+# Codex hook contract ≈ Claude: stdin carries tool_name/tool_input/session_id/
+# source; inject = hookSpecificOutput.additionalContext; block = exit 2 + stderr
+# (or permissionDecision: deny). The neutral scripts port nearly verbatim.
+#
+# SHARP EDGES (documented per hook):
+#   - apply_patch: file edits carry tool_name="apply_patch" and the path INSIDE
+#     tool_input.command (the *** Begin Patch text), not in tool_input.file_path.
+#     H05/H07/H09/H10/H16 run through a shared normalize layer (hooks/_apply_patch_normalize.sh)
+#     that extracts file_path before the hook body runs — the bodies stay unchanged.
+#   - H08: Claude binds it to Stop, but Codex Stop = end of TURN (not session).
+#     Moved to UserPromptSubmit + the session-end text trigger (same grep as H03).
+#   - H13: hosted web tools bypass local hooks → degrades to instruction/skill.
+#   - H14/H21: no EnterPlanMode/ExitPlanMode in Codex → pre-write gate instead.
+# ============================================================
+hooks:
+  realization: "guard scripts wired into ~/.codex/hooks.json (same matcher-group shape as Claude settings.json hooks)"
+  native_path: "${native_dir}/hooks/*.stc.sh"
+  import_syntax: "none (hooks.json command pointers)"
+  capabilities:
+    H01_block_dangerous_git:   { supported: true, matcher: ["Bash"],                                    binding: { file: block-dangerous-git.sh } }
+    H02_playwright_reminder:   { supported: true, matcher: ["mcp__playwright__browser"],                binding: { file: playwright_reminder.sh } }
+    # H03 detects session-end by the PROMPT TEXT (UserPromptSubmit), not a lifecycle event.
+    # Codex UserPromptSubmit delivers .prompt + accepts bare stdout as additionalContext.
+    H03_stop_services:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",            binding: { file: stop_services_reminder.sh } }
+    H04_agent_reuse_contract:  { supported: true, matcher: ["Agent"],                                   binding: { file: agent-reuse-contract.sh } }
+    # apply_patch normalize: H05/H07/H09/H10/H16 wrap the body in _apply_patch_normalize.sh
+    H05_secret_scan_memory:    { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: secret-scan-memory.sh } }
+    H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",                binding: { file: session-start-context.sh } }
+    H07_dirty_tree_guard:      { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: dirty-tree-guard.sh } }
+    # H08: Stop in Codex = turn-end (would inject a continuation prompt mid-task).
+    # Moved to UserPromptSubmit + the session-end text trigger. stop_hook_active removed.
+    H08_link_integrity:        { supported: true, matcher: ["*"], event: "UserPromptSubmit",            binding: { file: link-integrity-guard.sh } }
+    H09_memory_guard:          { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: memory-guard.sh } }
+    H10_read_first_router:     { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: read-first-router.sh } }
+    # H11 disabled: Codex (ChatGPT desktop) collapses large tool output in the UI —
+    # same rationale as claude (the harness already persists/collapses it).
+    H11_output_hygiene:        { supported: false, matcher: ["Bash"],                                   binding: { file: output-hygiene-guard.sh } }
+    H12_acquire_dedup:         { supported: true, matcher: ["Read","Grep","Glob","Bash"],               binding: { file: acquire-dedup-guard.sh } }
+    # H13: hosted web tools (WebSearch/WebFetch) bypass local hooks → instruction/skill, not a guard
+    H13_web_route:             { supported: false, matcher: ["WebSearch|WebFetch"],                      binding: { file: web-route-guard.sh }, note: "hosted web tools bypass local hooks; enforced via instruction/skill instead" }
+    # H14/H21: no EnterPlanMode/ExitPlanMode in Codex — adapted to a PreToolUse apply_patch pre-write gate
+    H14_buy_vs_build:          { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: buy-vs-build-reminder.sh } }
+    H15_exec_offload:          { supported: true, matcher: ["Bash"],                                    binding: { file: exec-offload-guard.sh } }
+    H16_integration_docs_gate: { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: integration-docs-gate.sh } }
+    H17_secret_read_guard:     { supported: true, matcher: ["Read","Glob","Grep"],                       binding: { file: secret-read-guard.sh } }   # load-bearing — Codex has no permissions.deny engine
+    H18_graphify_first:        { supported: true, matcher: ["Grep","Bash"],                             binding: { file: graphify-first.sh } }
+    H19_precompact_memory:     { supported: true, matcher: ["*"], event: "PreCompact",                  binding: { file: precompact-memory-guard.sh } }
+    H21_exit_plan_grill:       { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: exit-plan-grill.sh }, note: "adapted: no ExitPlanMode event → pre-write gate checking plan/AC discipline" }
+
+# ============================================================
+# LAYER 4 — commands
+# Codex deprecated slash-commands; STC commands convert to skills (the
+# source-command-*-stc skills already ship to ~/.agents/skills). Commands
+# are NOT emitted as slash-command files.
+# ============================================================
+commands:
+  realization: "converted to skills (source-command-*-stc); slash-commands are deprecated in Codex"
+  native_path: "~/.agents/skills/source-command-*-stc/"
+  import_syntax: "copy (as skills)"
+  capabilities:
+    git-guardrails:                { supported: true, binding: { source: core/commands/git-guardrails.md } }
+    grill-me:                      { supported: true, binding: { source: core/commands/grill-me.md } }
+    improve-codebase-architecture: { supported: true, binding: { source: core/commands/improve-codebase-architecture.md } }
+    install-mcp:                   { supported: true, binding: { source: core/commands/install-mcp.md } }
+    prototype:                     { supported: true, binding: { source: core/commands/prototype.md } }
+    to-spec:                       { supported: true, binding: { source: core/commands/to-spec.md } }
+    to-tasks:                      { supported: true, binding: { source: core/commands/to-tasks.md } }
+    zoom-out:                      { supported: true, binding: { source: core/commands/zoom-out.md } }
+
+# ============================================================
+# LAYER 5 — subagents
+# Codex typed agents live in ~/.codex/agents/*.toml: name/description/
+# developer_instructions (no `tools` field — tool access is via sandbox_mode).
+# First wave: 4 read-only roles + builder (one plan block at a time). No
+# parallel write-agents without worktree isolation (enforced by AGENTS.md).
+# ============================================================
+subagents:
+  realization: "typed agent files in ~/.codex/agents/*.stc.toml (name/description/developer_instructions); dispatched via the Agent tool"
+  native_path: "${native_dir}/agents/*.stc.toml"
+  import_syntax: "copy + emit TOML (no tools field; model inherited from parent)"
+  capabilities:
+    # Reviewer / QA pipeline
+    code-reviewer:  { supported: true,  binding: { model_tier: mid,  skill_link: code-reviewer } }
+    qa:             { supported: true,  binding: { model_tier: mid,  skill_link: qa } }
+    # Investigation
+    research:       { supported: true,  binding: { model_tier: mid,  skill_link: research } }
+    # Executor tier (FR-28): ONE plan block per dispatch
+    builder:        { supported: true,  binding: { model_tier: mid,  skill_link: null } }
+    # Available but not in the first deploy wave (enable after validation):
+    security-arch:  { supported: false, binding: { model_tier: mid,  skill_link: security-arch }, note: "enable after first-wave validation" }
+    security-deps:  { supported: false, binding: { model_tier: fast, skill_link: security-deps }, note: "enable after first-wave validation" }
+    e2e:            { supported: false, binding: { model_tier: mid,  skill_link: e2e }, note: "enable after first-wave validation" }
+    cleanup:        { supported: false, binding: { model_tier: fast, skill_link: null }, note: "enable after first-wave validation" }
+    docs:           { supported: false, binding: { model_tier: fast, skill_link: docs }, note: "enable after first-wave validation" }
+    harness-docs:   { supported: false, binding: { model_tier: fast, affinity: claude-only, skill_link: null }, note: "claude-specific; inert on codex" }
+
+# ============================================================
+# LAYER 6 — skills
+# Codex native global skills path = ~/.agents/skills (per docs/customization/
+# overview.md). The 22 STC skills already live there (same core/ source via
+# the stc: plugin) — re-deploy is idempotent.
+# ============================================================
+skills:
+  realization: "skill folders in ~/.agents/skills/<name>/SKILL.md; body is the core/ source verbatim"
+  native_path: "~/.agents/skills"
+  import_syntax: "copy (skills carry their own frontmatter)"
+  capabilities:
+    code-reviewer:  { supported: true }
+    security-arch:  { supported: true }
+    qa:             { supported: true }
+    security-deps:  { supported: true }
+    e2e:            { supported: true }
+    research:       { supported: true }
+    docs:           { supported: true }
+    caveman:        { supported: true }
+    council:        { supported: true }
+    diagnose:       { supported: true }
+    infra-audit:    { supported: true }
+    tdd:            { supported: true }
+    worktree:       { supported: true }
+    code-graph:     { supported: true, binding: { required: true } }   # S18 — REQUIRED capability (graphify)
+    llm-wiki:       { supported: true }                                # S19 — Karpathy pattern
+
+# ============================================================
+# LAYER 8 — permissions
+# Codex has no settings.json permissions.deny engine. Secret read-protection
+# is delivered by HOOK (H17_secret_read_guard), the same approach zcode uses.
+# The deny list documents the INTENT; the hook is the live enforcement.
+# ============================================================
+permissions:
+  native: false   # no permissions.deny engine — enforced by H17 hook instead
+  realization: "H17_secret_read_guard hook (PreToolUse Read|Glob|Grep)"
+  native_path: "hooks/secret-read-guard.stc.sh"
+  deny:
+    - "Read(./**/.env)"
+    - "Read(./**/.env.local)"
+    - "Read(./**/.env.*.local)"
+    - "Read(./**/*.pem)"
+    - "Read(./**/id_rsa)"
+
+# ============================================================
+# LAYER 7 — mcp
+# Rendered into ~/.codex/config.toml as [mcp_servers.stc-*] tables (add-only
+# TOML merge via tomllib). Codex is stdio-only (no `url` key). Only context7
+# + playwright enabled (per stc.yaml); graphify stays a standalone CLI.
+# ============================================================
+mcp:
+  realization: "config.toml [mcp_servers.stc-*] tables; secrets by env-var name (never inline)"
+  native_path: "${native_dir}/config.toml"
+  import_syntax: "generate [mcp_servers.stc-*] from stc.yaml → mcp.*"
+  capabilities:
+    playwright: { supported: true, binding: { required: true, transport: stdio, command: "npx -y @playwright/mcp@latest" } }
+    graphify:   { supported: true, binding: { required: true, transport: stdio, command_env: GRAPHIFY_CLI } }   # non-MCP CLI form; not rendered into config.toml
+    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @context7/mcp" } }
+    github:     { supported: true, binding: { transport: stdio, command: "npx -y @modelcontextprotocol/server-github" } }
+    gsheets:    { supported: true, binding: { transport: stdio, command: "npx -y mcp-gsheets@latest" } }

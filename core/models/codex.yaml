@@ -1,0 +1,37 @@
+# ============================================================
+# STC model provider — Codex (OpenAI / ChatGPT on macOS)
+#
+# The MODEL axis, independent of the harness axis. See core/models/claude.yaml
+# for the rationale. Codex subagents inherit the parent session's model
+# (config.toml sets the global model), so the .stc.toml files omit `model` —
+# tiers here document the INTENT and are surfaced only when a future Codex
+# build supports per-agent model overrides (today model_reasoning_effort is
+# the per-agent knob, emitted from registry effort_tier).
+# ============================================================
+
+provider: codex
+display_name: "Codex (OpenAI / ChatGPT)"
+
+api:
+  kind: openai
+  base_url: "https://api.openai.com"    # default; ChatGPT-app login path differs
+  auth: bearer
+  key_env: "OPENAI_API_KEY"
+
+# Tier ids map to the parent-inherited model; no concrete override is emitted
+# into agents/*.stc.toml (model field omitted → inherits). Revisit when Codex
+# gains per-agent model selection.
+tiers:
+  fast:  "inherit"
+  mid:   "inherit"
+  heavy: "inherit"
+
+context:
+  fast:  200000
+  mid:   200000
+  heavy: 200000
+
+capabilities:
+  reasoning: true
+  tool_use: true
+  vision: true

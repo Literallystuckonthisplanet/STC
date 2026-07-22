@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import render as R          # noqa: E402
 import checks as C          # noqa: E402
 import stc_block as B       # noqa: E402
+import toml_merge as T      # noqa: E402   add-only merge for config.toml (Codex)
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 CORE = os.path.join(REPO, "core")
@@ -340,6 +341,70 @@ def _is_stc_owned(entry, cap, entry_basenames):
     return False
 
 
+def _merge_hooks_json_patch(patch, native_dir, overwrite, skip_collisions):
+    """Merge the STC hooks wiring into the live hooks.json (Codex shape).
+
+    The patch is the SAME {"hooks": {<Event>: [{matcher, hooks:[...]}]}} shape
+    _render_hooks builds — identical to Claude's settings.json hooks block, just
+    emitted to a standalone hooks.json file (Codex's hook_config_file). So this
+    reuses the settings-merge contract: drop prior STC-owned entries (tagged
+    _stc_managed+_stc_cap, or legacy untagged matching a script basename), then
+    add the current ones. The settings-specific extras (statusLine, permissions,
+    session defaults) are absent here — hooks.json carries ONLY the wiring.
+    Returns True on success.
+    """
+    path = os.path.join(native_dir, "hooks.json")
+    if not _refuse_merge_into_corrupt_json(path):
+        return False
+    live = C._load_json(path) or {}
+    # resolve $NATIVE_DIR in every hook command (Claude Code/Codex do not expand it)
+    for entries in patch.get("hooks", {}).values():
+        for e in entries:
+            for h in (e.get("hooks") or []):
+                if isinstance(h, dict):
+                    h["command"] = h.get("command", "").replace("$NATIVE_DIR", native_dir)
+    hooks = live.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+        live["hooks"] = hooks
+    stc_basenames = set()
+    for entries in patch.get("hooks", {}).values():
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            for h in e.get("hooks", []):
+                cmd = h.get("command", "") if isinstance(h, dict) else ""
+                b = os.path.basename(cmd)
+                if b:
+                    stc_basenames.add(b)
+                    stc_basenames.add(re.sub(r"\.stc\.sh$", ".sh", b))
+    for ev in list(hooks):
+        kept = []
+        for x in hooks[ev]:
+            drop = False
+            if isinstance(x, dict):
+                if x.get("_stc_managed") is True:
+                    drop = True
+                else:
+                    for h in x.get("hooks", []):
+                        cmd = h.get("command", "") if isinstance(h, dict) else ""
+                        if os.path.basename(cmd) in stc_basenames:
+                            drop = True
+                            break
+            if not drop:
+                kept.append(x)
+        if kept:
+            hooks[ev] = kept
+        else:
+            del hooks[ev]
+    # add STC entries
+    for ev, entries in patch.get("hooks", {}).items():
+        hooks.setdefault(ev, []).extend(entries)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(live, fh, indent=2, ensure_ascii=False)
+    return True
+
+
 def _merge_mcp_patch(patch, native_dir):
     path = os.path.join(native_dir, ".mcp.json")
     if not _refuse_merge_into_corrupt_json(path):
@@ -477,8 +542,13 @@ def cmd_render(args):
         for jn, jp in rr.json_patches.items():
             with open(os.path.join(out, jn + ".stc.patch.json"), "w", encoding="utf-8") as fh:
                 json.dump(jp, fh, indent=2, ensure_ascii=False)
+        # dump the toml patches too (Codex config.toml — add-only STC tables)
+        for tn, tp in rr.toml_patches.items():
+            with open(os.path.join(out, tn + ".stc.patch.toml"), "w", encoding="utf-8") as fh:
+                fh.write(tp)
         print(f"✓ rendered {t} → deploy/_rendered/{t}/ "
-              f"({len(rr.files)} files, {len(rr.json_patches)} JSON patches)")
+              f"({len(rr.files)} files, {len(rr.json_patches)} JSON patches, "
+              f"{len(rr.toml_patches)} TOML patches)")
 
 
 def cmd_apply(args):
@@ -502,10 +572,10 @@ def cmd_apply(args):
         if collisions and not args.overwrite and not args.skip_collisions:
             C.report_collisions(collisions); return 1
 
-        # backup JSON we are about to touch
-        json_files = list(rr.json_patches.keys())
-        if json_files and os.path.isdir(native_dir):
-            ts, dest, saved = C.backup_snapshot(native_dir, json_files, BACKUPS)
+        # backup files we are about to touch (JSON patches + TOML patches)
+        touch_files = list(rr.json_patches.keys()) + list(rr.toml_patches.keys())
+        if touch_files and os.path.isdir(native_dir):
+            ts, dest, saved = C.backup_snapshot(native_dir, touch_files, BACKUPS)
             if saved:
                 _record_backup(ts, t, native_dir, saved)
                 print(f"✓ backup {ts} → {dest}/ (target={t}; restore: deploy.py restore {ts})")
@@ -526,16 +596,29 @@ def cmd_apply(args):
         delivery = adapter.get("harness_facts", {}).get("capability_delivery", "files")
         if delivery == "plugin":
             _register_plugin(native_dir)
-        # 3. JSON merges. A corrupt live file aborts THIS target (manifest not
-        # written, no "✓ applied") rather than silently discarding its content
-        # — see _refuse_merge_into_corrupt_json.
+        # 3. patch merges (JSON + TOML). A corrupt live file aborts THIS target
+        # (manifest not written, no "✓ applied") rather than silently discarding
+        # its content — see _refuse_merge_into_corrupt_json / toml ValueError.
+        # Data-driven dispatch on the patch filename: settings.json/hooks.json
+        # share the tagged-merge contract; .mcp.json its own; config.toml goes
+        # through the add-only TOML merge (tomllib-detect + raw append).
         for jn, jp in rr.json_patches.items():
             if jn == "settings.json":
                 if not _merge_settings_patch(jp, native_dir, args.overwrite, args.skip_collisions):
                     return 1
+            elif jn == "hooks.json":
+                if not _merge_hooks_json_patch(jp, native_dir, args.overwrite, args.skip_collisions):
+                    return 1
             elif jn == ".mcp.json":
                 if not _merge_mcp_patch(jp, native_dir):
                     return 1
+        # 3b. TOML merges (Codex config.toml). add-only by default; --overwrite
+        # refreshes STC-managed [mcp_servers.stc-*] sections in place.
+        for tn, tp in rr.toml_patches.items():
+            try:
+                T.merge_toml(os.path.join(native_dir, tn), tp, overwrite=args.overwrite)
+            except ValueError as e:
+                print(f"✗ {e}"); return 1
         # 4. the single marker @import into the user's always-context file.
         # Render owns the marker content (single source of truth); here we just
         # resolve the $NATIVE_DIR placeholder and inject it.
@@ -664,7 +747,37 @@ def _uninstall_one(target, manifest):
             live["mcpServers"] = {k: v for k, v in live["mcpServers"].items() if not k.startswith("stc-")}
             if not live["mcpServers"]:
                 del live["mcpServers"]
+        # hooks.json: same {"hooks": {}} shape as settings.json hooks block. Strip
+        # STC-owned entries (tagged + legacy basename match); no perms/session keys.
+        if jn == "hooks.json" and isinstance(live.get("hooks"), dict):
+            stc_basenames = set()
+            for rel in entry.get("files", []):
+                b = os.path.basename(rel)
+                stc_basenames.add(b)
+                stc_basenames.add(re.sub(r"\.stc\.sh$", ".sh", b))
+            for ev in list(live["hooks"]):
+                kept = []
+                for x in live["hooks"][ev]:
+                    drop = False
+                    if isinstance(x, dict):
+                        if x.get("_stc_managed") is True:
+                            drop = True
+                        else:
+                            for h in x.get("hooks", []):
+                                cmd = h.get("command", "") if isinstance(h, dict) else ""
+                                if os.path.basename(cmd) in stc_basenames:
+                                    drop = True; break
+                    kept.append(x) if not drop else None
+                live["hooks"][ev] = kept
+                if not kept:
+                    del live["hooks"][ev]
+            if not live["hooks"]:
+                del live["hooks"]
         json.dump(live, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    # 3b. strip STC [mcp_servers.stc-*] sections from any TOML config this deploy
+    # touched (Codex config.toml). User content preserved byte-for-byte.
+    for tn in entry.get("toml", ()):
+        T.remove_stc_sections(os.path.join(native_dir, tn))
     del manifest[target]
     json.dump(manifest, open(MANIFEST, "w", encoding="utf-8"), indent=2)
     return manifest
@@ -882,6 +995,7 @@ def _write_manifest(rr, target, native_dir):
         "native_dir": native_dir,
         "files": list(rr.files.keys()),
         "json": list(rr.json_patches.keys()),
+        "toml": list(rr.toml_patches.keys()),
         "always_context": ac_file,
         "permissions_deny": stc_deny,
         "session_defaults": session_defaults,

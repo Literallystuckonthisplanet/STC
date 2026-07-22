@@ -449,10 +449,11 @@ def _load_json(path):
 
 
 def detect_collisions(render_result, native_dir, harness):
-    """Compare the rendered JSON patches against the live native JSON files.
+    """Compare the rendered patches against the live native files.
 
     STC's own prior installs (stc-* keys) are NOT collisions — they are
-    update-in-place. Only genuine user conflicts are reported.
+    update-in-place. Only genuine user conflicts are reported. Covers JSON
+    patches (settings.json/hooks.json/.mcp.json) and TOML patches (config.toml).
     """
     collisions = []
     for fname, patch in render_result.json_patches.items():
@@ -460,11 +461,38 @@ def detect_collisions(render_result, native_dir, harness):
         if live is None:
             continue  # no existing file → no collision
 
-        if fname == "settings.json":
+        if fname in ("settings.json", "hooks.json"):
+            # hooks.json has the same {"hooks": {}} shape as settings.json's hooks
+            # block — matcher/statusline collisions apply identically.
             collisions += _settings_collisions(patch, live)
         elif fname == ".mcp.json":
             collisions += _mcp_collisions(patch, live)
+    # TOML patches: a collision = a non-STC [mcp_servers.<name>] whose name starts
+    # with stc- (user content squatting STC's namespace). Genuine user servers
+    # never collide (STC namespaces everything under stc-).
+    for fname in render_result.toml_patches:
+        collisions += _toml_collisions(os.path.join(native_dir, fname))
     return collisions
+
+
+def _toml_collisions(path):
+    """A config.toml collision = a user-defined [mcp_servers.X] where X is in
+    STC's stc-* namespace. STC only ever writes stc-* names, so a pre-existing
+    stc-* server NOT produced by this deploy means the user (or another tool)
+    squat the name — flag it rather than silently overwriting."""
+    import tomllib
+    try:
+        with open(path, "rb") as fh:
+            parsed = tomllib.load(fh)
+    except (FileNotFoundError, tomllib.TOMLDecodeError):
+        return []
+    servers = parsed.get("mcp_servers", {}) or {}
+    out = []
+    for name in servers:
+        if isinstance(name, str) and name.startswith("stc-"):
+            out.append(f"config.toml: [mcp_servers.{name}] already exists "
+                       f"(STC namespace) — remove or rename it first, or pass --overwrite")
+    return out
 
 
 def _settings_collisions(patch, live):

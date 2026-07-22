@@ -11,6 +11,14 @@ release notes.
 
 ## [Unreleased]
 
+### Changed — Codex: enable all 10 agent roles
+- **`adapters/codex/adapter.yaml`:** `security-arch`, `security-deps`, `e2e`,
+  `cleanup`, `docs`, `harness-docs` flipped from `supported: false` (first-wave
+  gating) to `supported: true`. The first-wave 4 (`builder`, `code-reviewer`,
+  `qa`, `research`) were already on; this completes the full agent roster so
+  Codex matches claude's capability set. `harness-docs` stays `affinity:
+  claude-only` (Claude-oriented, harmless on codex).
+
 ### Fixed — TOML collision-detection blocked idempotent re-deploy
 - **`checks.py`:** `_toml_collisions` flagged every `stc-*` server in `config.toml`
   as a collision — including the ones STC wrote on the prior `apply`. A re-deploy

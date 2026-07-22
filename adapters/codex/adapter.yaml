@@ -186,13 +186,12 @@ subagents:
     research:       { supported: true,  binding: { model_tier: mid,  skill_link: research } }
     # Executor tier (FR-28): ONE plan block per dispatch
     builder:        { supported: true,  binding: { model_tier: mid,  skill_link: null } }
-    # Available but not in the first deploy wave (enable after validation):
-    security-arch:  { supported: false, binding: { model_tier: mid,  skill_link: security-arch }, note: "enable after first-wave validation" }
-    security-deps:  { supported: false, binding: { model_tier: fast, skill_link: security-deps }, note: "enable after first-wave validation" }
-    e2e:            { supported: false, binding: { model_tier: mid,  skill_link: e2e }, note: "enable after first-wave validation" }
-    cleanup:        { supported: false, binding: { model_tier: fast, skill_link: null }, note: "enable after first-wave validation" }
-    docs:           { supported: false, binding: { model_tier: fast, skill_link: docs }, note: "enable after first-wave validation" }
-    harness-docs:   { supported: false, binding: { model_tier: fast, affinity: claude-only, skill_link: null }, note: "claude-specific; inert on codex" }
+    security-arch:  { supported: true,  binding: { model_tier: mid,  skill_link: security-arch } }
+    security-deps:  { supported: true,  binding: { model_tier: fast, skill_link: security-deps } }
+    e2e:            { supported: true,  binding: { model_tier: mid,  skill_link: e2e } }
+    cleanup:        { supported: true,  binding: { model_tier: fast, skill_link: null } }
+    docs:           { supported: true,  binding: { model_tier: fast, skill_link: docs } }
+    harness-docs:   { supported: true,  binding: { model_tier: fast, affinity: claude-only, skill_link: null }, note: "claude-oriented (answers about harness docs); less relevant on codex but harmless" }
 
 # ============================================================
 # LAYER 6 — skills

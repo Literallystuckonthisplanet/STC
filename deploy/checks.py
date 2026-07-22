@@ -468,28 +468,33 @@ def detect_collisions(render_result, native_dir, harness):
         elif fname == ".mcp.json":
             collisions += _mcp_collisions(patch, live)
     # TOML patches: a collision = a non-STC [mcp_servers.<name>] whose name starts
-    # with stc- (user content squatting STC's namespace). Genuine user servers
+    # with stc- AND is NOT in this render's managed set (genuine namespace squat,
+    # not STC's own prior install which is update-in-place). Genuine user servers
     # never collide (STC namespaces everything under stc-).
-    for fname in render_result.toml_patches:
-        collisions += _toml_collisions(os.path.join(native_dir, fname))
+    for fname, tpatch in render_result.toml_patches.items():
+        collisions += _toml_collisions(os.path.join(native_dir, fname), tpatch)
     return collisions
 
 
-def _toml_collisions(path):
+def _toml_collisions(path, tables_text=""):
     """A config.toml collision = a user-defined [mcp_servers.X] where X is in
-    STC's stc-* namespace. STC only ever writes stc-* names, so a pre-existing
-    stc-* server NOT produced by this deploy means the user (or another tool)
-    squat the name — flag it rather than silently overwriting."""
+    STC's stc-* namespace AND not produced by THIS render. STC only ever writes
+    stc-* names; a pre-existing stc-* server this render ALSO emits is STC's own
+    prior install (update-in-place, not a collision). A stc-* name the render
+    does NOT emit = the user (or another tool) squat the namespace — flag it."""
+    import re
     import tomllib
     try:
         with open(path, "rb") as fh:
             parsed = tomllib.load(fh)
     except (FileNotFoundError, tomllib.TOMLDecodeError):
         return []
+    # the stc-* names THIS render owns (so they are update-in-place, not a clash)
+    managed = set(re.findall(r"^\[mcp_servers\.(stc-[A-Za-z0-9_-]+)\]", tables_text, re.M))
     servers = parsed.get("mcp_servers", {}) or {}
     out = []
     for name in servers:
-        if isinstance(name, str) and name.startswith("stc-"):
+        if isinstance(name, str) and name.startswith("stc-") and name not in managed:
             out.append(f"config.toml: [mcp_servers.{name}] already exists "
                        f"(STC namespace) — remove or rename it first, or pass --overwrite")
     return out

@@ -11,6 +11,13 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — TOML collision-detection blocked idempotent re-deploy
+- **`checks.py`:** `_toml_collisions` flagged every `stc-*` server in `config.toml`
+  as a collision — including the ones STC wrote on the prior `apply`. A re-deploy
+  after the first one always refused ("stc-context7 already exists"). Now takes
+  the render's managed `stc-*` set and excludes those names: only a `stc-*` server
+  THIS render does NOT emit is a genuine namespace squat. Mirrors the JSON path.
+
 ### Added — Codex (ChatGPT on macOS) as a native STC harness
 - **`adapters/codex/adapter.yaml`:** a first-class harness alongside `claude`.
   Codex supports more of STC natively than zcode: typed subagents (TOML), a full

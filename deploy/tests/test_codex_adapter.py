@@ -263,12 +263,20 @@ def test_h08_session_end_trigger_runs():
 # ---------------------------------------------------------------------------
 
 def test_collision_detection_covers_toml():
-    """A user squatting the stc-* namespace in config.toml is flagged."""
+    """A stc-* server the render does NOT emit = namespace squat (flagged);
+    a stc-* server the render DOES emit = STC's own prior install (not flagged)."""
     d = tempfile.mkdtemp()
     p = os.path.join(d, "config.toml")
-    open(p, "w").write("[mcp_servers.stc-context7]\ncommand = \"x\"\n")
-    colls = C._toml_collisions(p)
-    assert any("stc-context7" in c for c in colls), "stc-* squat not flagged"
+    # live has stc-context7 (this render emits it → not a collision) and
+    # stc-github (this render does NOT emit it → squat → collision)
+    open(p, "w").write(
+        "[mcp_servers.stc-context7]\ncommand = \"x\"\n\n"
+        "[mcp_servers.stc-github]\ncommand = \"y\"\n")
+    managed = "[mcp_servers.stc-context7]\ncommand = \"x\"\n"  # render emits only context7
+    colls = C._toml_collisions(p, managed)
+    assert any("stc-github" in c for c in colls), "stc-* squat not flagged"
+    assert not any("stc-context7" in c for c in colls), \
+        "STC's own prior install must not be a collision (update-in-place)"
 
 
 # ---------------------------------------------------------------------------

@@ -767,9 +767,12 @@ def test_bundle_inlines_glossary_when_present():
         rr = R.render_harness(stc, registry, provider, adapters[t], D.CORE, REPO)
         bundle = "CLAUDE.stc.md" if t == "claude" else "AGENTS.stc.md"
         body = rr.files.get(bundle, "")
-        assert "<code>glossary.md</code>" in body, f"{t} bundle missing inlined glossary"
-        # содержимое, а не только заголовок: клички должны доехать до модели
-        assert "forest-echoes" in body, f"{t} bundle: glossary inlined but empty of nicks"
+        marker = "<details><summary><code>glossary.md</code></summary>"
+        assert marker in body, f"{t} bundle missing inlined glossary"
+        # тело, а не только заголовок: пустая вклейка = словаря у модели нет.
+        # Содержимое личное, поэтому проверяем размер, а не конкретные слова.
+        inlined = body.split(marker, 1)[1].split("</details>", 1)[0]
+        assert len(inlined.strip()) > 200, f"{t} bundle: glossary inlined but empty"
 
 
 def test_h06_injects_rules_via_stc_core():

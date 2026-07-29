@@ -30,10 +30,10 @@ release notes.
 
 ### Fixed — the lens shipped with rules that could never fire (review 2026-07-29)
 - **Latin nicks were dead.** Normalization maps latin→cyrillic, but the
-  alternatives `fe`/`stc`/`driada` were written in latin, so they could never
-  match: `собери fe и задеплой` produced nothing. Nick tables are now built
-  through `normalize()`, and the guard test counts **every alias** separately —
-  the old rule-level count let dead aliases pass behind a live «фе».
+  latin aliases were written in latin, so they could never match — a message
+  using one produced nothing at all. Nick tables are now built through
+  `normalize()`, and the guard test counts **every alias** separately — the old
+  rule-level count let dead aliases pass behind a live cyrillic one.
 - **The guard test disabled itself silently.** With no corpus it printed
   "skipping" and still exited "ВСЁ ПРОШЛО". It now fails, and the corpus lives
   outside the repo (it is real transcript data; `scratchpad/` is gitignored so a
@@ -52,8 +52,10 @@ release notes.
   rollback register double-counted resumed sessions, and its dictionary
   candidates mined the normalization's own artifacts (`task` → `аск`, 273×).
   All four fixed; the audit now calls the same `analyze()` the hook calls.
-- **Nick expansions pointed at directories that do not exist** (`~/Work/<name>`
-  instead of `~/Work/projects/<name>`).
+- **Nick expansions pointed at directories that do not exist** — the table was
+  never checked against the disk. The nick dictionary now lives in private user
+  config (`$STC_LENS_NICKS`), not in shared `core/`: it is one user's data, and
+  publishing someone's project layout in a shared repo is a leak, not a feature.
 - **`user/glossary.md` never reached the model:** `profile.md` pointed at it, but
   `user/` is not deployed and only `profile.md` was inlined. Now inlined too,
   with a regression test.

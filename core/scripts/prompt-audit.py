@@ -325,12 +325,15 @@ def main():
     print(f"корпус: {n_msgs} сообщений в {n_sessions} сессиях\n")
 
     print("== 0. ЛИНЗА ЖИВА? ==")
+    for note in L.status():
+        print(f"   {note}")
     if broken:
         print("   ⚠ ЛИНЗА СЛОМАНА — цифры ниже не о чем:")
         for b in broken:
             print(f"   - {b}")
     else:
-        print(f"   да — {len(L.CANARIES)} канареек и {len(L.SILENT_CANARIES)} обратных проходят")
+        print(f"   да — {len(L.CANARIES)} канареек, {len(L.SILENT_CANARIES)} обратных "
+              f"и {len(L.nick_canaries())} по кличкам проходят")
 
     discarded = [r["discarded_chars"] for r in rollbacks]
     print("\n== 1. РЕЕСТР ОТКАТОВ ==")

@@ -632,9 +632,8 @@ deterministic, no model in the path, the original text reaches the model intact.
   hits in the transcript corpus (`collect_corpus.py`, corpus stored OUTSIDE the
   repo: it is personal data and the remote is public).
 
-**What the review changed (2026-07-29):** latin nicks (`fe`/`stc`/`driada`)
-could never match after normalization and were dead on arrival — caught only by
-counting per alias; the guard test silently passed with no corpus; the
+**What the review changed (2026-07-29):** latin aliases could never match after
+normalization and were dead on arrival — caught only by counting per alias; the guard test silently passed with no corpus; the
 dangling-ref gate described in the comments was never implemented (130 of 137
 firings were mid-conversation); the open-verb flag fired on messages that
 already carried a criterion; the audit's "noisy rule" definition marked working

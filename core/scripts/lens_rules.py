@@ -24,6 +24,8 @@ ADR (buy-vs-build): взяли стандартный `re`, не морфоло�
 `normalize()` при сборке — руками альтернативы не пишем.
 """
 from __future__ import annotations
+import json
+import os
 import re
 
 # --- нормализация ---------------------------------------------------------
@@ -46,7 +48,7 @@ def normalize(text: str) -> str:
 EDGE = r"(?:^|[^а-яa-z0-9])"
 EDGEE = r"(?:[^а-яa-z0-9]|$)"
 # Для кличек дефис и подчёркивание — ЧАСТЬ токена: иначе «forest» совпадает
-# внутри «forest-echoes-www», и линза расшифровывает то, что уже написано.
+# внутри «<кличка>-www», и линза расшифровывает то, что уже написано.
 NICK_EDGE = r"(?:^|[^а-яa-z0-9_-])"
 NICK_EDGEE = r"(?:[^а-яa-z0-9_-]|$)"
 
@@ -95,39 +97,50 @@ RE_QUOTED = re.compile(r"(«[^»]*»|\"[^\"]*\"|```.*?```|`[^`]+`)", re.S)
 MULTI_TASK_MIN = 3
 
 # --- клички проектов ------------------------------------------------------
-# Каждая кличка ПОСЧИТАНА по корпусу (страж-тест валится, если у клички <3
-# реальных срабатываний). Поэтому здесь нет «стц» (0 срабатываний) и «wt»
-# (1) — кандидат без частоты не включается.
-# Пути проверены на диске: проекты лежат в ~/Work/projects/<name>.
-PROJECTS = [
-    {"key": "forest-echoes",
-     "aliases": ["фе", "fe", "форест", "forest"],
-     "expansion": "forest-echoes-www (~/Work/projects/forest-echoes-www)"},
-    {"key": "driada",
-     "aliases": ["дриада", "driada"],
-     "expansion": "driada-www (~/Work/projects/driada-www)"},
-    {"key": "stc",
-     "aliases": ["stc"],
-     "expansion": "STC (~/Work/STC)"},
-    # «лекс» (2 срабатывания) и «црм» (0) сюда НЕ попали: страж-тест их
-    # отбраковал по частоте. Кандидат без частоты не включается.
-    {"key": "lex-digest",
-     "aliases": ["lex"],
-     "expansion": "lex-digest (~/Work/projects/lex-digest)"},
-    {"key": "crm",
-     "aliases": ["crm"],
-     "expansion": "forest-echoes-crm (~/Work/projects/forest-echoes-crm)"},
-    {"key": "worktree",
-     "aliases": ["вт", "ворктри"],
-     "expansion": "git worktree (команда, не проект)"},
-]
+# Каждая кличка должна быть ПОСЧИТАНА по корпусу: страж-тест валится, если у
+# кого-то из них меньше трёх реальных срабатываний — кандидат без частоты не
+# включается.
+#
+# ГДЕ ЖИВЁТ САМА ТАБЛИЦА: в личном файле ВНЕ репозитория — `$STC_LENS_NICKS`,
+# по умолчанию `~/.stc/lens_nicks.json`. Клички и раскладка каталогов — такие
+# же личные данные, как профиль и глоссарий (repo публичный, `core/` общий для
+# всех, кто ставит STC). Формат и пример: `lens_nicks.example.json`.
+#
+# Нет файла — правило NICK просто выключено. Это законная конфигурация, но
+# НЕ молча: `self_check()` возвращает пометку, аудит печатает её в разделе 0.
+NICKS_PATH = os.environ.get("STC_LENS_NICKS") or os.path.expanduser("~/.stc/lens_nicks.json")
+
+
+def _load_projects(path: str) -> list[dict]:
+    """Прочитать личную таблицу кличек. Кривой файл = пустая таблица + пометка."""
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    out = []
+    for p in data.get("projects", []):
+        aliases = [a for a in p.get("aliases", []) if a]
+        if aliases and p.get("expansion"):
+            out.append({"key": p.get("key") or aliases[0],
+                        "aliases": aliases,
+                        "expansion": p["expansion"]})
+    return out
+
+
+PROJECTS = _load_projects(NICKS_PATH)
 
 _NICK2PROJECT = {}
 for _p in PROJECTS:
     for _a in _p["aliases"]:
         _NICK2PROJECT[normalize(_a)] = _p
-RE_NICK = re.compile(NICK_EDGE + "(" + _alt([a for p in PROJECTS for a in p["aliases"]])
-                     + ")" + NICK_EDGEE)
+# Пустая альтернация совпала бы с пустой строкой в каждом сообщении — поэтому
+# без словаря регулярки просто нет.
+RE_NICK = re.compile(
+    NICK_EDGE + "(" + _alt([a for p in PROJECTS for a in p["aliases"]]) + ")" + NICK_EDGEE
+) if PROJECTS else None
 
 MIN_LEN = 4          # короче — шум, не запрос
 MAX_WARNINGS = 4     # анти-обои
@@ -139,7 +152,7 @@ def _strip(rx, text: str) -> str:
 
     Замена на один пробел сдвигает индексы, и тогда по совпадению уже нельзя
     достать то, что человек реально написал (кличка печаталась как «driаdа» —
-    внутренний нормализованный вид вместо «driada»).
+    внутренний нормализованный вид вместо того, что набрал человек).
     """
     return rx.sub(lambda m: " " * len(m.group(0)), text)
 
@@ -215,7 +228,9 @@ def analyze(prompt: str, min_len: int = MIN_LEN, fresh_context: bool | None = No
     #    снимает больше половины срабатываний).
     nicks: list[dict] = []
     seen_projects = set()
-    for m in ([] if has_object else RE_NICK.finditer(_strip(RE_URL_OR_PATH, norm))):
+    nick_matches = [] if (has_object or RE_NICK is None) \
+        else RE_NICK.finditer(_strip(RE_URL_OR_PATH, norm))
+    for m in nick_matches:
         proj = _NICK2PROJECT.get(m.group(1))
         if not proj or proj["key"] in seen_projects:
             continue
@@ -240,10 +255,6 @@ CANARIES = [
     ("стиль немного нейтральнее сделай", "DEGREE"),
     ("посмотри логи", "OPEN_VERB"),
     ("сделай x, проверь y, поправь z", "MULTI_TASK"),
-    ("фе собери и задеплой", "NICK"),
-    ("собери fe и выложи", "NICK"),
-    ("почини stc деплой", "NICK"),
-    ("обнови driada каталог", "NICK"),
 ]
 # Обратные канарейки: здесь линза ОБЯЗАНА молчать по этому правилу.
 SILENT_CANARIES = [
@@ -251,8 +262,26 @@ SILENT_CANARIES = [
     ("поправь заголовок в footer.tsx, готово когда тесты зелёные", "OPEN_VERB"),
     ("посмотри ~/Work/STC/core/hooks/prompt-lens.sh", "OPEN_VERB"),
     ("вот что написал заказчик: «сделай проверь поправь» — что он имел в виду", "MULTI_TASK"),
-    ("открой https://forest-echoes.com/catalog", "NICK"),
 ]
+
+
+def nick_canaries() -> list[tuple[str, str]]:
+    """Канарейки под кличек строятся ИЗ личного словаря, а не зашиты в коде.
+
+    Так общий код не знает ничьих названий проектов, но каждая кличка всё
+    равно проверяется — включая латинские, ради которых всё и затевалось.
+    """
+    return [(f"обнови {alias} и собери", alias)
+            for p in PROJECTS for alias in p["aliases"]]
+
+
+def status() -> list[str]:
+    """Человеческие пометки о состоянии линзы (не поломки)."""
+    if not PROJECTS:
+        return [f"словарь кличек не найден ({NICKS_PATH}) — правило NICK выключено; "
+                f"шаблон: core/scripts/lens_nicks.example.json"]
+    n_aliases = sum(len(p["aliases"]) for p in PROJECTS)
+    return [f"словарь кличек: {len(PROJECTS)} проектов / {n_aliases} кличек ({NICKS_PATH})"]
 
 
 def self_check() -> list[str]:
@@ -270,15 +299,22 @@ def self_check() -> list[str]:
         problems.append("DANGLING не сработал в начале разговора (fresh_context=True)")
     if "DANGLING" in {f["rule"] for f in analyze(dangling, fresh_context=False)}:
         problems.append("DANGLING сработал в середине разговора (fresh_context=False)")
+    # Каждая кличка из личного словаря обязана расшифровываться.
+    for text, alias in nick_canaries():
+        if "NICK" not in {f["rule"] for f in analyze(text)}:
+            problems.append(f"кличка «{alias}» не расшифровывается — проверь нормализацию")
     return problems
 
 
 if __name__ == "__main__":
     import sys
+    for note in status():
+        print(note)
     bad = self_check()
     if bad:
         print("линза сломана:")
         for b in bad:
             print("  -", b)
         sys.exit(1)
-    print(f"линза жива: {len(CANARIES)} канареек + {len(SILENT_CANARIES)} обратных — ок")
+    print(f"линза жива: {len(CANARIES)} канареек + {len(SILENT_CANARIES)} обратных "
+          f"+ {len(nick_canaries())} по кличкам — ок")

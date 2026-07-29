@@ -9,8 +9,8 @@
 # 2. CANARIES — канарейки из lens_rules.py (правило + обратное правило).
 # 3. CORPUS  — каждое ПРАВИЛО и каждая КЛИЧКА ловят ≥ MIN_TP реальных
 #    сообщений. Проверка на уровне клички принципиальна: раньше страж считал
-#    только по правилу, и мёртвые латинские `fe`/`stc`/`driada` проходили за
-#    счёт живого «фе».
+#    только по правилу, и мёртвые латинские клички проходили за счёт живой
+#    кириллической.
 #
 # Корпус — ЛИЧНЫЕ ДАННЫЕ и лежит ВНЕ репозитория: $STC_CORPUS
 # (по умолчанию ~/.stc/.corpus/corpus.jsonl), собирается
@@ -60,12 +60,25 @@ expect_flag "открытый глагол"                 "посмотри л
 expect_flag "критерий уже назван"             "поправь заголовок, готово когда тесты зелёные"  ""
 expect_flag "объект уже назван"               "посмотри ~/Work/STC/core/hooks/prompt-lens.sh"  ""
 expect_flag "глаголы в цитате — не задачи"    "заказчик пишет: «сделай проверь поправь» — про что он" ""
-expect_flag "кличка кириллицей"               "фе собери и задеплой"                   "forest-echoes-www"
-expect_flag "кличка латиницей (была мертва)"  "собери fe и выложи"                     "forest-echoes-www"
-expect_flag "кличка stc (была мертва)"        "почини stc деплой"                      "~/Work/STC"
-expect_flag "кличка driada (была мертва)"     "обнови driada каталог"                  "driada-www"
-expect_flag "кличка в ссылке не нужна"        "открой https://forest-echoes.com/catalog" ""
 expect_flag "слишком коротко"                 "да"                                     ""
+
+# Клички берём из ЛИЧНОГО словаря ($STC_LENS_NICKS), а не зашиваем в тест:
+# общий код не должен знать ничьих названий проектов. Каждая кличка (включая
+# латинские, ради которых всё затевалось) проверяется отдельной строкой.
+while IFS=$'\t' read -r alias expansion; do
+  [ -z "$alias" ] && continue
+  expect_flag "кличка «$alias» расшифрована" "обнови $alias и собери" "$expansion"
+done < <(python3 - "$RULES" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("lens_rules", sys.argv[1])
+L = importlib.util.module_from_spec(spec); spec.loader.exec_module(L)
+for note in L.status():
+    print(note, file=sys.stderr)
+for p in L.PROJECTS:
+    for a in p["aliases"]:
+        print(f"{a}\t{p['expansion']}")
+PY
+)
 
 # Потерянный модуль правил обязан быть ВИДЕН, а не проглочен. Копия хука в
 # пустом каталоге: так не сработает и запасной путь «рядом с хуком».
@@ -124,7 +137,7 @@ for rule in ("DANGLING", "DEGREE", "OPEN_VERB", "MULTI_TASK", "NICK"):
     print(f"  [{'PASS' if ok else 'FAIL'}] правило {rule:<11} TP={n:>4}  пример: {rule_sample.get(rule,'—')!r}")
 
 # Кличка считается отдельно: правило может быть живым, а половина его
-# альтернатив — мёртвой (так и было с латинскими fe/stc/driada).
+# альтернатив — мёртвой (так и было с латинскими кличками).
 print("  --- по кличкам ---")
 for p in L.PROJECTS:
     for alias in p["aliases"]:

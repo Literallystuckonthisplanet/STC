@@ -125,6 +125,7 @@ hooks:
     H15_exec_offload:          { supported: true, matcher: ["Bash"],                                  binding: { file: exec-offload-guard.sh } }
     H16_integration_docs_gate: { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: integration-docs-gate.sh } }
     H17_secret_read_guard:     { supported: true, matcher: ["Read|Glob|Grep"],                         binding: { file: secret-read-guard.sh } }   # L8 read-side — ZCode has no permissions.deny engine, so THIS hook is the only read-guard for secrets here
+    H22_prompt_lens:           { supported: true, matcher: ["*"], event: "UserPromptSubmit",             binding: { file: prompt-lens.sh } }   # FR-30 prompt lens: additive hint (NOT a rewrite) — degree word/dangling ref/open verb/multi-task/nick → flag for echo-reformulation; deterministic, no model; rules counted against the transcript corpus (candidate ≠ bug)
 
 # ============================================================
 # LAYER 4 — commands

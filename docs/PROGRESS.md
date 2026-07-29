@@ -614,6 +614,38 @@ expensive model, execute on cheap tiers, main = orchestration only.
 - Rules: pev.md Step 4 + Do (orchestration loop); playbook (prompt contract,
   token economy); to-tasks (builder default; `main` needs an inline WHY).
 
+## ✅ FR-30 / H22 — the prompt lens (DONE 2026-07-29, reviewed the same day)
+
+A hint appended to the user's message instead of an AI middleman rewriting it:
+deterministic, no model in the path, the original text reaches the model intact.
+
+- **H22 `prompt-lens.sh` (UserPromptSubmit)** — degree word without a measure,
+  dangling reference, open verb with neither criterion nor object, ≥3 tasks in
+  one message, project nicks.
+- **FR-30 in `pev.md`** — echo-reformulation before costly work, triggered by a
+  lens flag or an expensive next step, not by task size.
+- **One source of rules** — `core/scripts/lens_rules.py`, imported by the hook,
+  `prompt-audit.py` and the guard test. A rule and its counter are the same
+  code: the first version kept three copies, and the audit's copy (no context
+  gates) reported numbers the hook never produced.
+- **Measured, not guessed** — every rule and every nick alias must clear ≥3 real
+  hits in the transcript corpus (`collect_corpus.py`, corpus stored OUTSIDE the
+  repo: it is personal data and the remote is public).
+
+**What the review changed (2026-07-29):** latin nicks (`fe`/`stc`/`driada`)
+could never match after normalization and were dead on arrival — caught only by
+counting per alias; the guard test silently passed with no corpus; the
+dangling-ref gate described in the comments was never implemented (130 of 137
+firings were mid-conversation); the open-verb flag fired on messages that
+already carried a criterion; the audit's "noisy rule" definition marked working
+rules as junk. Flag rate after the fixes: **15.3% of messages, was 24.6%**.
+
+**Open:** the honest criterion is still a month of live traffic — did the
+rollback count drop? Baseline re-measured after the audit was fixed:
+**9 rollbacks / 30 days, median 1513 characters thrown away** (the earlier "20"
+double-counted resumed sessions and counted messages that merely contained the
+word "стоп").
+
 ## Stages still ahead
 - Stage 5: stc.yaml + end-to-end (real `apply` against `~/.claude`/`~/.zcode`,
   resolving the live 19 collisions; the consent gate opens here)

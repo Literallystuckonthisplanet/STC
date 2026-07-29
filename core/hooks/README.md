@@ -49,9 +49,9 @@ H08 (link-integrity), H13 (web-route), H14 (buy-vs-build), H18 (graphify-first).
 
 ## The 6 event-guards (flow-point → file)
 
-`core/hooks/` holds 20 guard scripts: H01–H19 plus H21 (H20 was never
+`core/hooks/` holds 21 guard scripts: H01–H19, H21, H22 (H20 was never
 assigned — a historical numbering gap, not a removed hook; do not invent a
-script to fill it). On the claude harness 19 of the 20 are wired into the
+script to fill it). On the claude harness 20 of the 21 are wired into the
 `settings.json` matcher groups across ~6 flow points; H11 ships in `core/`
 but is `supported: false` on the claude adapter (see "Beyond the 6-guard
 map" below). One file = one guard (single-responsibility, auditable).
@@ -63,7 +63,7 @@ map" below). One file = one guard (single-responsibility, auditable).
 | **read-first router** (edit project code) | `read-first-router.sh` H10 | 💉 domain reminders (DS / security / docs / data / tdd / legal / reuse) |
 | **git guard** (Bash) | `block-dangerous-git.sh` H01 | 🔒 dangerous patterns + 🔒 I08 push-to-main + 💉 I17 commit-verify |
 | **agent guard** (Task) | `agent-reuse-contract.sh` H04 | 🔒 I21 build-agent reuse-contract + 🔒 FR-28 fork-protocol marker (executors must stop on architectural/business forks, DECIDED lines for trivia) + 💉 I20 reviewer baseline |
-| **session guards** (UserPromptSubmit / SessionStart / Stop) | `stop_services_reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 | H03: SELF-EXEC + I05b secret-in-prompt + compact/session-end. H06: always-context inject + post-compact recovery. H08: link integrity. |
+| **session guards** (UserPromptSubmit / SessionStart / Stop) | `stop_services_reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 + `prompt-lens.sh` H22 | H03: SELF-EXEC + I05b secret-in-prompt + compact/session-end. H06: always-context inject + post-compact recovery. H08: link integrity. H22: prompt lens (FR-30) — additive hint, NOT a rewrite. |
 
 Beyond the 6-guard map (legitimate extras):
 
@@ -79,6 +79,7 @@ Beyond the 6-guard map (legitimate extras):
 | `secret-read-guard.sh` H17 | PreToolUse(Read\|Glob\|Grep) | 🔒 block reading a secret file (`.env` / `.pem` / `id_rsa`) → keeps secrets out of context/logs (defense-in-depth: mirrors `permissions.deny` on claude, the ONLY read-guard on a harness without a permissions engine). Escape: `// secret-exception:` |
 | `graphify-first.sh` H18 | PreToolUse(Grep\|Bash) | 🔒 in a repo with a built code-graph (`graphify-out/graph.json`), the first grep-style search is blocked once → nudge `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; repeat passes for an exact-string lookup). Repos without a graph are never gated. |
 | `exit-plan-grill.sh` H21 | PreToolUse(ExitPlanMode) | 🔒 FR-28 exit-plan-gate: leaving plan mode blocks once unless the plan carries AC/DoD + a block→executor decomposition + an explicit forks-resolved line (plan text from tool_input.plan or the freshest `$NATIVE_DIR/plans/*.md`). Acknowledge-once — the deliberate re-exit passes; sub-agents pass. Pairs with plan-mode-default (every session starts in plan) + H14 (orchestrator gate). |
+| `prompt-lens.sh` H22 | UserPromptSubmit | 💉 FR-30 prompt lens: **additive hint, NOT a rewrite** — the user's text reaches the model untouched; the hook only appends flags. Detects degree words without a measure («немного нейтральнее»), dangling refs («это/там»), open verbs with neither a done-criterion nor an object, ≥3 tasks in one message, and project nicks (фе/fe/дриада/stc/lex/crm) → each gets a one-line hint pointing at echo-reformulation. Deterministic (python3, no model — errors don't multiply). **Rules live in one place — `scripts/lens_rules.py`** — imported by the hook, the monthly audit and the guard test: a rule and its own counter must be the same code, otherwise the monitoring measures something else and cannot see the rule die. Context gates (each measured on the corpus, not guessed): dangling ref only when the conversation has no context yet (transcript has no assistant turn — 130 of 137 firings were mid-session, where the hint was simply false); degree word only when editing text/view; open verb only with no criterion AND no object (killed 60% of its firings, which contradicted the message itself); quoted text is not a task; a nick is expanded only when no path/file names the project already. Total flag rate on the corpus: **15.3% of messages** (was 24.6%). Every rule AND every nick alias is **counted against the transcript corpus** (≥3 real hits, guard test `tests/prompt-lens.test.sh`, which FAILS when the corpus is missing) — «candidate ≠ bug»; per-alias counting is what caught the dead latin `fe`/`stc`/`driada`. A lost or crashed rules module prints a visible line instead of going quiet. Monthly health via `scripts/prompt-audit.py`. Corpus = private data, lives outside the repo (`$STC_CORPUS`, default `~/.stc/.corpus/`). |
 
 ## Settings wiring
 

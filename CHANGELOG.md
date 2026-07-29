@@ -11,6 +11,55 @@ release notes.
 
 ## [Unreleased]
 
+### Added — FR-30 / H22: the prompt lens (additive hint, not a rewrite)
+- **`core/hooks/prompt-lens.sh` (H22, UserPromptSubmit):** appends a short hint
+  to the user's message instead of rewriting it — the original text reaches the
+  model intact. Flags a degree word without a measure, a dangling reference, an
+  open verb with neither a done-criterion nor an object, ≥3 tasks in one
+  message, and project nicks. Deterministic (no model in the path).
+- **`core/rules/pev.md` (FR-30):** echo-reformulation before costly work —
+  triggered by a lens flag or by an expensive next step, not by task size.
+- **`core/scripts/lens_rules.py`:** the single source of the rules, imported by
+  the hook, the audit and the guard test.
+- **`core/scripts/prompt-audit.py`:** monthly health — rollback register,
+  dictionary candidates, dead/noisy rules.
+- **`core/scripts/collect_corpus.py`:** builds the measurement corpus outside
+  the repo (`$STC_CORPUS`, default `~/.stc/.corpus/`).
+- **`user/glossary.md`:** nicks and work words with corpus frequencies; inlined
+  into the always-context bundle next to the profile.
+
+### Fixed — the lens shipped with rules that could never fire (review 2026-07-29)
+- **Latin nicks were dead.** Normalization maps latin→cyrillic, but the
+  alternatives `fe`/`stc`/`driada` were written in latin, so they could never
+  match: `собери fe и задеплой` produced nothing. Nick tables are now built
+  through `normalize()`, and the guard test counts **every alias** separately —
+  the old rule-level count let dead aliases pass behind a live «фе».
+- **The guard test disabled itself silently.** With no corpus it printed
+  "skipping" and still exited "ВСЁ ПРОШЛО". It now fails, and the corpus lives
+  outside the repo (it is real transcript data; `scratchpad/` is gitignored so a
+  stray `git add -A` cannot publish it to the public remote).
+- **The dangling-ref gate promised in the comments did not exist.** 130 of 137
+  firings were mid-conversation, where "no context, ask again" was simply false.
+  The hook now reads the transcript: the flag fires only before the assistant
+  has said anything.
+- **The open-verb flag contradicted the message.** It fired on 13.1% of messages;
+  24% of those already stated a criterion and 45% named a file. Gated on both →
+  the lens now speaks on 15.3% of messages instead of 24.6%.
+- **The audit measured something else.** It carried its own copy of the rules
+  without the context gates (MULTI_TASK 206 vs the hook's 69), its
+  clarifying-question detector was an empty stub — so "noisy" meant "was not
+  followed by a rollback", i.e. a rule that worked was marked useless — its
+  rollback register double-counted resumed sessions, and its dictionary
+  candidates mined the normalization's own artifacts (`task` → `аск`, 273×).
+  All four fixed; the audit now calls the same `analyze()` the hook calls.
+- **Nick expansions pointed at directories that do not exist** (`~/Work/<name>`
+  instead of `~/Work/projects/<name>`).
+- **`user/glossary.md` never reached the model:** `profile.md` pointed at it, but
+  `user/` is not deployed and only `profile.md` was inlined. Now inlined too,
+  with a regression test.
+- **A lost or crashed rules module is now visible** instead of silently turning
+  the lens off.
+
 ### Changed — Codex: enable all 10 agent roles
 - **`adapters/codex/adapter.yaml`:** `security-arch`, `security-deps`, `e2e`,
   `cleanup`, `docs`, `harness-docs` flipped from `supported: false` (first-wave

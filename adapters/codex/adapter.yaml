@@ -146,6 +146,7 @@ hooks:
     H18_graphify_first:        { supported: true, matcher: ["Grep","Bash"],                             binding: { file: graphify-first.sh } }
     H19_precompact_memory:     { supported: true, matcher: ["*"], event: "PreCompact",                  binding: { file: precompact-memory-guard.sh } }
     H21_exit_plan_grill:       { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: exit-plan-grill.sh }, note: "adapted: no ExitPlanMode event → pre-write gate checking plan/AC discipline" }
+    H22_prompt_lens:           { supported: true, matcher: ["*"], event: "UserPromptSubmit",             binding: { file: prompt-lens.sh } }   # FR-30 prompt lens: additive hint (NOT a rewrite) — degree word/dangling ref/open verb/multi-task/nick → flag for echo-reformulation; deterministic, no model; rules counted against the transcript corpus (candidate ≠ bug)
 
 # ============================================================
 # LAYER 4 — commands

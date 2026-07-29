@@ -142,6 +142,36 @@ ready-made solution first.
   `Правила проекта|задача → модель|task → model`) — a plan without it does not
   leave plan mode without a conscious retry.
 
+- **Echo-reformulation before costly work (small tasks especially).** <!-- FR-30 -->
+  «Caveman наоборот»: a fuzzy ~15-word phrase → a compressed, exact skeleton
+  the user confirms with one word. Costs ~60–80 tokens. Fires **by signal, not
+  by task size** — this matters: every measured miss was on a small task (style
+  tweak, «turn off») where no plan is shown and the H14/H21 gates don't run.
+
+  Format (Russian first; English mirror):
+  ```
+  Понял так: <объект> · <действие> · <не трогаю: …> · <готово, когда: …>
+  Не уверен: <1–2 пункта или «—»>
+  ```
+  ```
+  Understood as: <object> · <action> · <not touching: …> · <done when: …>
+  Unsure: <1–2 points or "—">
+  ```
+
+  Triggers (any one):
+  - the lens (H22) raised a flag (degree word, dangling ref, open verb,
+    multi-task, nick). The hook only highlights; **this rule says what to do
+    with the flag** — the agent formulates the echo, the hook can't.
+  - a costly action follows: a sub-agent launch, a prod deploy, money, or a
+    mass edit. Even without a lens flag, the cheap echo prevents the ~3 000
+    characters of output thrown away before a rollback.
+
+  Why a rule and not only a hook: by the user's own history «discipline drifts
+  between sessions → move checkable things into hooks» (2026-06-21 (2)). The
+  hook raises the flag; this rule fixes the behaviour. After a month,
+  `prompt-audit.py` checks whether rollback count dropped — that is the only
+  honest criterion; until then everything else is a hypothesis.
+
 ## 2. Do — orchestration
 <!-- FR-28 -->
 

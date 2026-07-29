@@ -702,15 +702,23 @@ def _render_always_context(core_dir, adapter, result, native_dir, harness):
     # always-context bundle so the agent knows the user without lazy reads.
     # Cross-user: each user renders their own user/profile.md. Cross-harness:
     # the inline lands in both CLAUDE.stc.md and AGENTS.stc.md.
-    profile_path = os.path.join(os.path.dirname(core_dir), "user", "profile.md")
-    profile_body = _read(profile_path).strip() if os.path.exists(profile_path) else ""
-    if profile_body:
-        lines.append(f"<details><summary><code>profile.md</code></summary>")
-        lines.append("")
-        lines.append(profile_body)
-        lines.append("")
-        lines.append("</details>")
-        lines.append("")
+    #
+    # The glossary rides along for the same reason: profile.md points at it
+    # ("the full dictionary is in glossary.md"), and user/ is never deployed —
+    # so without inlining, that pointer names a file the agent cannot open.
+    # A dictionary the model cannot read is the same silent failure as a rule
+    # that never fires.
+    user_dir = os.path.join(os.path.dirname(core_dir), "user")
+    for fname in ("profile.md", "glossary.md"):
+        body = _read(os.path.join(user_dir, fname)).strip() \
+            if os.path.exists(os.path.join(user_dir, fname)) else ""
+        if body:
+            lines.append(f"<details><summary><code>{fname}</code></summary>")
+            lines.append("")
+            lines.append(body)
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
 
     lines.extend([
         f"## Lazy memory (read on demand, not at start)",
@@ -718,17 +726,18 @@ def _render_always_context(core_dir, adapter, result, native_dir, harness):
         f"- `~/.stc/core/memory/MEMORY.md` — the index/map. Read it when you "
         f"need the catalog of references; wiki-links `[[name]]` point at the "
         f"detail files (playbook, code-standard, reference-*, project-docs).",
-        f"- `~/.stc/core/user/` — personal memory (feedback_*, "
-        f"projects/<name>.md). Read by anchor when a rule references "
-        f"`[[user-profile]]` or a `[[project-*]]` link. The profile itself is "
-        f"inlined above (always-context), not lazy.",
+        f"- Personal memory (feedback_*, project_*) lives in the workspace "
+        f"memory dir listed by that index — read by anchor when a rule "
+        f"references `[[user-profile]]` or a `[[project-*]]` link. The "
+        f"profile and the glossary are inlined above (always-context), not "
+        f"lazy: `user/` is never deployed, so there is nothing to lazy-read.",
         f"",
     ])
 
     result.files[bundle_rel] = "\n".join(lines)
     result.manifest.append({"path": bundle_rel, "kind": "always-context",
-                            "source": ("h06-pointer+inline-profile" if rules_delivery == "hook"
-                                       else "inline-rules+inline-profile")})
+                            "source": ("h06-pointer+inline-profile+glossary" if rules_delivery == "hook"
+                                       else "inline-rules+inline-profile+glossary")})
 
     # the single marker block injected into the USER's always-context file.
     result.marker[ac_file] = f"@{_native_root(adapter, bundle_name)}"

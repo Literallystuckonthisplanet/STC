@@ -26,7 +26,7 @@
   - [Capability ≠ realisation](#capability--realisation)
   - [Always-context vs on-demand](#always-context-vs-on-demand)
 - [Third-party tools and credits](#third-party-tools-and-credits)
-- [The 19 hooks](#the-19-hooks)
+- [The 21 hooks](#the-21-hooks)
 - [The rules (always-context)](#the-rules-always-context)
 - [Memory structure](#memory-structure)
 - [Skills, agents, commands](#skills-agents-commands)
@@ -170,11 +170,11 @@ STC is deliberately light on dependencies, but a few external tools are load-bea
 | **GLM** | Zhipu / BigModel | [open.bigmodel.cn](https://open.bigmodel.cn/api/anthropic) | Model provider (`core/models/glm.yaml`). Anthropic-compatible Messages endpoint, mounts into any harness speaking the Anthropic protocol. |
 | **Claude** | Anthropic | [anthropic.com](https://api.anthropic.com) | Model provider (`core/models/claude.yaml`). The natural pairing with the claude harness but not bound to it. |
 
-## The 19 hooks
+## The 21 hooks
 
 Hooks are the **enforcement layer** (ADR-001: a rule in always-text recidivs; a rule in a hook does not). A hook reads tool-call JSON from stdin and either **hard-blocks** (`exit 2`), **JIT-injects** context (`hookSpecificOutput.additionalContext`), or **passes** (`exit 0`). They are the guarantee behind the rules — the rule states the intent, the hook enforces it.
 
-Six hooks "always inject" context at session/tool events; thirteen "guard on action" and block dangerous or wasteful operations. (H11 output-hygiene ships in `core/` but is set `supported: false` on the claude harness — which already collapses large output — so claude deploys **18** active hooks.)
+Seven hooks "always inject" context at session/tool events; fourteen "guard on action" and block dangerous or wasteful operations. Numbering runs H01–H19, H21, H22 — H20 was never assigned (a historical gap, not a removed hook). (H11 output-hygiene ships in `core/` but is set `supported: false` on the claude harness — which already collapses large output — so claude deploys **20** active hooks.)
 
 | ID | Event | What it does | Type |
 |---|---|---|---|
@@ -197,6 +197,8 @@ Six hooks "always inject" context at session/tool events; thirteen "guard on act
 | **H17** secret-read-guard | PreToolUse(Read\|Glob\|Grep) | Blocks reading secret files (`.env`/`.pem`/`id_rsa`). Harness-neutral equivalent of Claude's `permissions.deny` (ZCode has no perms engine). Override via `// secret-exception:`. | guard |
 | **H18** graphify-first | PreToolUse(Grep\|Bash) | In a repo with a built code-graph (`graphify-out/graph.json`), blocks the first grep-style search once → nudges `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; exact-string lookups pass). Repos without a graph are never gated. | guard |
 | **H19** precompact-memory-guard | PreCompact | Before compaction (manual `/compact` or auto), rotates project memory first (I26) so the summary loses nothing. The safety net behind "facts → memory now". | guard |
+| **H21** exit-plan-grill | PreToolUse(ExitPlanMode) | Leaving plan mode blocks once unless the plan carries AC/DoD, a block→executor decomposition and an explicit forks-resolved line — the plan is the dispatch artifact for the cheap executor tier, so it has to be executable by someone other than the expensive model. | guard |
+| **H22** prompt-lens | UserPromptSubmit | Appends a short hint to the message — **it never rewrites it**, the user's text reaches the model intact. Flags a degree word with no measure, a dangling reference, an open verb with neither a done-criterion nor an object, ≥3 tasks in one message, and project nicks from the private dictionary. Deterministic (no model in the path, so errors cannot multiply). Rules live in ONE module shared by the hook, the monthly audit and the guard test; every rule and every alias must clear a hit threshold against your own transcript corpus, or the guard test fails. | inject |
 
 On ZCode, where there is no `permissions.deny` engine, **H17 is the only read-guard** for secrets. On Claude Code, both run (deny is faster when it short-circuits; the hook covers any harness gap).
 
@@ -282,7 +284,7 @@ The deployer is built to be safe to re-run on a live harness. Every scenario bel
 `render.py` is a **pure function**: `render_harness(stc, registry, provider, adapter, core_dir, repo_dir) -> RenderResult`. It NEVER writes to disk — the orchestrator owns the write step, so render is testable and safe to dry-run. It runs 8 layer renderers in order, each populating the same `RenderResult`:
 
 1. **`_render_always_context`** — the bundle (the `.stc.md` file with the `@import` lines into `~/.stc/core/...`) + the single marker `@import` line that goes into the user's always-context file.
-2. **`_render_hooks`** — the 19 hook scripts (with `${VAR}` substitution) + the matcher wiring. Delivery mode decides whether wiring becomes a `settings.json` patch (files mode) or a self-contained `hooks/hooks.json` inside the plugin dir (plugin mode).
+2. **`_render_hooks`** — the 21 hook scripts (with `${VAR}` substitution) + the matcher wiring. Delivery mode decides whether wiring becomes a `settings.json` patch (files mode) or a self-contained `hooks/hooks.json` inside the plugin dir (plugin mode).
 3. **`_render_commands`** — the slash command markdown.
 4. **`_render_subagents`** — typed agent files (native) or degraded dispatch instructions.
 5. **`_render_skills`** — the skill directories.
@@ -342,7 +344,7 @@ STC/
 ├── core/
 │   ├── rules/          # 4 always-context rule files
 │   ├── memory/         # MEMORY.md + playbook + code_standard + 4 reference catalogs + skills_triggers
-│   ├── hooks/          # 19 hook scripts (H01–H19) + README
+│   ├── hooks/          # 21 hook scripts (H01–H19, H21, H22) + README + tests
 │   ├── skills/         # 15 skills (methodology + utility)
 │   ├── agents/         # registry.yaml + 9 agent prompt bodies
 │   ├── commands/       # 8 slash commands
@@ -372,9 +374,9 @@ See [`docs/PROGRESS.md`](docs/PROGRESS.md) for the full build log and design dec
 
 ## Status
 
-Early beta — the `0.1.x` line (current release in the badge above) carries the deploy pipeline and 19 hooks; breaking changes can happen between minor bumps until `1.0.0`. Contributions and ideas welcome.
+Early beta — the `0.1.x` line (current release in the badge above) carries the deploy pipeline and 21 hooks; breaking changes can happen between minor bumps until `1.0.0`. Contributions and ideas welcome.
 
-Development currently focuses on the **`claude`** harness (the reference realisation: 18 active hooks, 15 skills, 9 agents, 8 commands). The **`codex`** adapter (ChatGPT on macOS) is a native peer — typed subagents (`*.stc.toml`), a full hook event set, `config.toml` MCP — with a 4-role first wave. The **`zcode`** adapter is **frozen** — it stays in-tree as the reference degrade realisation (and the two-axis abstraction is unchanged), but default deploys skip it; deploy it explicitly with `--target zcode` if you need it.
+Development currently focuses on the **`claude`** harness (the reference realisation: 20 active hooks, 15 skills, 9 agents, 8 commands). The **`codex`** adapter (ChatGPT on macOS) is a native peer — typed subagents (`*.stc.toml`), a full hook event set, `config.toml` MCP — with the full 10-role agent set. The **`zcode`** adapter is **frozen** — it stays in-tree as the reference degrade realisation (and the two-axis abstraction is unchanged), but default deploys skip it; deploy it explicitly with `--target zcode` if you need it.
 
 ## License
 

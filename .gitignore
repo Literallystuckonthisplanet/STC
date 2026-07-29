@@ -8,6 +8,7 @@
 # template user/projects/example.example.md stays tracked.
 stc.yaml
 user/profile.md
+user/glossary.md
 user/secrets.env
 user/.state/
 user/projects/*
@@ -53,6 +54,17 @@ Thumbs.db
 # =========================
 *.log
 tmp/
+
+# =========================
+# Corpus / scratch (PRIVATE — real transcripts)
+# =========================
+# scratchpad/ holds throwaway experiments over REAL conversation transcripts.
+# The corpus itself now lives OUTSIDE the repo ($STC_CORPUS, default
+# ~/.stc/.corpus/corpus.jsonl) — this entry is the second lock so a stray
+# `git add -A` can never publish personal data to a public remote.
+scratchpad/
+*.corpus.jsonl
+corpus.jsonl
 
 # =========================
 # Site / deploy tooling caches

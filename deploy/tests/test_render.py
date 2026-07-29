@@ -750,6 +750,31 @@ def test_bundle_inlines_profile_when_present():
         assert "<code>profile.md</code>" in body, f"{t} bundle missing inlined profile"
 
 
+def test_bundle_inlines_glossary_when_present():
+    """REGRESSION: user/glossary.md must be inlined into the bundle.
+
+    profile.md points at the glossary ("the full dictionary is in
+    glossary.md"), and user/ is never deployed to ~/.stc/ — so without the
+    inline the pointer names a file the agent cannot open, and the whole
+    dictionary layer silently does not exist. Found in review 2026-07-29.
+    Skipped when the private glossary is absent (fresh clone)."""
+    glossary = os.path.join(REPO, "user", "glossary.md")
+    if not os.path.exists(glossary):
+        return
+    stc, registry, adapters, _ = D._gather()
+    for t in ("claude", "zcode"):
+        provider = R.provider_for(stc, t, REPO)
+        rr = R.render_harness(stc, registry, provider, adapters[t], D.CORE, REPO)
+        bundle = "CLAUDE.stc.md" if t == "claude" else "AGENTS.stc.md"
+        body = rr.files.get(bundle, "")
+        marker = "<details><summary><code>glossary.md</code></summary>"
+        assert marker in body, f"{t} bundle missing inlined glossary"
+        # тело, а не только заголовок: пустая вклейка = словаря у модели нет.
+        # Содержимое личное, поэтому проверяем размер, а не конкретные слова.
+        inlined = body.split(marker, 1)[1].split("</details>", 1)[0]
+        assert len(inlined.strip()) > 200, f"{t} bundle: glossary inlined but empty"
+
+
 def test_h06_injects_rules_via_stc_core():
     """REGRESSION (H06 injection — the original pre-@import mechanism): H06
     must `cat` the always-context rule files from ${STC_CORE} (resolved to

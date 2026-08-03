@@ -6,22 +6,31 @@ description: "Audit the global agent infrastructure (rules, memory, skills, comm
 # Infra audit
 <!-- S17 -->
 
-An audit of the global agent infrastructure. The run is expensive
-(2 sub-agents + verification) — run it **when there is token budget to spare**.
+An audit of the global agent infrastructure. The deterministic local preflight
+is always available and does not depend on a harness subscription:
+`python3 ~/.stc/core/scripts/infra_audit_local.py --repo ~/Work/STC`.
+The model-assisted review (2 independent runs + verification) is an optional
+advisory layer when there is token budget; it must not be the availability
+gate for the monthly audit.
 
 ## Cadence (like the "review after 3 tasks" idea)
 
-The trigger is NOT a calendar — it is a rule the main agent tracks and
-**offers** (like improve-architecture):
-- At session start, compare today's date with the "Last run" below. If **≥1
-  month** has passed → offer: "it's been a month since the last infra audit —
-  run it? (is there token budget?)". Do not run without an explicit "yes".
-- Or the user says outright: "run the infra audit".
-- After every run — update the "Last run" date.
+The local preflight runs monthly from the OS scheduler and writes a JSON report
+under the canonical memory root. At session start, compare today's date with
+the "Last run" below and surface a stale/failed report. The optional
+model-assisted layer still requires an explicit user request because it spends
+model budget. After every local run, update the "Last run" date.
 
-**Last run:** _(set by the agent after each run)_
+**Last run:** 2026-08-03 (local deterministic preflight)
 
-## Format: 2 runs + verification, ×2 rounds
+## Instincts policy
+
+Instincts are not an active runtime layer. Repeated observations may be
+collected as audit candidates and reviewed during the monthly audit, with
+evidence, scope, and a proposed rule/hook change. Nothing becomes injected
+context or enforcement without an explicit decision and a regression check.
+
+## Optional model review: 2 runs + verification, ×2 rounds
 
 1. **Run A — sub-agent** (`general-purpose`, a capable model,
    `run_in_background`, read-only): an independent audit by the checklist,

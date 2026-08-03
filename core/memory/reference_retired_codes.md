@@ -39,10 +39,9 @@ Example shape (replace with real entries):
 
 - I04 → H09 (2026-06-22): the memory-edit style/protocol (dedup → place →
   format) migrated to the JIT-inject of memory-guard.
-- S05 → I26 (2026-07-10): the `/handoff` command removed — cross-session
-  continuity now comes from Memory rotation (`behavior.md` § I26): STATE of
-  `project_<name>.md` is always the latest session, no handoff doc needed.
-- S09 → I26 (2026-07-10): the `/save-and-compact` command removed — session
-  memory is saved live per I26 (facts as they arise, rotation at session
-  end); the compact itself is the harness-native `${COMPACT_CMD}`, prompted
-  by hook H03.
+- S05 (2026-08-03): `/handoff` remains retired; cross-harness continuity is
+  provided by raw transcripts and the independent offline ingest pipeline.
+- S09 (2026-08-03): `/save-and-compact` remains retired; compact is a harness
+  operation and is not a memory-rotation boundary.
+- H19 (2026-08-03): pre-compact memory rotation retired; the compatibility
+  script remains inert so old installations fail closed.

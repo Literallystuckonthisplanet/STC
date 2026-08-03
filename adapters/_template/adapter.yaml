@@ -197,5 +197,5 @@ mcp:
     playwright: { supported: true, binding: { required: true, transport: stdio, command: "npx -y @playwright/mcp@latest" } }
     graphify:   { supported: true, binding: { required: true, transport: stdio, command_env: GRAPHIFY_CLI } }
     github:     { supported: true, binding: { transport: stdio, command: "npx -y @modelcontextprotocol/server-github" } }
-    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @context7/mcp" } }
+    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @upstash/context7-mcp" } }
     gsheets:    { supported: true, binding: { transport: stdio, command: "npx -y mcp-gsheets@latest" } }

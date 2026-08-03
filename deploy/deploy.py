@@ -537,7 +537,17 @@ def cmd_render(args):
         provider = R.provider_for(stc, t, REPO)
         rr = R.render_harness(stc, registry, provider, adapters[t], CORE, REPO)
         out = os.path.join(RENDERED_ROOT, t)
-        _write_tree(out, rr.files)
+        # Render is an inspection command and must never write to an absolute
+        # native path (Codex skills intentionally use ~/.agents/skills). Map
+        # such paths under a visible placeholder directory in the render dump;
+        # cmd_apply still writes the original absolute paths deliberately.
+        render_files = {}
+        for rel, body in rr.files.items():
+            if os.path.isabs(rel):
+                home = os.path.expanduser("~")
+                rel = os.path.join("__absolute__", os.path.relpath(rel, home))
+            render_files[rel] = body
+        _write_tree(out, render_files)
         # also dump the json patches for inspection
         for jn, jp in rr.json_patches.items():
             with open(os.path.join(out, jn + ".stc.patch.json"), "w", encoding="utf-8") as fh:

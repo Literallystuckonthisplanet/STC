@@ -1,6 +1,6 @@
 ---
 name: project-docs
-layer: rules            # always-context
+layer: lazy             # read on demand by [[project-docs]]
 scope: global
 ---
 
@@ -35,9 +35,9 @@ not dangle.
 already exists. No doc yet → the detail stays in STATE, flagged "needs doc".
 
 **Principle:** memory = pointer + STATUS, not detail. History → git (it's
-backed up), not into this file. Rotation: see `behavior.md` § Memory rotation
-(I26) — at session end, prior STATE/CHANGELOG moves to
-`archive/project_<name>_archive.md`.
+backed up), not into this file. Raw transcript history and the scheduled
+offline ingest are the continuity mechanism; a monthly review may promote a
+candidate into this file when the fact is durable and project-scoped.
 
 ## Architecture Decision Records (ADR)
 <!-- R05 -->

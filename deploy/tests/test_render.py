@@ -19,6 +19,7 @@ import os
 import sys
 import copy
 import json
+import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEPLOY = os.path.dirname(HERE)
@@ -575,6 +576,8 @@ def test_claude_render_uses_SKILL_md():
     bad = [k for k in skill_files if k.endswith("SKILL.stc.md")]
     assert not bad, (
         f"claude skills must render as SKILL.md, not SKILL.stc.md (found {bad})")
+    assert all("${native_dir}" not in k and "<name>" not in k for k in skill_files), \
+        f"claude skills must resolve their native path, got {skill_files}"
 
 
 def test_frozen_adapter_skipped_by_default_but_explicit_ok():
@@ -669,7 +672,18 @@ def test_claude_target_not_on_glm_provider():
         "precheck must flag a claude target resolving to glm")
 
 
-RULE_FINGERPRINTS = ("Facts → memory", "Plan→Do→Verify", "Memory rotation")
+def test_precheck_rejects_unknown_rules_delivery_mode():
+    """Harness hygiene must fail closed instead of silently double-delivering."""
+    import copy
+    import checks as C
+    stc, registry, adapters, _ = D._gather()
+    bad_adapters = copy.deepcopy(adapters)
+    bad_adapters["claude"]["harness_facts"]["rules_delivery"] = "both"
+    errs = C.precheck(stc, registry, None, bad_adapters, D.CORE)
+    assert any("rules_delivery" in err and "both" in err for err in errs)
+
+
+RULE_FINGERPRINTS = ("Facts → transcript/Wiki pipeline", "Plan→Do→Verify", "Offline memory pipeline")
 
 
 def test_zcode_bundle_inlines_rules():
@@ -801,6 +815,21 @@ def test_h06_injects_rules_via_stc_core():
         assert for_loop, f"{t} H06 has no cat loop"
         assert "project_docs" not in for_loop[0], (
             f"{t} H06 still injects project_docs (must be lazy for the 24KB cap)")
+
+
+def test_project_docs_is_declared_lazy_when_h06_excludes_it():
+    """The layer metadata must agree with the H06 delivery contract.
+
+    ``project_docs.md`` is intentionally omitted from H06 and read on demand
+    by anchor.  A stale ``layer: ... always-context`` frontmatter label makes
+    the model's contract self-contradictory and was the source of the user's
+    observation that only part of always-context is applied.
+    """
+    path = os.path.join(REPO, "core", "rules", "project_docs.md")
+    frontmatter = R._read(path).split("---", 2)[1]
+    assert re.search(r"^layer:\s+lazy(?:\s+#.*)?$", frontmatter, re.MULTILINE), (
+        "project_docs.md is excluded from H06 but is not declared lazy"
+    )
 
 
 def test_zcode_plugin_event_hooks_matcher_not_star():

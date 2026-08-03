@@ -11,6 +11,27 @@ release notes.
 
 ## [Unreleased]
 
+### Added — isolated transcript memory pipeline and monthly Obsidian review
+- **`core/scripts/transcript_corpus.py` + `core/scripts/memory_ingest.py`:** import
+  the shared cross-harness transcript corpus, extract explicit `📌 MEMORY` /
+  `📌 запомнил` markers, and stage bounded local-model candidates without
+  mutating canonical memory, rules, hooks, or always-context.
+- **Monthly Obsidian reports:** candidates are written to
+  `memory/candidates/YYYY-MM.jsonl` and grouped into
+  `memory/reports/stc/YYYY-MM/memory-review.md` for an explicit review session.
+- **macOS launchd:** technical import runs independently at load/wake and once
+  per day; Ollama is available as an optional local semantic worker using a
+  small Qwen3 profile and structured JSON output.
+
+### Changed — memory lifecycle and harness hooks
+- Session-end memory rotation, mandatory checkpoints, and pre-compact memory
+  saving are retired. Raw transcripts plus offline ingest are the continuity
+  mechanism; H19 is inert and no longer deployed.
+- H03 is limited to SELF-EXEC and secret-in-prompt reminders. H06 owns initial
+  always-context delivery and infra-audit cadence only.
+- README, adapter contracts, memory rules, generated snapshot, and deploy
+  tests now describe the transcript → staging → monthly review flow.
+
 ### Added — FR-30 / H22: the prompt lens (additive hint, not a rewrite)
 - **`core/hooks/prompt-lens.sh` (H22, UserPromptSubmit):** appends a short hint
   to the user's message instead of rewriting it — the original text reaches the

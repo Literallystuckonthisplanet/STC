@@ -55,7 +55,7 @@ harness_facts:
 vars:
   HARNESS_DIR:   "${HOME}/.codex"
   HARNESS_NAME:  "codex"
-  MEMORY_DIR:    "${HOME}/.codex"         # project memory root (hooks that scan memory use this)
+  MEMORY_DIR:    "${HOME}/Work/memory"    # canonical workspace memory shared by all harnesses
   STC_CORE:      "${HOME}/.stc/core"      # shared cross-harness rules/memory (H06 injects from here)
   COMPACT_CMD:   "/compact"               # harness-native compact command
   SECRETS_ENV:   "${HOME}/.codex/.env"
@@ -72,7 +72,7 @@ always_context:
     memory:
       supported: true
       native: "@${native_dir}/AGENTS.stc.md  (the bundle: rule pointers + inlined profile + lazy memory map)"
-      fallback: "H06 session-start-context.sh JIT-inject on SessionStart (ALSO post-compact recovery). Used if @import is unsupported."
+      fallback: "H06 session-start-context.sh JIT-inject on initial SessionStart if native import is unsupported."
       binding:
         files: [core/memory/MEMORY.md, core/memory/playbook.md, core/memory/code_standard.md]
 
@@ -107,8 +107,8 @@ rules:
 #     tool_input.command (the *** Begin Patch text), not in tool_input.file_path.
 #     H05/H07/H09/H10/H16 run through a shared normalize layer (hooks/_apply_patch_normalize.sh)
 #     that extracts file_path before the hook body runs — the bodies stay unchanged.
-#   - H08: Claude binds it to Stop, but Codex Stop = end of TURN (not session).
-#     Moved to UserPromptSubmit + the session-end text trigger (same grep as H03).
+#   - H08: Claude binds it to Stop, but Codex Stop = end of TURN (not session),
+#     so Codex runs no universal session-end link check.
 #   - H13: hosted web tools bypass local hooks → degrades to instruction/skill.
 #   - H14/H21: no EnterPlanMode/ExitPlanMode in Codex → pre-write gate instead.
 # ============================================================
@@ -119,7 +119,6 @@ hooks:
   capabilities:
     H01_block_dangerous_git:   { supported: true, matcher: ["Bash"],                                    binding: { file: block-dangerous-git.sh } }
     H02_playwright_reminder:   { supported: true, matcher: ["mcp__playwright__browser"],                binding: { file: playwright_reminder.sh } }
-    # H03 detects session-end by the PROMPT TEXT (UserPromptSubmit), not a lifecycle event.
     # Codex UserPromptSubmit delivers .prompt + accepts bare stdout as additionalContext.
     H03_stop_services:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",            binding: { file: stop_services_reminder.sh } }
     H04_agent_reuse_contract:  { supported: true, matcher: ["Agent"],                                   binding: { file: agent-reuse-contract.sh } }
@@ -127,9 +126,8 @@ hooks:
     H05_secret_scan_memory:    { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: secret-scan-memory.sh } }
     H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",                binding: { file: session-start-context.sh } }
     H07_dirty_tree_guard:      { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: dirty-tree-guard.sh } }
-    # H08: Stop in Codex = turn-end (would inject a continuation prompt mid-task).
-    # Moved to UserPromptSubmit + the session-end text trigger. stop_hook_active removed.
-    H08_link_integrity:        { supported: true, matcher: ["*"], event: "UserPromptSubmit",            binding: { file: link-integrity-guard.sh } }
+    # H08: no session lifecycle event in Codex; use offline link lint instead.
+    H08_link_integrity:        { supported: false, matcher: ["*"], event: "UserPromptSubmit",            binding: { file: link-integrity-guard.sh }, note: "no session-end lifecycle event; offline lint" }
     H09_memory_guard:          { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: memory-guard.sh } }
     H10_read_first_router:     { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: read-first-router.sh } }
     # H11 disabled: Codex (ChatGPT desktop) collapses large tool output in the UI —
@@ -144,7 +142,7 @@ hooks:
     H16_integration_docs_gate: { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: integration-docs-gate.sh } }
     H17_secret_read_guard:     { supported: true, matcher: ["Read","Glob","Grep"],                       binding: { file: secret-read-guard.sh } }   # load-bearing — Codex has no permissions.deny engine
     H18_graphify_first:        { supported: true, matcher: ["Grep","Bash"],                             binding: { file: graphify-first.sh } }
-    H19_precompact_memory:     { supported: true, matcher: ["*"], event: "PreCompact",                  binding: { file: precompact-memory-guard.sh } }
+    H19_precompact_memory:     { supported: false, matcher: ["*"], event: "PreCompact",                  binding: { file: precompact-memory-guard.sh } }  # retired: compaction is not a memory boundary
     H21_exit_plan_grill:       { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: exit-plan-grill.sh }, note: "adapted: no ExitPlanMode event → pre-write gate checking plan/AC discipline" }
     H22_prompt_lens:           { supported: true, matcher: ["*"], event: "UserPromptSubmit",             binding: { file: prompt-lens.sh } }   # FR-30 prompt lens: additive hint (NOT a rewrite) — degree word/dangling ref/open verb/multi-task/nick → flag for echo-reformulation; deterministic, no model; rules counted against the transcript corpus (candidate ≠ bug)
 
@@ -220,6 +218,8 @@ skills:
     worktree:       { supported: true }
     code-graph:     { supported: true, binding: { required: true } }   # S18 — REQUIRED capability (graphify)
     llm-wiki:       { supported: true }                                # S19 — Karpathy pattern
+    transcript-history: { supported: true }                            # S20 — unified cross-harness transcript corpus
+    session-checkpoint: { supported: false }                           # retired: raw transcripts + offline ingest are the handoff
 
 # ============================================================
 # LAYER 8 — permissions
@@ -251,6 +251,6 @@ mcp:
   capabilities:
     playwright: { supported: true, binding: { required: true, transport: stdio, command: "npx -y @playwright/mcp@latest" } }
     graphify:   { supported: true, binding: { required: true, transport: stdio, command_env: GRAPHIFY_CLI } }   # non-MCP CLI form; not rendered into config.toml
-    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @context7/mcp" } }
+    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @upstash/context7-mcp" } }
     github:     { supported: true, binding: { transport: stdio, command: "npx -y @modelcontextprotocol/server-github" } }
     gsheets:    { supported: true, binding: { transport: stdio, command: "npx -y mcp-gsheets@latest" } }

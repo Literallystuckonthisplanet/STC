@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.xtoshin.stc-ollama-serve</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/xtoshin/.local/bin/ollama</string>
+    <string>serve</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OLLAMA_HOST</key>
+    <string>127.0.0.1:11434</string>
+		<key>OLLAMA_KEEP_ALIVE</key>
+		<string>0</string>
+		<key>OLLAMA_CONTEXT_LENGTH</key>
+		<string>2048</string>
+    <key>PATH</key>
+    <string>/Users/xtoshin/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/xtoshin/Work/memory/offline-ingest/ollama.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/xtoshin/Work/memory/offline-ingest/ollama.stderr.log</string>
+</dict>
+</plist>

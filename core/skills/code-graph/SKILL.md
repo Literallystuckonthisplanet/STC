@@ -127,8 +127,10 @@ This folder is **gitignored in target repos** (it is derived, not source).
   skill is written neutrally, but graphify is the only supported path in STC.
 - graphify auto-detects the LLM backend for community labeling
   (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`). No per-query cost for `query`/
-  `affected`/`path`/`explain` (graph traversal) — LLM cost is only on
-  `extract` (clustering), `label`, `reflect`.
+  `affected`/`path`/`explain` (graph traversal). In graphify 0.9.x,
+  `update`, `tree`, and `reflect` are deterministic; semantic cost is on
+  document/image extraction and community naming when an LLM backend is
+  selected. Scheduled STC maintenance uses `--no-cluster` and `--no-label`.
 - For the *knowledge-wiki* angle (compile-once, not RAG), see the `llm-wiki`
   skill — over a code graph the pattern is realised via `add` (ingest) +
   `query` + `reflect` (there is no single `wiki` command in graphify 0.9.x).

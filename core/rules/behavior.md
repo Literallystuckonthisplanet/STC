@@ -19,14 +19,12 @@ here is a pointer; the hook is the guarantee.
   full; reference it by env-var name. Memory is forbidden for secrets.
   **Enforced: H03/I05b** (detects a secret in the prompt → directive) +
   **H05** (blocks a secret write into memory).
-- **Rule 2 — Facts → memory immediately:** a fact surfaced in conversation
-  (resource ID, a decision, an important result, a config) is saved to memory
-  **immediately**, not "at the end of the session". After the task is done and
-  the user approves — decide whether to keep it; if not, delete it. Safety net at
-  the compaction boundary: **H19** (PreCompact guard — rotate memory before the
-  summary is built; fires on manual `${COMPACT_CMD}` AND auto-compaction) +
-  **H06** (post-compact recovery backfills anything a silent auto-compact still
-  missed). FR-7.
+- **Rule 2 — Facts → transcript/Wiki pipeline:** the session leaves the raw
+  transcript and marks durable facts or decisions with the explicit `📌 MEMORY`
+  / `📌 запомнил` marker when appropriate. An isolated offline ingest process
+  reads the shared transcript corpus and prepares candidates for the Obsidian
+  Wiki. It may update canonical memory only through the documented review
+  path; it never mutates rules or always-context from one unreviewed message.
 - In code, examples, logs, or handoffs, replace real secrets with a
   placeholder (`<TOKEN>`, `${API_TOKEN}`). Treat the user's real values as
   toxic.
@@ -40,26 +38,14 @@ here is a pointer; the hook is the guarantee.
   (length-gated, `secret-ok` on the line vouches for a deliberate public value).
   Code-standard rationale: [SEC-2].
 
-## Memory rotation — project memory stays fresh
+## Offline memory pipeline
 <!-- I26 -->
 
-Rule 2 routes facts → memory. This rule says WHERE project facts go and how
-the file stays a fresh snapshot (not an append-log).
-
-- **A project fact** (a decision, a result, a config, a gotcha surfaced while
-  working on a project) → the project's `project_<name>.md` **live, as it
-  arises** — into STATE (the current truth) or CHANGELOG (a one-line pointer).
-  Do not batch to session-end.
-- **On task completion and at session end:** update STATE/CHANGELOG of
-  `project_<name>.md`. The PREVIOUS STATE/CHANGELOG entries are **moved to
-  `archive/project_<name>_archive.md`** (create if absent), leaving a
-  `[[project_<name>_archive]]` pointer in the active file's CHANGELOG tail.
-  After rotation, STATE = the latest session only.
-- **Session start:** the user names a project → read `project_<name>.md`
-  (STATE = fresh info from the last session). No handoff doc needed.
-- Format = R08 (STATE/OPEN/CHANGELOG); principle = pointer + STATUS, not
-  detail; history → git/archive. Hooks H08 (archive = valid link target, not
-  loaded) and H09 (R08 JIT-reminder on `project_*` edits) already support this.
+Raw transcripts are the durable audit trail. The scheduled ingest writes
+staging candidates and a monthly Obsidian report. Monthly review decides
+whether a candidate becomes a Wiki fact, a preference, an Instinct candidate,
+or a separate rule/process proposal. The active session is not required to
+maintain STATE/CHANGELOG for memory continuity.
 
 ## Worktrees and parallel sessions
 <!-- I07 -->
@@ -154,9 +140,9 @@ before. Concrete patterns → `[[playbook]]` § SELF-EXEC.
   error) and fix it. Don't report "failed to start" and stop there.
 - **Cascade restarts after a config change:** restart the dependent service
   yourself, don't tell the user "restart it".
-- **Stop:** only on "wrap up the session" (protocol → session rules §3). In
-  the middle of a session and on compact — don't touch services. Do it
-  yourself.
+- **Stop:** stop services only when the user explicitly requests an
+  operational cleanup or the project requires it. There is no universal
+  session-end memory protocol, and compact does not touch services.
 
 ## Long ASCII strings (base64 / tokens / hashes) — don't type by hand
 <!-- I12 -->

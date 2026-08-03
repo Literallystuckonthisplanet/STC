@@ -12,7 +12,8 @@
 #
 # Bypass: after the one-shot block the retry passes; or set the marker yourself.
 #
-# Render-time vars: ${SESSION_ID} (per-session ack; runtime from stdin below).
+# Render-time vars: ${SESSION_ID} (per-session ack; runtime from stdin below),
+# ${USER_LANG} (message language: en|ru, default en).
 
 INPUT=$(cat)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
@@ -59,10 +60,10 @@ MARKER="/tmp/stc-graphify-${SESSION_ID:-nosession}-${REPO_SLUG}"
 
 case "$USER_LANG" in
   ru)
-    echo "🔎 graphify-first (H18): в этом репо УЖЕ построен code-graph ($GRAPH). Для вопросов «как связано / что вызывает / где используется / радиус изменения» — \`graphify query \"<вопрос>\" --graph $GRAPH\` (или \`affected\`/\`explain\`/\`path\`) даёт ответ по графу, а не grep-цепочкой (граф компаундится, grep — нет). Полезный ответ → \`graphify save-result\` (наполняет LESSONS, llm-wiki-петля; reflect на session-end). Нужен именно точный поиск строки — повтори вызов (этот блок одноразовый на сессию/репо)." >&2
+    echo "🔎 graphify-first (H18): в этом репо УЖЕ построен code-graph ($GRAPH). Для вопросов «как связано / что вызывает / где используется / радиус изменения» — \`graphify query \"<вопрос>\" --graph $GRAPH\` (или \`affected\`/\`explain\`/\`path\`) даёт ответ по графу, а не grep-цепочкой (граф компаундится, grep — нет). Полезный ответ → \`graphify save-result\` (наполняет LESSONS, llm-wiki-петля; reflect в регулярном maintenance или по запросу). Нужен именно точный поиск строки — повтори вызов (этот блок одноразовый на сессию/репо)." >&2
     ;;
   *)
-    echo "🔎 graphify-first (H18): this repo already has a built code-graph ($GRAPH). For 'how does X connect / what calls this / where is it used / blast radius' questions, \`graphify query \"<q>\" --graph $GRAPH\` (or \`affected\`/\`explain\`/\`path\`) answers from the graph instead of a grep-chain (the graph compounds, grep does not). A useful answer → \`graphify save-result\` (feeds LESSONS, the llm-wiki loop; reflect at session-end). If you truly need an exact-string search — repeat the call (this block is one-shot per session/repo)." >&2
+    echo "🔎 graphify-first (H18): this repo already has a built code-graph ($GRAPH). For 'how does X connect / what calls this / where is it used / blast radius' questions, \`graphify query \"<q>\" --graph $GRAPH\` (or \`affected\`/\`explain\`/\`path\`) answers from the graph instead of a grep-chain (the graph compounds, grep does not). A useful answer → \`graphify save-result\` (feeds LESSONS, the llm-wiki loop; reflect in scheduled maintenance or on request). If you truly need an exact-string search — repeat the call (this block is one-shot per session/repo)." >&2
     ;;
 esac
 exit 2

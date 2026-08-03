@@ -105,12 +105,11 @@ healthy as it grows.
   This is the **primary** path in STC (graphify is a required capability).
   **How STC wires the loop:** H18 (`graphify-first`) nudges `graphify query` in a
   graphed repo, and a useful answer is `save-result`'d as you work — both **free**
-  (no LLM), so the graph's work-memory (`memory/`) accumulates on its own. The
-  **Lint** step, `graphify reflect` (which compiles the saved outcomes into
-  `LESSONS.md`), **calls the LLM and therefore costs** — so it is **on-demand,
-  NOT auto-run at session end**: run it when the user asks to refresh lessons,
-  flagging the cost. Ingest/Query/Lint map onto add/query/reflect; the free half
-  (query + save-result) compounds continuously, the paid half (reflect) is opt-in.
+  (no LLM), so the graph's work-memory (`memory/`) accumulates on its own. In
+  graphify 0.9.x, `reflect` deterministically compiles saved outcomes into
+  `LESSONS.md` and is safe for scheduled maintenance. Semantic document
+  extraction and community naming remain explicit, cost-bearing operations.
+  Ingest/Query/Lint map onto add/query/reflect.
 - **Manual** — an editor (Obsidian) + an agent following this skill, over
   your own `raw/` + wiki directory. The pattern is editor-agnostic; the wiki
   is just markdown.

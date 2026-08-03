@@ -89,16 +89,10 @@ strategy (the whole base), unlike a code review (tactics, a diff). Surface
 Condition: a domain glossary (`CONTEXT.md`) should exist before the first run.
 Cue for the user: "it's been a few large tasks — time for an architecture pass?"
 
-**Compact / session-end** (no separate command — lives in `session.md` §3,
-triggered by H03). The `stop_services_reminder.sh` hook (H03, UserPromptSubmit)
-catches trigger phrases:
-- "compress/compact the session", "compact the context", "save and compact",
-  "compacting", "time to compact", etc. → first save memory per behavior.md §
-  Memory rotation (I26), then tell the user to run `${COMPACT_CMD}`.
-- On the phrase "wrap up the session" it unfolds the session-end protocol
-  (rotate memory → stop services).
-- Also scans the prompt for a secret (I05b) → directive to write it to
-  `${SECRETS_ENV}` first.
+**Compact / session-end** are harness/runtime concerns, not memory commands.
+The H03 hook no longer parses compact or session-end phrases and only retains
+the SELF-EXEC and secret-in-prompt reminder. Raw transcripts are processed by
+the independent offline ingest job.
 
 **`prototype`** — a throwaway artifact for a decision: the user sees something
 concrete instead of hearing a description. Two modes: LOGIC (a tiny terminal

@@ -63,7 +63,7 @@ map" below). One file = one guard (single-responsibility, auditable).
 | **read-first router** (edit project code) | `read-first-router.sh` H10 | 💉 domain reminders (DS / security / docs / data / tdd / legal / reuse) |
 | **git guard** (Bash) | `block-dangerous-git.sh` H01 | 🔒 dangerous patterns + 🔒 I08 push-to-main + 💉 I17 commit-verify |
 | **agent guard** (Task) | `agent-reuse-contract.sh` H04 | 🔒 I21 build-agent reuse-contract + 🔒 FR-28 fork-protocol marker (executors must stop on architectural/business forks, DECIDED lines for trivia) + 💉 I20 reviewer baseline |
-| **session guards** (UserPromptSubmit / SessionStart / Stop) | `stop_services_reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 + `prompt-lens.sh` H22 | H03: SELF-EXEC + I05b secret-in-prompt + compact/session-end. H06: always-context inject + post-compact recovery. H08: link integrity. H22: prompt lens (FR-30) — additive hint, NOT a rewrite. |
+| **session guards** (UserPromptSubmit / SessionStart / Stop) | `stop_services_reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 + `prompt-lens.sh` H22 | H03: SELF-EXEC + I05b secret-in-prompt. H06: initial always-context inject + audit cadence. H08: link integrity. H22: prompt lens (FR-30) — additive hint, NOT a rewrite. H19 is retired. |
 
 Beyond the 6-guard map (legitimate extras):
 
@@ -114,14 +114,14 @@ Each hook references `${VARS}` resolved by `deploy.py` from `stc.yaml`:
 
 | Var | Source | Used by |
 |---|---|---|
-| `${MEMORY_DIR}` | adapter (memory location per harness) | H05, H08, H09, H10, H16 |
+| `${MEMORY_DIR}` | canonical workspace memory root (shared by all harnesses) | H05, H08, H09, H10, H16 |
 | `${DOCS_ROOT}` | `doc_backend.root` | H16 (notes/research) |
 | `${HARNESS_DIR}` | adapter (`~/.claude`) | H06, H07, H10 |
 | `${HARNESS_NAME}` | adapter (`claude`) | H16 (infra-scope skip) |
 | `${USER_LANG}` | `user.language` | all (message language) |
 | `${USER_NAME}` | `user.name` | H03 |
 | `${DEV_PORTS}` | `workspace.dev_ports` | H03 |
-| `${COMPACT_CMD}` | adapter (harness-native compact) | H03 |
+| `${COMPACT_CMD}` | adapter (harness-native compact) | no universal memory hook |
 | `${SECRETS_ENV}` | adapter (the .env file) | H03, H05 |
 | `${RELEASE_ACK_FILE}` | adapter (per-session marker path) | H01 |
 | `${CDP_PORT}` | `mcp.playwright.cdp_port` | H02 |

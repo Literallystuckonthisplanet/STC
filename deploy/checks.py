@@ -127,8 +127,45 @@ def precheck(stc, registry, provider, adapters, core_dir):
     errs += _naming_consistency(core_dir, adapters)
     errs += _mcp_validity(stc, adapters)
     errs += _subagent_consistency(core_dir, registry, adapters)
+    errs += _rules_delivery_consistency(adapters, core_dir)
     errs += _reference_integrity(core_dir)
     errs += _no_personal_data_in_core(core_dir)
+    return errs
+
+
+def _rules_delivery_consistency(adapters, core_dir):
+    """Validate the single rules-delivery path selected for each harness."""
+    errs = []
+    allowed = {"hook", "inline"}
+    for name, adapter in (adapters or {}).items():
+        facts = adapter.get("harness_facts", {}) or {}
+        delivery = facts.get("rules_delivery")
+        if delivery not in allowed:
+            errs.append(
+                f"adapter '{name}': harness_facts.rules_delivery must be "
+                f"'hook' or 'inline' (got {delivery!r})."
+            )
+            continue
+        if delivery != "hook":
+            continue
+        h06 = (adapter.get("hooks", {}) or {}).get("capabilities", {}).get(
+            "H06_session_start_context", {}
+        )
+        if h06.get("supported") is not True:
+            errs.append(
+                f"adapter '{name}': rules_delivery='hook' requires a "
+                "supported H06_session_start_context capability."
+            )
+        if h06.get("event") != "SessionStart":
+            errs.append(
+                f"adapter '{name}': hook-delivered rules require H06 event "
+                "SessionStart."
+            )
+        script = (h06.get("binding", {}) or {}).get("file")
+        if script and not os.path.exists(os.path.join(core_dir, "hooks", script)):
+            errs.append(
+                f"adapter '{name}': H06 binding points to missing core/hooks/{script}."
+            )
     return errs
 
 

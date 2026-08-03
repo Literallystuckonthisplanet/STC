@@ -10,7 +10,8 @@
 # Scope: only files inside ${MEMORY_DIR}. Everything else (incl. .env) — not
 # our concern.
 #
-# Render-time vars: ${MEMORY_DIR} — the memory directory.
+# Render-time vars: ${MEMORY_DIR}, ${SECRETS_ENV} — the memory directory and
+# the destination for secrets that must not be written to memory.
 
 INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')

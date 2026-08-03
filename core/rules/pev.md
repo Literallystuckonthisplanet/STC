@@ -255,9 +255,9 @@ verification. Pick at least one method, matching the task:
 Verify passed → commit (see `behavior.md` § Commits). Decision to compact
 **by context fill**: <~40% do not compact (warm cache is cheaper); ~40–75%
 compact only if the next task is unrelated to the current context; >~75%
-compact always via your own `save-and-compact` (behavior.md § Memory
-rotation) — do not wait for a blind automatic compaction. Memory safety is a
-separate reason to compact — do not starve it for economy.
+compact based on context fill and task boundaries. Compaction is a harness
+operation, not a memory-save boundary; the raw transcript remains available
+to the independent offline ingest process.
 
 ## Task scale
 <!-- I16 -->

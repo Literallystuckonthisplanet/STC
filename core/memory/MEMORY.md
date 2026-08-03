@@ -57,9 +57,10 @@ root) is a **view**. No external sync layer (the Notion pipeline is retired).
   + artifact stubs for the non-memory files. `infra_graph.py --check` runs
   the orphan/gap/dup audit.
 
-Deploy renders the templates into `${DOCS_ROOT}` (default
-`${workspace.root}/.stc-docs`). The full process + guarantees → playbook
-§ Doc backend.
+Deploy renders the templates into `${DOCS_ROOT}` (configured by
+`doc_backend.root`, currently `${HOME}/Work/memory`). The transcript corpus is
+separate at `${HOME}/Work/transcripts`. The full process + guarantees →
+playbook § Doc backend.
 
 ## User-specific (private, not in this repo)
 

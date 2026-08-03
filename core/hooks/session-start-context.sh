@@ -2,23 +2,17 @@
 # H06 — hook: session-start-context
 # SessionStart: injects the always-context rule files (the original pre-@import
 # mechanism — @import was a later refactor that does not work in harnesses
-# without native @-expansion). Also: post-compact loss-check (FR-7) + infra-audit
-# cadence nudge.
+# without native @-expansion). Also: infra-audit cadence nudge.
 #
 # WHAT H06 OWNS:
-#   - cat ~/.stc/core/rules/{behavior,pev,project_docs,session}.md → stdout
+#   - cat ~/.stc/core/rules/{behavior,pev,session}.md → stdout
 #     → the harness feeds hook stdout to the model as additionalContext.
 #     This is the ONLY way the always-context rules reliably reach the model
 #     across harnesses. The always-context bundle (CLAUDE.stc.md/AGENTS.stc.md)
 #     is a fallback pointer, not the loader.
-#   - on source=compact → post-compact loss-check directive (FR-7).
 #   - on source=startup/clear → infra-audit cadence nudge (≥30 days → remind).
-# On source=resume the context is already restored → skip (no re-inject).
-#
-# FR-7 — post-compact recovery: on source=compact (manual /compact AND auto),
-# emit a loss-check directive (reconcile pre-compression state + record
-# unsaved facts). A shell hook cannot see the dialogue → can't flush arbitrary
-# critique BEFORE compression; instead forces the agent to verify losses.
+# Resume/compact are not memory lifecycle events; H06 only owns initial
+# always-context delivery.
 #
 # Render-time vars (resolved by deploy.py from stc.yaml):
 #   ${STC_CORE}    — the shared rules/memory root (~/.stc/core), harness-neutral.
@@ -28,34 +22,10 @@
 INPUT=$(cat)
 SOURCE=$(echo "$INPUT" | jq -r '.source // empty')
 case "$SOURCE" in
-  resume) exit 0 ;;
+  resume|compact) exit 0 ;;
 esac
 
 USER_LANG="${USER_LANG:-en}"
-
-if [ "$SOURCE" = "compact" ]; then
-  case "$USER_LANG" in
-    ru)
-      echo "=== 🔁 ПОСТ-КОМПАКТ — ПРОВЕРКА ПОТЕРЬ ПЕРЕД ПРОДОЛЖЕНИЕМ (H06/FR-7) ==="
-      echo "Только что произошло СЖАТИЕ контекста (ручное ИЛИ авто). Саммари может быть неполным — НЕ считай его полным по умолчанию."
-      echo "ДО следующего действия:"
-      echo "1. Сверь критику ИЗ ДО-сжатия: изменённые/незакоммиченные файлы, тест/verify-команды, открытые решения, активный todo-лист (I23)."
-      echo "2. ЛЮБОЙ важный факт (ID/конфиг/решение/результат), которого ещё НЕТ в memory-файле → записать НЕМЕДЛЕННО (I05 r2). Авто-компакт не должен ничего терять."
-      echo "3. Что-то урезано саммари → восстанови из memory/ или транскрипта ПЕРЕД работой."
-      echo "4. Был живой todo (I23) → восстанови его и продолжай с того же in_progress-пункта."
-      ;;
-    *)
-      echo "=== 🔁 POST-COMPACT — LOSS CHECK BEFORE CONTINUING (H06/FR-7) ==="
-      echo "Context was just COMPRESSED (manual OR auto). The summary may be incomplete — do NOT assume it is complete by default."
-      echo "BEFORE the next action:"
-      echo "1. Reconcile the critique FROM PRE-compression: changed/uncommitted files, test/verify commands, open decisions, the active todo-list (I23)."
-      echo "2. ANY important fact (ID/config/decision/result) NOT already in a memory file → record IMMEDIATELY (I05 r2). Auto-compact must not lose anything."
-      echo "3. Something trimmed by the summary → recover from memory/ or the transcript BEFORE working."
-      echo "4. There was a live todo (I23) → restore it and continue from the same in_progress item."
-      ;;
-  esac
-  echo ""
-fi
 
 echo "=== ОБЯЗАТЕЛЬНЫЙ КОНТЕКСТ СТАРТА (инжектнут хуком H06 — НЕ перечитывать вручную, если уже видишь) ==="
 

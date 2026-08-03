@@ -78,7 +78,9 @@ deploy:
 # Doc backend (only used if deploy.doc_backend != none)
 # ------------------------------------------------------------
 doc_backend:
-  root: "${workspace.root}/.stc-docs"  # where specs/, tasks/, infra/ live
+  # Workspace-level memory/docs shared by all harnesses; transcripts use the
+  # separate canonical root ${HOME}/Work/transcripts.
+  root: "${HOME}/Work/memory"
   # Local-first. STC is neutral to the store; the source of truth is always
   # the .md file, the backend is a view. A markdown editor (e.g. Obsidian in
   # vault mode over this root) reads the same files without extra config.
@@ -118,3 +120,27 @@ mcp:
 graphify:
   cli_env: "GRAPHIFY_CLI"        # env var holding the binary path
   api_key_env: "ANTHROPIC_API_KEY"
+  # Explicit active-project registry. Temporary worktrees are not discovered.
+  projects:
+    root: "${HOME}/Work/projects"
+    names: []                     # fill with real project directory names
+    maintenance: weekly
+    semantic_extraction: manual  # LLM-backed doc/image extraction is explicit
+
+# ------------------------------------------------------------
+# Offline transcript -> memory/Wiki ingest
+# ------------------------------------------------------------
+memory_pipeline:
+  enabled: true
+  lookback_hours: 36              # local semantic pass; deterministic scan is full-corpus
+  report_root: "${HOME}/Work/memory/reports/stc"
+  local_model:
+    enabled: true
+    runtime: ollama                # local HTTP runtime; no UI is required
+    model: "qwen3:1.7b"
+    endpoint: "http://127.0.0.1:11434/api/chat"
+    timeout_seconds: 45
+    max_events: 12
+  scheduler:
+    hour: 10                       # launchd runs at load and once per local day
+    minute: 0

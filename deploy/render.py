@@ -40,15 +40,21 @@ PLUGIN_NAME = "stc"
 PLUGIN_VERSION = "0.1.2"
 PLUGIN_DIR = f"cli/plugins/cache/{PLUGIN_MARKETPLACE}/{PLUGIN_NAME}/{PLUGIN_VERSION}"
 
-# The 13 render-time vars (ground truth from each hook's own header block).
+# The deploy-owned render-time vars (ground truth from each hook's own header
+# block). Runtime shell variables such as SESSION_ID remain literal.
 # A hook declares which it needs under a "# Render-time vars (...)" comment;
 # render substitutes exactly those tokens and leaves all other ${...} (script
 # locals: SESSION, BROKEN, HITS, …) to bash. See _hook_declared_vars().
 RENDER_VARS = {
     "CDP_PORT", "COMPACT_CMD", "DEPLOY_SCRIPT", "DEV_PORTS", "E2E_CLI_CMD",
-    "HARNESS_DIR", "HARNESS_LIST", "MEMORY_DIR", "RELEASE_ACK_FILE",
+    "HARNESS_DIR", "HARNESS_LIST", "HARNESS_NAME", "MEMORY_DIR", "RELEASE_ACK_FILE",
     "SECRETS_ENV", "SESSION_ID", "STC_CORE", "USER_LANG", "USER_NAME", "DOCS_ROOT",
+    "LENS_MIN_LEN", "LENS_MAX_FLAGS",
 }
+
+# Empty values intentionally remain shell expressions so a runtime environment
+# can still provide them (for example E2E_CLI_CMD). They are not render leaks.
+OPTIONAL_EMPTY_RENDER_VARS = {"E2E_CLI_CMD"}
 
 
 class RenderResult:
@@ -165,6 +171,10 @@ def resolve_vars(adapter, stc, provider):
     # Defaults to this adapter's harness; a multi-harness deploy overrides it.
     if "HARNESS_LIST" not in v:
         v["HARNESS_LIST"] = adapter.get("harness", "claude,zcode")
+    # H22 keeps deterministic thresholds configurable, while preserving the
+    # hook's historical defaults when stc.yaml does not specify them.
+    v["LENS_MIN_LEN"] = str(stc.get("prompt_lens", {}).get("min_len", v.get("LENS_MIN_LEN", "4")))
+    v["LENS_MAX_FLAGS"] = str(stc.get("prompt_lens", {}).get("max_flags", v.get("LENS_MAX_FLAGS", "4")))
     return v
 
 
@@ -172,8 +182,9 @@ def resolve_vars(adapter, stc, provider):
 # Hook rendering (the var-substitution core)
 # ---------------------------------------------------------------------------
 
-_DECL_BLOCK = re.compile(r"#\s*Render-time vars.*?\n((?:#\s*\$\{[\w]+\}.*\n?)+)", re.IGNORECASE)
+_DECL_HEADER = re.compile(r"^\s*#\s*Render-time vars\b", re.IGNORECASE)
 _DECL_TOKEN = re.compile(r"\$\{(\w+)\}")
+_VAR_TOKEN = re.compile(r"(?<!\\)\$\{(\w+)(?::-[^}]*)?\}")
 
 
 def _hook_declared_vars(hook_text):
@@ -183,10 +194,23 @@ def _hook_declared_vars(hook_text):
     arbitrary token; we only ever touch the 13 deploy-owned vars.
     """
     declared = set()
-    for block in _DECL_BLOCK.findall(hook_text):
-        for tok in _DECL_TOKEN.findall(block):
-            if tok in RENDER_VARS:
-                declared.add(tok)
+    lines = hook_text.splitlines()
+    for i, line in enumerate(lines):
+        if not _DECL_HEADER.search(line):
+            continue
+        # The declaration may be inline or continued across prose comment
+        # lines. The contiguous comment block after the header is the boundary;
+        # a blank/non-comment line ends it. This preserves vars that appear
+        # after explanatory text in the block.
+        j = i
+        while j < len(lines):
+            candidate = lines[j]
+            if j != i and not re.match(r"^\s*#", candidate):
+                break
+            for tok in _DECL_TOKEN.findall(candidate):
+                if tok in RENDER_VARS:
+                    declared.add(tok)
+            j += 1
     # Also substitute any in-body ${VAR} whose name is in RENDER_VARS — the
     # declaration block lists the vars; their use anywhere in the file is the
     # substitution site. (e.g. H06 declares MEMORY_DIR, uses it in the body.)
@@ -204,7 +228,25 @@ def _substitute_vars(text, varmap, declared):
         if name in declared and name in varmap and varmap[name] != "":
             return str(varmap[name])
         return m.group(0)
-    return re.sub(r"\$\{(\w+)\}", repl, text)
+    return _VAR_TOKEN.sub(repl, text)
+
+
+def _unresolved_deploy_vars(text):
+    """Return deploy-owned placeholders that survived hook rendering.
+
+    Comments are documentation, not executable shell, and optional empty
+    values intentionally remain runtime expressions. SESSION_ID is supplied
+    by the hook event payload rather than by deploy.py.
+    """
+    allowed = OPTIONAL_EMPTY_RENDER_VARS | {"SESSION_ID"}
+    names = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for name in _VAR_TOKEN.findall(line):
+            if name in RENDER_VARS and name not in allowed:
+                names.add(name)
+    return names
 
 
 # Hooks whose body reads .tool_input.file_path / .tool_input.content and so
@@ -335,6 +377,16 @@ def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
         # target filename is harness-specific (claude: settings.json; codex: hooks.json)
         hook_target = facts.get("hook_config_file", "settings.json")
         result.json_patches[hook_target] = wiring
+
+    leaks = {}
+    for path, body in result.files.items():
+        if not (path.startswith(native_hooks_dir + os.sep) and path.endswith(".stc.sh")):
+            continue
+        names = _unresolved_deploy_vars(body)
+        if names:
+            leaks[path] = sorted(names)
+    if leaks:
+        raise ValueError(f"unresolved deploy vars in rendered hooks: {leaks}")
 
 
 def _json_dump(obj):
@@ -528,7 +580,7 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
                 if effort_tier:
                     toml_lines.append(
                         f'model_reasoning_effort = {_toml_quote({"low": "low", "mid": "medium", "high": "high"}[effort_tier])}')
-                toml_lines.append(f'developer_instructions = {_toml_quote(body.rstrip())}')
+                toml_lines.append(f'developer_instructions = {_toml_multiline_quote(body.rstrip())}')
                 rel = os.path.join(native_agents_dir, f"{name}.stc.toml")
                 result.files[rel] = "\n".join(toml_lines) + "\n"
                 result.manifest.append({"path": rel, "kind": "agent", "source": f"core/agents/{name}.md"})
@@ -839,6 +891,11 @@ def _render_mcp(adapter, stc, result):
 def _toml_quote(s):
     """Quote a TOML basic string, escaping backslashes and double quotes."""
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _toml_multiline_quote(s):
+    """Quote a TOML multiline basic string, preserving newlines."""
+    return '"""' + s.replace("\\", "\\\\").replace('"', '\\"').replace('"""', '\\"""') + '"""'
 
 
 def _toml_array(items):

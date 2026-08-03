@@ -65,7 +65,7 @@ harness_facts:
 vars:
   HARNESS_DIR:   "${HOME}/.zcode"
   HARNESS_NAME:  "zcode"
-  MEMORY_DIR:    "${workspace.root}/.stc-memory"  # ZCode has no ~/.claude; project-scoped memory
+  MEMORY_DIR:    "${HOME}/Work/memory"            # canonical workspace memory shared by all harnesses
   STC_CORE:      "${HOME}/.stc/core"              # shared cross-harness rules/memory (H06 injects from here)
   COMPACT_CMD:   "/compact"                        # harness-native compact command
   SECRETS_ENV:   "${HOME}/.stc/secrets.env"
@@ -82,7 +82,7 @@ always_context:
     memory:
       supported: degrade
       native: "@${canonical_home}/core/memory/MEMORY.md into AGENTS.md"
-      fallback: "H06 session-start-context.sh JIT-inject on SessionStart (ALSO post-compact recovery). Used whenever @import is unsupported."
+      fallback: "H06 session-start-context.sh JIT-inject on initial SessionStart when native import is unavailable"
       binding:
         files: [core/memory/MEMORY.md, core/memory/playbook.md, core/memory/code_standard.md]
 
@@ -232,6 +232,8 @@ skills:
     worktree:       { supported: true }
     code-graph:     { supported: true, binding: { required: true } }   # S18 — REQUIRED
     llm-wiki:       { supported: true }                                # S19
+    transcript-history: { supported: true }                            # S20 — unified cross-harness transcript corpus
+    session-checkpoint: { supported: false }                           # retired: raw transcripts + offline ingest are the handoff
 
 # ============================================================
 # LAYER 8 — permissions
@@ -266,5 +268,5 @@ mcp:
     playwright: { supported: true, binding: { required: true, transport: stdio, command: "npx -y @playwright/mcp@latest" } }
     graphify:   { supported: true, binding: { required: true, transport: stdio, command_env: GRAPHIFY_CLI } }
     github:     { supported: true, binding: { transport: stdio, command: "npx -y @modelcontextprotocol/server-github" } }
-    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @context7/mcp" } }
+    context7:   { supported: true, binding: { transport: stdio, command: "npx -y @upstash/context7-mcp" } }
     gsheets:    { supported: true, binding: { transport: stdio, command: "npx -y mcp-gsheets@latest" } }

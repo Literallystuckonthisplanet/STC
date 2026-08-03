@@ -18,6 +18,7 @@ import sys
 import json
 import tempfile
 import subprocess
+import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEPLOY = os.path.dirname(HERE)
@@ -103,6 +104,54 @@ def test_codex_agent_toml_has_required_fields():
         "codex TOML schema has no tools field"
 
 
+def test_codex_agent_toml_parses_with_tomllib():
+    """Every rendered Codex agent TOML must be parseable by tomllib."""
+    _, _, _, rr = _load_codex()
+    agent_files = sorted(
+        p for p in rr.files
+        if p.startswith("agents/") and p.endswith(".stc.toml")
+    )
+    assert agent_files, "expected rendered Codex agents"
+    for path in agent_files:
+        try:
+            data = tomllib.loads(rr.files[path])
+        except tomllib.TOMLDecodeError as e:
+            raise AssertionError(f"{path} is not valid TOML: {e}") from e
+        source = os.path.join(D.CORE, "agents", f"{data['name']}.md")
+        expected = open(source, encoding="utf-8").read().rstrip()
+        assert data["developer_instructions"] == expected, \
+            f"{path} changed developer_instructions while serializing TOML"
+
+
+def test_toml_multiline_quote_round_trips_special_chars():
+    """Multiline agent instructions preserve quotes and trailing backslashes."""
+    body = 'line "quoted"\npath C:\\tmp\\\ntrailing\\'
+    parsed = tomllib.loads(
+        "developer_instructions = " + R._toml_multiline_quote(body) + "\n"
+    )
+    assert parsed["developer_instructions"] == body
+
+
+def test_codex_rendered_hooks_have_no_unresolved_deploy_vars():
+    """Rendered hooks must not leak STC-owned ${VAR} placeholders."""
+    _, _, _, rr = _load_codex()
+    unresolved = {}
+    for path, body in rr.files.items():
+        if not path.startswith("hooks/") or not path.endswith(".stc.sh"):
+            continue
+        names = R._unresolved_deploy_vars(body)
+        if names:
+            unresolved[path] = sorted(names)
+    assert not unresolved, f"unresolved deploy vars in rendered hooks: {unresolved}"
+
+
+def test_hook_declaration_parser_keeps_prose_continuations():
+    """A prose line inside a declaration block must not hide later vars."""
+    path = os.path.join(D.CORE, "hooks", "block-dangerous-git.sh")
+    declared = R._hook_declared_vars(open(path, encoding="utf-8").read())
+    assert {"RELEASE_ACK_FILE", "USER_LANG"} <= declared
+
+
 def test_codex_skills_target_agents_dir():
     """Skills render to ~/.agents/skills (Codex global path), NOT ~/.codex/skills."""
     _, _, adapter, rr = _load_codex()
@@ -165,7 +214,7 @@ def test_toml_merge_add_only_then_idempotent():
     d = tempfile.mkdtemp()
     p = os.path.join(d, "config.toml")
     open(p, "w").write('model = "gpt-5.6-luna"\n\n[mcp_servers.user-srv]\ncommand = "x"\n')
-    patch = '[mcp_servers.stc-context7]\ncommand = "npx"\nargs = ["-y", "@context7/mcp"]\n'
+    patch = '[mcp_servers.stc-context7]\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp"]\n'
     a1, c1 = T.merge_toml(p, patch, overwrite=False)
     assert a1 == "appended" and c1
     out = open(p).read()

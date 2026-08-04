@@ -35,6 +35,11 @@ DEFAULT_MODEL = os.environ.get("STC_LOCAL_MODEL", "qwen3:4b")
 DEFAULT_OLLAMA_ENDPOINT = os.environ.get(
     "STC_OLLAMA_ENDPOINT", "http://127.0.0.1:11434/api/chat"
 )
+RESOLVED_REVIEW_STATUSES = frozenset({
+    "accepted-obsolete",
+    "accepted-architecture",
+    "rejected",
+})
 
 # This is deliberately stricter than a bare 📌.  The user profile already uses
 # 📌 for "remembered" information; requiring a durable-memory word prevents
@@ -214,6 +219,47 @@ def _candidate_path(root: Path, month: str) -> Path:
     return root / "candidates" / f"{month}.jsonl"
 
 
+def _review_decision_paths(
+    root: Path,
+    month: str,
+    report_root: Path | str | None = None,
+) -> list[Path]:
+    base = _expand_path(report_root) if report_root is not None else root / "reports" / "stc"
+    # The root registry is durable across months.  The month-local file is
+    # retained as an audit artifact and overrides a root entry when present.
+    return [base / "review-decisions.json", base / month / "review-decisions.json"]
+
+
+def load_review_decisions(
+    root: Path | str,
+    month: str,
+    report_root: Path | str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Load explicit human review decisions without changing staging JSONL."""
+    root = Path(root).expanduser().resolve()
+    decisions: dict[str, dict[str, Any]] = {}
+    for path in _review_decision_paths(root, month, report_root):
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        entries = payload.get("decisions") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            claim = entry.get("claim") or entry.get("text")
+            if claim:
+                decisions[_normalise_claim(str(claim)).casefold()] = entry
+            candidate_id = entry.get("candidate_id")
+            if candidate_id:
+                decisions[f"id:{candidate_id}"] = entry
+    return decisions
+
+
 def store_candidates(root: Path | str, candidates: Iterable[dict[str, Any]]) -> dict[str, int]:
     """Append new candidates once; the JSONL store is staging, not canonical memory."""
     root = Path(root).expanduser().resolve()
@@ -284,7 +330,25 @@ def render_monthly_report(
         ref = source.get("raw_ref") or source.get("event_key")
         if ref and ref not in grouped[key]["source_refs"]:
             grouped[key]["source_refs"].append(ref)
-    candidates = list(grouped.values())
+    decisions = load_review_decisions(root, month, report_root)
+    active_candidates: list[dict[str, Any]] = []
+    resolved_candidates: list[dict[str, Any]] = []
+    for key, candidate in grouped.items():
+        decision = decisions.get(key) or decisions.get(
+            f"id:{candidate.get('candidate_id')}"
+        )
+        if decision:
+            candidate = {
+                **candidate,
+                "status": str(decision.get("status") or candidate.get("status") or "new"),
+                "review_decision": str(decision.get("decision") or ""),
+                "reviewed_at": str(decision.get("reviewed_at") or ""),
+            }
+        if candidate.get("status") in RESOLVED_REVIEW_STATUSES:
+            resolved_candidates.append(candidate)
+        else:
+            active_candidates.append(candidate)
+    candidates = active_candidates
     if report_root is None:
         report = root / "reports" / "stc" / month / "memory-review.md"
     else:
@@ -299,6 +363,7 @@ def render_monthly_report(
         f"generated_at: {datetime.now(timezone.utc).isoformat()}",
         f"status: {status}",
         f"candidate_count: {len(candidates)}",
+        f"resolved_count: {len(resolved_candidates)}",
         "---",
         "",
         f"# STC — разбор памяти за {month}",
@@ -336,6 +401,19 @@ def render_monthly_report(
             extra_refs = [ref for ref in candidate.get("source_refs", []) if ref != source.get("raw_ref")]
             if extra_refs:
                 lines.insert(-3, "- Дополнительные источники: " + ", ".join(f"`{ref}`" for ref in extra_refs))
+    if resolved_candidates:
+        lines.extend([
+            "## Принятые и устаревшие решения",
+            "",
+            "Эти claims сняты с active review явным решением; исходный staging остаётся неизменным.",
+            "",
+        ])
+        for candidate in resolved_candidates:
+            lines.extend([
+                f"- `{candidate.get('status')}` — {candidate.get('text', '').strip()}",
+                f"  Решение: {candidate.get('review_decision') or 'зафиксировано в decision registry.'}",
+            ])
+        lines.append("")
     lines.extend([
         "## Правило monthly review",
         "",

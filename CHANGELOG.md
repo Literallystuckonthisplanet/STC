@@ -23,6 +23,9 @@ release notes.
   `~/Work/memory`, preserving conflicts and retired roots in recoverable
   archives. A deterministic ICS generator exposes every planned job and the
   weekly report-review reminder in Calendar.
+- STC project memory is canonicalized as `project_STC.md` and the Obsidian
+  review has a durable `reports/stc/review-decisions.json` registry, so accepted
+  or obsolete transcript claims are not reopened in later months.
 
 ### Changed — compact startup context and Luna-first Codex routing
 - Always-context is limited to three compact firing-rule files plus the user

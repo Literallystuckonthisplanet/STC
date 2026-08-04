@@ -128,6 +128,90 @@ def test_render_monthly_report_is_in_month_folder(tmp_path):
     assert "status: pending-review" in text
 
 
+def test_render_monthly_report_applies_persistent_review_decision(tmp_path):
+    candidate = MI.make_candidate({
+        "event_key": "e1",
+        "session_key": "s1",
+        "harness": "codex",
+        "session_id": "session-1",
+        "line": 4,
+        "timestamp": "2026-08-03T10:00:00+00:00",
+        "cwd": "/Users/xtoshin/Work/STC",
+        "role": "user",
+        "text": "📌 MEMORY: session-end больше не является точкой сохранения.",
+        "raw_ref": "source:4",
+    }, "session-end больше не является точкой сохранения.")
+    decisions = tmp_path / "reports" / "stc" / "2026-08"
+    decisions.mkdir(parents=True)
+    (decisions / "review-decisions.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "decisions": [{
+                "claim": "session-end больше не является точкой сохранения.",
+                "status": "accepted-obsolete",
+                "decision": "Session-end memory rotation retired; this is no longer an open question.",
+                "reviewed_at": "2026-08-04",
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = MI.render_monthly_report(
+        tmp_path,
+        "2026-08",
+        [candidate],
+        {"imported": {"sources": 1, "events_added": 1}},
+    )
+
+    text = report.read_text(encoding="utf-8")
+    assert "status: no-candidates" in text
+    assert "candidate_count: 0" in text
+    assert "resolved_count: 1" in text
+    assert "## Принятые и устаревшие решения" in text
+    assert "`accepted-obsolete`" in text
+    assert "Session-end memory rotation retired" in text
+
+
+def test_render_monthly_report_reads_cross_month_decision_registry(tmp_path):
+    candidate = MI.make_candidate({
+        "event_key": "e2",
+        "session_key": "s2",
+        "harness": "codex",
+        "session_id": "session-2",
+        "line": 8,
+        "timestamp": "2026-09-01T10:00:00+00:00",
+        "cwd": "/Users/xtoshin/Work/STC",
+        "role": "user",
+        "text": "📌 MEMORY: календарь уже настроен.",
+        "raw_ref": "source:8",
+    }, "календарь уже настроен.")
+    registry = tmp_path / "reports" / "stc"
+    registry.mkdir(parents=True)
+    (registry / "review-decisions.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "decisions": [{
+                "claim": "календарь уже настроен.",
+                "status": "accepted-architecture",
+                "decision": "Calendar import is user-confirmed and no longer needs review.",
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = MI.render_monthly_report(
+        tmp_path,
+        "2026-09",
+        [candidate],
+        {"imported": {"sources": 1, "events_added": 1}},
+    )
+
+    text = report.read_text(encoding="utf-8")
+    assert "candidate_count: 0" in text
+    assert "resolved_count: 1" in text
+    assert "Calendar import is user-confirmed" in text
+
+
 def test_daily_guard_runs_once_per_local_day(tmp_path):
     state = tmp_path / "state.json"
     assert MI.claim_daily_run(state, "2026-08-03") is True

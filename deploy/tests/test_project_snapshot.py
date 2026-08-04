@@ -123,6 +123,20 @@ def test_generated_graphify_and_snapshot_artifacts_do_not_make_git_dirty(tmp_pat
     assert PS.inspect_project(project, tmp_path / "memory")["dirty"] is True
 
 
+def test_snapshot_resolves_canonical_uppercase_project_memory(tmp_path):
+    project = tmp_path / "STC"
+    project.mkdir()
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    (memory / "project_STC.md").write_text("## OPEN\n- one\n", encoding="utf-8")
+
+    status = PS.inspect_project(project, memory)
+
+    assert status["memory"].endswith("project_STC.md")
+    assert status["memory_present"] is True
+    assert status["open_count"] == 1
+
+
 def test_run_uses_central_registry_paths_for_project_index(tmp_path):
     root = tmp_path / "projects"
     root.mkdir()

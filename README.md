@@ -259,12 +259,17 @@ or project files. It writes only:
 
 - `memory/candidates/YYYY-MM.jsonl` — append-only staging records with source references;
 - `memory/reports/stc/YYYY-MM/memory-review.md` — grouped monthly review note.
+- `memory/reports/stc/review-decisions.json` — durable explicit human decisions;
+- `memory/reports/stc/YYYY-MM/review-decisions.json` — optional month-local audit
+  decisions; accepted/obsolete claims are removed from the active section on the next render.
 
 On macOS, `launchd` runs the technical import at load/wake and once per day. The
 semantic pass is optional, bounded, local-only, and fails open: a missing or
 malformed model response cannot prevent transcript import or report generation.
 The monthly review is the point at which a candidate is accepted, rejected,
 deferred, or turned into a separately approved rule/process proposal.
+Review decisions are durable metadata for the report only: they do not rewrite
+the raw transcript or staging JSONL, and they never auto-edit canonical memory.
 
 The canonical cross-harness memory root is `~/Work/memory`. Legacy Claude and
 Codex roots can be migrated with `core/scripts/memory_root_migrate.py`; the

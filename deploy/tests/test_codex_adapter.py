@@ -93,6 +93,93 @@ def test_codex_agents_are_toml():
     assert not md_agents, f"codex agents must be .stc.toml, not .stc.md: {md_agents}"
 
 
+def test_codex_defaults_route_luna_max_and_agent_sandbox_policies():
+    """Rendered Codex behavior is Luna-first and least-privilege by role.
+
+    This uses the actual render output consumed by deploy.py, not only adapter
+    metadata: the main config defaults must be Luna/max, every custom agent
+    must pin Luna explicitly, and read-only roles must not inherit write access.
+    """
+    _, _, _, rr = _load_codex()
+    config = tomllib.loads(rr.toml_patches["config.toml"])
+    assert config["model"] == "gpt-5.6-luna"
+    assert config["model_reasoning_effort"] == "max"
+
+    read_only = {
+        "code-reviewer", "security-arch", "qa", "security-deps", "e2e",
+        "research", "docs", "harness-docs",
+    }
+    write_roles = {"builder", "cleanup"}
+    for path, body in rr.files.items():
+        if not (path.startswith("agents/") and path.endswith(".stc.toml")):
+            continue
+        data = tomllib.loads(body)
+        assert data["model"] == "gpt-5.6-luna", f"{path} is not Luna-pinned"
+        assert "terra" not in data["model"] and "sol" not in data["model"]
+        assert "tools" not in data, "Codex custom-agent TOML has no supported tools field"
+        assert data["sandbox_mode"] in {"read-only", "workspace-write"}
+        name = data["name"]
+        if name in read_only:
+            assert data["sandbox_mode"] == "read-only", f"{path} can write"
+        elif name in write_roles:
+            assert data["sandbox_mode"] == "workspace-write", f"{path} cannot write"
+
+
+def test_caveman_is_embedded_only_in_approved_read_only_agent_prompts():
+    _, _, _, rr = _load_codex()
+    rendered = {
+        tomllib.loads(body)["name"]: tomllib.loads(body)["developer_instructions"]
+        for path, body in rr.files.items()
+        if path.startswith("agents/") and path.endswith(".stc.toml")
+    }
+    for name in ("research", "docs", "harness-docs"):
+        assert "CAVEMAN_PIPELINE" in rendered[name]
+    for name in ("builder", "cleanup", "code-reviewer", "qa", "security-arch", "e2e"):
+        assert "CAVEMAN_PIPELINE" not in rendered[name]
+
+
+def test_codex_native_routing_and_hook_bindings_are_explicit():
+    """Codex-specific routing uses supported native fields and both agent paths.
+
+    The event/payload distinction is intentional: current Codex exposes a
+    SubagentStart lifecycle event while direct Agent dispatch remains a
+    PreToolUse payload. H04 must be reachable from both paths; H17 must cover
+    shell-shaped reads without inventing a TOML ``tools`` field.
+    """
+    _, _, adapter, rr = _load_codex()
+    routing = adapter["routing"]
+    assert routing["default_model"] == "gpt-5.6-luna"
+    assert routing["default_reasoning_effort"] == "max"
+    assert routing["subagent_compression"] == "none"
+    for name in ("terra", "sol"):
+        escalation = routing["escalations"][name]
+        assert escalation["explicit_only"] is True
+        assert escalation["model"] in {"gpt-5.6-terra", "gpt-5.6-sol"}
+
+    hooks = rr.json_patches["hooks.json"]["hooks"]
+    h04 = [
+        (event, entry)
+        for event, entries in hooks.items()
+        for entry in entries
+        if entry.get("_stc_cap") == "H04_agent_reuse_contract"
+    ]
+    assert {event for event, _ in h04} == {"PreToolUse", "SubagentStart"}
+    assert {event: entry["matcher"] for event, entry in h04} == {
+        "PreToolUse": "Agent",
+        "SubagentStart": ".*",
+    }
+
+    h17 = [
+        entry
+        for entries in hooks.values()
+        for entry in entries
+        if entry.get("_stc_cap") == "H17_secret_read_guard"
+    ]
+    assert len(h17) == 1
+    assert {"Bash", "exec", "unified_exec", "unifiedExec"} <= set(h17[0]["matcher"].split("|"))
+    assert h17[0]["hooks"][0]["command"].endswith("/block-secret-read.stc.sh")
+
+
 def test_codex_agent_toml_has_required_fields():
     """Each *.stc.toml has name/description/developer_instructions and NO tools field."""
     _, _, _, rr = _load_codex()
@@ -119,8 +206,12 @@ def test_codex_agent_toml_parses_with_tomllib():
             raise AssertionError(f"{path} is not valid TOML: {e}") from e
         source = os.path.join(D.CORE, "agents", f"{data['name']}.md")
         expected = open(source, encoding="utf-8").read().rstrip()
-        assert data["developer_instructions"] == expected, \
-            f"{path} changed developer_instructions while serializing TOML"
+        rendered = data["developer_instructions"]
+        assert rendered == expected or rendered.startswith(expected + "\n\n"), \
+            f"{path} changed base developer_instructions while serializing TOML"
+        if rendered != expected:
+            assert rendered[len(expected):].startswith("\n\n<!-- CAVEMAN_PIPELINE -->\n"), \
+                f"{path} added an unexpected developer_instructions suffix"
 
 
 def test_toml_multiline_quote_round_trips_special_chars():
@@ -224,6 +315,36 @@ def test_toml_merge_add_only_then_idempotent():
     # re-merge → noop
     a2, c2 = T.merge_toml(p, patch, overwrite=False)
     assert a2 == "noop" and not c2
+
+
+def test_toml_merge_updates_codex_managed_top_level_defaults():
+    """Rendered main model defaults must reach live config, not be ignored."""
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "config.toml")
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(
+            '# user comment\nmodel = "gpt-5.6-sol"\n'
+            'model_reasoning_effort = "high"\npersonality = "pragmatic"\n\n'
+            '[features]\nweb_search = true\n'
+        )
+    patch = (
+        'model = "gpt-5.6-luna"\nmodel_reasoning_effort = "max"\n\n'
+        '[mcp_servers.stc-context7]\ncommand = "npx"\n'
+    )
+
+    action, changed = T.merge_toml(p, patch)
+
+    assert changed is True
+    assert action == "updated"
+    with open(p, "rb") as fh:
+        data = tomllib.load(fh)
+    assert data["model"] == "gpt-5.6-luna"
+    assert data["model_reasoning_effort"] == "max"
+    assert data["personality"] == "pragmatic"
+    assert data["features"]["web_search"] is True
+    assert data["mcp_servers"]["stc-context7"]["command"] == "npx"
+    text = open(p, encoding="utf-8").read()
+    assert "# user comment" in text
 
 
 def test_toml_uninstall_strips_only_stc():

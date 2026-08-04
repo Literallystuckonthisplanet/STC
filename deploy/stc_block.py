@@ -27,6 +27,45 @@ import os
 STC_BEGIN = "# >>> STC BEGIN (managed — do not edit) >>>"
 STC_END = "# <<< STC END <<<"
 
+# A retired, STC-authored rules block used to be appended outside the managed
+# marker in both CLAUDE.md and AGENTS.md.  Because it is outside the marker,
+# normal idempotent replacement cannot remove it.  Keep the fingerprint
+# deliberately strict: arbitrary user-owned "# Global rules" content must
+# never be mistaken for this one historical tail.
+_LEGACY_TAIL_FINGERPRINTS = (
+    "## Always-контекст старта",
+    "<!-- I01 -->",
+    "## Начало сессии",
+    "<!-- I02 -->",
+    '## Session end ("завершаем сессию")',
+    "<!-- I03 -->",
+    "Memory rotation",
+    "Kill dev servers",
+)
+
+
+def strip_known_legacy_global_rules_tail(text):
+    """Remove only the known retired STC rules block at end-of-file.
+
+    The migration is intentionally narrower than a generic markdown-section
+    remover.  It requires the historical heading plus every distinctive
+    firing-rule and session-end fingerprint, and only considers content after
+    a complete managed block.  This makes deploy able to retire the stale STC
+    tail without gaining authority over unrelated user rules.
+    """
+    if not text:
+        return text, False
+    managed_end = text.find(STC_END)
+    if managed_end == -1:
+        return text, False
+    tail_start = text.find("# Global rules", managed_end + len(STC_END))
+    if tail_start == -1:
+        return text, False
+    candidate = text[tail_start:]
+    if not all(fingerprint in candidate for fingerprint in _LEGACY_TAIL_FINGERPRINTS):
+        return text, False
+    return text[:tail_start].rstrip() + "\n", True
+
 
 def _read(filepath):
     try:
@@ -73,7 +112,7 @@ def _compose(before, body, after):
     if b:
         parts.append(b + "\n")
     parts.append(STC_END + "\n")
-    if after:
+    if after.strip():
         # one blank line after the block, then the user content verbatim
         parts.append("\n" + after.lstrip("\n"))
     return "".join(parts)
@@ -91,13 +130,18 @@ def inject_block(filepath, content, create=True):
     if text is None and not create:
         raise FileNotFoundError(filepath)
 
+    text, retired_legacy = strip_known_legacy_global_rules_tail(text)
     before, old_body, after = _split(text)
     new_body = content.strip("\n")
 
     if old_body is None:
         action = "created" if text is None else "inserted"
     elif old_body.strip("\n") == new_body:
-        return ("noop", False)  # identical block → nothing to do
+        if not retired_legacy:
+            return ("noop", False)  # identical block → nothing to do
+        with open(filepath, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return ("retired-legacy", True)
     else:
         action = "replaced"
 

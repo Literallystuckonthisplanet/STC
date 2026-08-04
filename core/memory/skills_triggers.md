@@ -24,7 +24,6 @@ playbook § Memory-instruction style).
 | `improve-architecture` | roughly every 3 completed large tasks (strategy, whole codebase) | I offer it to the user |
 | `prototype` | "show me options", "which is better", "compare approaches" | I offer it to the user |
 | `to-spec` + `to-tasks` | large: spec + tasks (after the plan is finalised); medium: tasks only (when taken into work) | I do |
-| compact / session-end | "compact/save the context", session end (a hook reminds) | I do |
 | `caveman` | "briefly", "fewer tokens"; agent pipelines | the user, or I in sub-agent prompts |
 
 Agent checks (`code-reviewer`, `security-arch`, `e2e`, `security-deps`, legal
@@ -89,10 +88,8 @@ strategy (the whole base), unlike a code review (tactics, a diff). Surface
 Condition: a domain glossary (`CONTEXT.md`) should exist before the first run.
 Cue for the user: "it's been a few large tasks — time for an architecture pass?"
 
-**Compact / session-end** are harness/runtime concerns, not memory commands.
-The H03 hook no longer parses compact or session-end phrases and only retains
-the SELF-EXEC and secret-in-prompt reminder. Raw transcripts are processed by
-the independent offline ingest job.
+The independent offline ingest job processes raw transcripts and prepares the
+monthly review; memory changes are materialized through that review flow.
 
 **`prototype`** — a throwaway artifact for a decision: the user sees something
 concrete instead of hearing a description. Two modes: LOGIC (a tiny terminal

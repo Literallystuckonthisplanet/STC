@@ -67,7 +67,6 @@ vars:
   HARNESS_NAME:  "zcode"
   MEMORY_DIR:    "${HOME}/Work/memory"            # canonical workspace memory shared by all harnesses
   STC_CORE:      "${HOME}/.stc/core"              # shared cross-harness rules/memory (H06 injects from here)
-  COMPACT_CMD:   "/compact"                        # harness-native compact command
   SECRETS_ENV:   "${HOME}/.stc/secrets.env"
   RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
 
@@ -110,7 +109,7 @@ hooks:
   capabilities:
     H01_block_dangerous_git:   { supported: true, matcher: ["Bash"],                                  binding: { file: block-dangerous-git.sh } }
     H02_playwright_reminder:   { supported: true, matcher: ["mcp__playwright__browser"],              binding: { file: playwright_reminder.sh } }
-    H03_stop_services:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: stop_services_reminder.sh } }
+    H03_prompt_safety:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: prompt-safety-reminder.sh } }
     H04_agent_reuse_contract:  { supported: degrade, matcher: ["Agent"],                              binding: { file: agent-reuse-contract.sh }, note: "matcher is Agent (untyped), not Task" }
     H05_secret_scan_memory:    { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: secret-scan-memory.sh } }
     H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",              binding: { file: session-start-context.sh } }
@@ -233,7 +232,6 @@ skills:
     code-graph:     { supported: true, binding: { required: true } }   # S18 — REQUIRED
     llm-wiki:       { supported: true }                                # S19
     transcript-history: { supported: true }                            # S20 — unified cross-harness transcript corpus
-    session-checkpoint: { supported: false }                           # retired: raw transcripts + offline ingest are the handoff
 
 # ============================================================
 # LAYER 8 — permissions

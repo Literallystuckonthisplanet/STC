@@ -46,7 +46,6 @@ vars:
   HARNESS_DIR:   "${HOME}/.<your-harness>"
   HARNESS_NAME:  "<your-harness>"
   MEMORY_DIR:    "<where project memory lives>"
-  COMPACT_CMD:   "<harness-native compact command>"
   SECRETS_ENV:   "<the .env file>"
   RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
 
@@ -90,7 +89,7 @@ hooks:
   capabilities:
     H01_block_dangerous_git:   { supported: true|false, matcher: ["Bash"],                                  binding: { file: block-dangerous-git.sh } }
     H02_playwright_reminder:   { supported: true|false, matcher: ["mcp__playwright__browser"],              binding: { file: playwright_reminder.sh } }
-    H03_stop_services:         { supported: true|false, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: stop_services_reminder.sh } }
+    H03_prompt_safety:         { supported: true|false, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: prompt-safety-reminder.sh } }
     H04_agent_reuse_contract:  { supported: true|false, matcher: ["<dispatch-tool>"],                       binding: { file: agent-reuse-contract.sh } }
     H05_secret_scan_memory:    { supported: true|false, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: secret-scan-memory.sh } }
     H06_session_start_context: { supported: true|false, matcher: ["*"], event: "SessionStart",              binding: { file: session-start-context.sh } }

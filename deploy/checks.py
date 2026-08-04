@@ -89,6 +89,13 @@ def precheck(stc, registry, provider, adapters, core_dir):
     mcp = stc.get("mcp", {})
     if not mcp.get("playwright", {}).get("enabled"):
         errs.append("mcp.playwright: REQUIRED capability is not enabled:true.")
+    cdp_port = mcp.get("playwright", {}).get("cdp_port", 9222)
+    try:
+        cdp_port_number = int(cdp_port)
+    except (TypeError, ValueError):
+        cdp_port_number = 0
+    if str(cdp_port_number) != str(cdp_port) or not 1 <= cdp_port_number <= 65535:
+        errs.append("mcp.playwright.cdp_port must be an integer from 1 to 65535.")
     if not mcp.get("graphify", {}).get("enabled"):
         import shutil
         cli = os.environ.get("GRAPHIFY_CLI", "")
@@ -578,6 +585,11 @@ def _settings_collisions(patch, live):
                     continue
                 for u in u_entries:
                     if not isinstance(u, dict):
+                        continue
+                    # A tagged entry is STC-owned even if a capability update
+                    # renamed its script or widened its matcher. Merge/prune
+                    # owns that lifecycle; it is never a user collision.
+                    if u.get("_stc_managed") is True:
                         continue
                     # skip STC's own legacy entries — merge() absorbs them.
                     if _is_stc_legacy_entry(u, stc_basenames):

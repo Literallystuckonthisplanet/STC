@@ -27,13 +27,15 @@
 # [DEP-4] + to-spec/to-tasks + H21 (exit-plan-gate) + H04 (agent contract).
 #
 # Render-time vars: ${SESSION_ID} (injected by the harness), ${USER_LANG},
-# ${HARNESS_DIR}, ${MEMORY_DIR}, ${DOCS_ROOT}, ${STC_CORE}.
+# ${HARNESS_NAME}, ${HARNESS_DIR}, ${MEMORY_DIR}, ${DOCS_ROOT}, ${STC_CORE}.
 
 INPUT=$(cat)
 SESSION="${SESSION_ID:-$(echo "$INPUT" | jq -r '.session_id // "nosession"')}"
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
 AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // ""')
 USER_LANG="${USER_LANG:-en}"
+HARNESS_NAME="${HARNESS_NAME:-claude}"
+PERMISSION_MODE=$(echo "$INPUT" | jq -r '.permission_mode // empty')
 M="/tmp/stc-buyvsbuild-${SESSION}"          # buy-vs-build inject: once/session
 ARM="/tmp/stc-execslice-armed-${SESSION}"   # orchestrator gate armed (plan entered)
 
@@ -66,6 +68,27 @@ esac
 MSG="🛒 buy-vs-build: before writing a non-trivial piece by hand — a new domain capability >~50 lines OR the territory of typical libraries (parsing/validation/dates/rate-limit/retries/files/crypto/state-machines/HTTP-clients) — evaluate a READY solution: the docs agent (Context7, known-library API) or the research agent (find+compare maturity/support/size). Fix the decision as an ADR line in the spec: 'Took X / by hand, because Y'. Do not invent what a mature library closes; do not pull a library for something trivial — the threshold is deliberate."
 
 emit() { : > "$M"; jq -cn --arg c "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}'; exit 0; }
+
+# Codex has no EnterPlanMode/ExitPlanMode tool pair. Its real edit payload is
+# apply_patch with the target path inside tool_input.input/command. H14 emits a
+# buy-vs-build reminder for a normal production patch; plan-mode enforcement is
+# H21's job. This branch is harness-specific so Claude's existing gate/backstop
+# remains unchanged.
+if [ "$HARNESS_NAME" = "codex" ]; then
+  if [ "$TOOL" != "apply_patch" ] || [ -n "$AGENT_ID" ]; then
+    exit 0
+  fi
+  # H21 owns the plan-mode decision. Do not turn a normal edit into a model
+  # escalation merely because Codex reports permission_mode=plan.
+  [ "$PERMISSION_MODE" = "plan" ] && exit 0
+  PATCH_TEXT=$(echo "$INPUT" | jq -r '.tool_input.input // .tool_input.command // .tool_input.patch // empty')
+  FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+  if [ -z "$FILE" ]; then
+    FILE=$(printf '%s\n' "$PATCH_TEXT" | sed -nE 's/^\*\*\* (Add|Update|Delete) File: (.*)$/\2/p' | head -1)
+  fi
+  [ -z "$FILE" ] && exit 0
+  emit "$MSG (Codex apply_patch: target extracted from the patch payload; routine production stays on the configured Luna route.)"
+fi
 
 case "$TOOL" in
   EnterPlanMode)

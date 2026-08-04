@@ -25,4 +25,5 @@ def test_h06_size_report_exposes_startup_budget_overage(tmp_path):
         (tmp_path / "rules" / f"{name}.md").write_text("x" * 10000, encoding="utf-8")
     report = audit.h06_size_report(tmp_path)
     assert report["total_bytes"] == 30000
-    assert report["status"] == "warn"
+    assert report["limit_bytes"] == 10000
+    assert report["status"] == "fail"

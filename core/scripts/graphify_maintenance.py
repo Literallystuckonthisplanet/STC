@@ -19,6 +19,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -31,6 +33,24 @@ SEMANTIC_EXCLUDES = (
     "*.yaml", "*.yml", "*.pdf", "*.png", "*.jpg", "*.jpeg",
     "*.gif", "*.webp", "*.svg", "*.docx", "*.xlsx",
 )
+DEFAULT_STATE_FILE = Path("~/Work/memory/stc-scheduler/graphify-state.json")
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _quality_status(value: object) -> str:
+    value = str(value or "").strip().upper()
+    return value if value in {"VERIFIED", "UNVERIFIED"} else "UNVERIFIED"
+
+
+def _set_health(record: dict) -> dict:
+    state = record.get("state", "missing")
+    record["health"] = state
+    record["health_status"] = str(state).upper()
+    record["healthy"] = state == "healthy"
+    return record
 
 
 def _graph_file(project: Path) -> Path:
@@ -47,16 +67,54 @@ def _read_head(project: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def scheduler_settings(config_path: Path | str) -> dict[str, object]:
+    """Return scheduler settings with safe defaults for standalone CLI use."""
+    settings: dict[str, object] = {
+        "frequency": "daily",
+        "hour": 10,
+        "minute": 5,
+        "state_file": DEFAULT_STATE_FILE.expanduser().resolve(),
+    }
+    path = Path(config_path).expanduser()
+    try:
+        import yaml
+
+        config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        scheduler = ((config.get("graphify") or {}).get("scheduler") or {})
+        if isinstance(scheduler, dict):
+            for key in ("frequency", "hour", "minute"):
+                if key in scheduler:
+                    settings[key] = scheduler[key]
+            if scheduler.get("state_file"):
+                settings["state_file"] = Path(
+                    os.path.expandvars(str(scheduler["state_file"]))
+                ).expanduser().resolve()
+    except (OSError, ValueError, TypeError):
+        pass
+    return settings
+
+
+def maintenance_state_path(
+    config_path: Path | str,
+    override: Path | str | None = None,
+) -> Path:
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(scheduler_settings(config_path)["state_file"])
+
+
 def inspect_project(project: Path | str, head: str | None = None) -> dict:
     """Return a stable, JSON-friendly health record for one project."""
     project = Path(project).expanduser().resolve()
     out = project / "graphify-out"
     graph = out / "graph.json"
     head = _read_head(project) if head is None else head
+    is_git = bool(head) or (project / ".git").exists()
     record = {
         "project": str(project),
         "name": project.name,
         "head": head,
+        "vcs": "git" if is_git else "directory",
         "graph_present": graph.is_file(),
         "report_present": (out / "GRAPH_REPORT.md").is_file(),
         "viewer_present": (out / "graph.html").is_file(),
@@ -66,28 +124,48 @@ def inspect_project(project: Path | str, head: str | None = None) -> dict:
         "built_at_commit": "",
         "nodes": 0,
         "links": 0,
+        "semantic_status": "UNVERIFIED",
+        "query_status": "UNVERIFIED",
+        "semantic_quality": "UNVERIFIED",
+        "query_quality": "UNVERIFIED",
         "state": "missing",
     }
     if not graph.is_file():
-        return record
+        return _set_health(record)
 
     try:
         data = json.loads(graph.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         record["state"] = "invalid"
         record["error"] = str(exc)
-        return record
+        return _set_health(record)
 
     record["built_at_commit"] = str(data.get("built_at_commit") or "")
     record["nodes"] = len(data.get("nodes") or [])
     record["links"] = len(data.get("links") or [])
-    if record["built_at_commit"] and head and record["built_at_commit"] != head:
-        record["state"] = "stale"
+    record["semantic_status"] = _quality_status(data.get("semantic_status"))
+    record["query_status"] = _quality_status(data.get("query_status"))
+    record["semantic_quality"] = record["semantic_status"]
+    record["query_quality"] = record["query_status"]
+    if is_git:
+        if not head or not record["built_at_commit"]:
+            record["state"] = "unhealthy"
+        elif record["built_at_commit"] != head:
+            record["state"] = "stale"
+        elif not record["viewer_present"] or not record["tree_present"]:
+            record["state"] = "incomplete"
+        elif record["semantic_status"] != "VERIFIED" or record["query_status"] != "VERIFIED":
+            record["state"] = "unverified"
+        else:
+            record["state"] = "healthy"
     elif not record["viewer_present"] or not record["tree_present"]:
         record["state"] = "incomplete"
     else:
-        record["state"] = "healthy"
-    return record
+        # A directory project has no immutable git commit to stamp. Its daily
+        # refresh is therefore explicit and its quality remains UNVERIFIED,
+        # never falsely healthy.
+        record["state"] = "unverified"
+    return _set_health(record)
 
 
 def plan_actions(status: dict) -> list[str]:
@@ -96,13 +174,63 @@ def plan_actions(status: dict) -> list[str]:
     if state in {"missing", "invalid"}:
         return ["bootstrap"]
     actions: list[str] = []
-    if state == "stale":
+    if (
+        state == "stale"
+        or (state == "unhealthy" and status.get("head"))
+        or (status.get("vcs") == "directory" and status.get("graph_present"))
+    ):
         actions.append("refresh")
     if not status.get("viewer_present") or not status.get("tree_present"):
         actions.append("tree")
     if status.get("memory_present") and not status.get("lessons_present"):
         actions.append("reflect")
     return actions
+
+
+def build_state(
+    statuses: Iterable[dict],
+    *,
+    status: str,
+    started_at: str,
+    completed_at: str | None = None,
+    error: str | None = None,
+) -> dict:
+    projects: dict[str, dict] = {}
+    for record in statuses:
+        project = record.get("project")
+        if not project:
+            continue
+        projects[str(Path(project).expanduser().resolve())] = {
+            "head": record.get("head", ""),
+            "built_at_commit": record.get("built_at_commit", ""),
+            "state": record.get("state", "missing"),
+            "semantic_status": record.get("semantic_status", "UNVERIFIED"),
+            "query_status": record.get("query_status", "UNVERIFIED"),
+        }
+    payload = {
+        "schema_version": 1,
+        "status": status,
+        "started_at": started_at,
+        "completed_at": completed_at or "",
+        "projects": projects,
+    }
+    if error:
+        payload["error"] = error
+    return payload
+
+
+def write_state(path: Path | str, payload: dict) -> None:
+    path = Path(path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, sort_keys=True)
+            fh.write("\n")
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
 
 
 def discover_projects(root: Path | str) -> list[Path]:
@@ -135,15 +263,73 @@ def configured_projects(config_path: Path | str) -> tuple[Path | None, list[str]
     names = projects.get("names") if isinstance(projects, dict) else projects
     if not isinstance(names, list):
         names = []
+    paths = projects.get("paths", []) if isinstance(projects, dict) else []
+    if not isinstance(paths, list):
+        paths = []
     root = None
     if isinstance(projects, dict) and projects.get("root"):
         root = Path(os.path.expandvars(str(projects["root"]))).expanduser()
-    return root, [str(name) for name in names if str(name).strip()]
+    configured = [*names, *paths]
+    return root, [str(name) for name in configured if str(name).strip()]
 
 
 def _run(command: list[str], cwd: Path) -> None:
-    print("$", " ".join(command))
-    subprocess.run(command, cwd=str(cwd), check=True)
+    actual = command
+    if command and command[0] == "graphify":
+        actual = [os.environ.get("GRAPHIFY_CLI", "graphify"), *command[1:]]
+    print("$", " ".join(actual))
+    subprocess.run(actual, cwd=str(cwd), check=True)
+
+
+def _repo_status_paths(project: Path) -> set[str]:
+    result = subprocess.run(
+        ["git", "-C", str(project), "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    paths: set[str] = set()
+    for line in result.stdout.splitlines():
+        payload = line[3:] if len(line) >= 4 else ""
+        candidates = payload.split(" -> ") if " -> " in payload else [payload]
+        paths.update(path.strip().lstrip("./") for path in candidates if path.strip())
+    return paths
+
+
+def _tracked_diff(project: Path) -> str:
+    result = subprocess.run(
+        [
+            "git", "-C", str(project), "diff", "--no-ext-diff", "--binary",
+            "HEAD", "--", ".", ":(exclude)graphify-out/**", ":(exclude)SNAPSHOT.md",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout if result.returncode == 0 else ""
+
+
+def _generated_repo_path(path: str) -> bool:
+    path = path.replace(os.sep, "/")
+    return path == "SNAPSHOT.md" or path.startswith("graphify-out/")
+
+
+def _assert_background_scope(
+    project: Path,
+    before_paths: set[str],
+    before_diff: str,
+) -> None:
+    after_paths = _repo_status_paths(project)
+    changed_paths = {
+        path for path in before_paths ^ after_paths if not _generated_repo_path(path)
+    }
+    if changed_paths or before_diff != _tracked_diff(project):
+        changed = ", ".join(sorted(changed_paths)) or "tracked content"
+        raise RuntimeError(
+            f"background maintenance changed non-generated repository state: {changed}"
+        )
 
 
 def _stamp_commit(project: Path, graph: Path) -> None:
@@ -179,25 +365,23 @@ def _bootstrap_structural_graph(project: Path) -> None:
 
 def refresh_project(project: Path, bootstrap_missing: bool = False) -> dict:
     """Refresh one project and return its post-refresh inspection record."""
+    project = Path(project).expanduser().resolve()
+    before_paths = _repo_status_paths(project)
+    before_diff = _tracked_diff(project)
     before = inspect_project(project)
     graph = _graph_file(project)
     if before["state"] in {"missing", "invalid"}:
         if not bootstrap_missing:
             return before
-        try:
-            _run(["graphify", "extract", ".", "--no-cluster"], project)
-        except subprocess.CalledProcessError:
-            print(
-                f"[graphify] full bootstrap unavailable for {project.name}; "
-                "retrying structural code-only bootstrap (semantic extraction "
-                "remains explicit)",
-                file=sys.stderr,
-            )
-            _bootstrap_structural_graph(project)
-    elif before["state"] == "stale":
+        _bootstrap_structural_graph(project)
+    else:
+        # The daily job refreshes even a commit-current graph so uncommitted
+        # working-tree edits are reflected. HEAD equality alone cannot prove
+        # that a local development map is current.
         _run(["graphify", "update", ".", "--no-cluster"], project)
 
     if not graph.is_file():
+        _assert_background_scope(project, before_paths, before_diff)
         return inspect_project(project)
     out = graph.parent
     _stamp_commit(project, graph)
@@ -220,15 +404,28 @@ def refresh_project(project: Path, bootstrap_missing: bool = False) -> dict:
             "--out", str(out / "reflections" / "LESSONS.md"),
             "--graph", str(graph),
         ], project)
+    _assert_background_scope(project, before_paths, before_diff)
     return inspect_project(project)
 
 
 def _selected_projects(root: Path, names: Iterable[str]) -> list[Path]:
-    discovered = discover_projects(root)
+    names = list(names)
     if not names:
-        return discovered
-    wanted = set(names)
-    return [p for p in discovered if p.name in wanted]
+        return discover_projects(root)
+    # An explicit registry is authoritative.  It may include a project that
+    # is intentionally not a git checkout (for example a local assistant or a
+    # document/code workspace); maintenance can still build a structural map.
+    selected: list[Path] = []
+    seen: set[Path] = set()
+    for name in names:
+        candidate = Path(os.path.expandvars(str(name))).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        if candidate.is_dir() and candidate not in seen:
+            selected.append(candidate)
+            seen.add(candidate)
+    return selected
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--project", action="append", default=[])
     parser.add_argument("--bootstrap-missing", action="store_true")
+    parser.add_argument("--state-file")
     args = parser.parse_args(argv)
 
     configured_root, configured_names = configured_projects(args.config)
@@ -254,14 +452,47 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No projects found under {root}", file=sys.stderr)
         return 1
 
-    for project in projects:
-        status = (
-            inspect_project(project)
-            if args.action == "audit"
-            else refresh_project(project, args.bootstrap_missing)
+    started_at = _now()
+    statuses: list[dict] = []
+    state_path = maintenance_state_path(args.config, args.state_file)
+    if args.action == "refresh":
+        write_state(
+            state_path,
+            build_state(statuses, status="running", started_at=started_at),
         )
-        status["actions"] = plan_actions(status)
-        print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+    try:
+        for project in projects:
+            status = (
+                inspect_project(project)
+                if args.action == "audit"
+                else refresh_project(project, args.bootstrap_missing)
+            )
+            status["actions"] = plan_actions(status)
+            statuses.append(status)
+            print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+    except Exception as exc:
+        if args.action == "refresh":
+            write_state(
+                state_path,
+                build_state(
+                    statuses,
+                    status="failed",
+                    started_at=started_at,
+                    completed_at=_now(),
+                    error=str(exc),
+                ),
+            )
+        raise
+    if args.action == "refresh":
+        write_state(
+            state_path,
+            build_state(
+                statuses,
+                status="success",
+                started_at=started_at,
+                completed_at=_now(),
+            ),
+        )
     return 0
 
 

@@ -11,8 +11,8 @@
 #     across harnesses. The always-context bundle (CLAUDE.stc.md/AGENTS.stc.md)
 #     is a fallback pointer, not the loader.
 #   - on source=startup/clear → infra-audit cadence nudge (≥30 days → remind).
-# Resume/compact are not memory lifecycle events; H06 only owns initial
-# always-context delivery.
+# H06 owns initial always-context delivery; resume/compact are pass-through
+# sources for this hook.
 #
 # Render-time vars (resolved by deploy.py from stc.yaml):
 #   ${STC_CORE}    — the shared rules/memory root (~/.stc/core), harness-neutral.

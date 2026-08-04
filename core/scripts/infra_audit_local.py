@@ -26,6 +26,7 @@ REQUIRED_CORE = (
     "skills/infra-audit/SKILL.md",
     "skills/code-graph/SKILL.md",
 )
+H06_MAX_BYTES = 10_000
 
 
 def adapter_delivery_issues(name: str, adapter: dict, core_dir: Path) -> list[str]:
@@ -63,17 +64,19 @@ def _result(name: str, status: str, details=None) -> dict:
 
 
 def h06_size_report(core_dir: Path | str) -> dict:
-    """Measure the H06 firing-rule payload without changing its delivery."""
+    """Measure and enforce the compact H06 firing-rule payload contract."""
     core_dir = Path(core_dir)
     sizes = {}
     for name in ("behavior", "pev", "session"):
         path = core_dir / "rules" / f"{name}.md"
         sizes[name] = path.stat().st_size if path.is_file() else 0
     total = sum(sizes.values())
-    # H06's own source comments document a roughly 24 KB additionalContext
-    # ceiling for the constrained harness. This is an observation gate only;
-    # the reduction decision remains explicit and separate.
-    return {"sizes": sizes, "total_bytes": total, "status": "warn" if total > 24000 else "pass"}
+    return {
+        "sizes": sizes,
+        "total_bytes": total,
+        "limit_bytes": H06_MAX_BYTES,
+        "status": "fail" if total > H06_MAX_BYTES else "pass",
+    }
 
 
 def audit_repo(repo: Path | str, projects_root: Path | str | None = None) -> dict:
@@ -106,6 +109,7 @@ def audit_repo(repo: Path | str, projects_root: Path | str | None = None) -> dic
     h06 = h06_size_report(core)
     h06_details = [f"{name}={size} bytes" for name, size in h06["sizes"].items()]
     h06_details.append(f"total={h06['total_bytes']} bytes")
+    h06_details.append(f"hard_limit={h06['limit_bytes']} bytes")
     checks.append(_result("h06-startup-payload", h06["status"], h06_details))
 
     try:

@@ -11,6 +11,44 @@ release notes.
 
 ## [Unreleased]
 
+### Added — independent runtime verification and project navigation
+- Weekly deterministic STC audit, weekly AgentShield scan, and monthly
+  read-only Codex live canary run through versioned `launchd` jobs and write
+  human-readable reports to the Obsidian-backed memory root. Local Qwen is an
+  optional report editor only; it cannot change deterministic PASS/FAIL.
+- Daily Graphify maintenance now covers the full configured project registry;
+  generated code maps remain local. A dependent Snapshot job writes a central
+  project index plus ignored per-project `SNAPSHOT.md` navigation files.
+- Safe memory-root migration consolidates cross-harness memory under
+  `~/Work/memory`, preserving conflicts and retired roots in recoverable
+  archives. A deterministic ICS generator exposes every planned job and the
+  weekly report-review reminder in Calendar.
+
+### Changed — compact startup context and Luna-first Codex routing
+- Always-context is limited to three compact firing-rule files plus the user
+  profile and has a hard 10 KB audit gate. Detailed playbooks and references
+  remain lazy.
+- Codex main and ordinary typed agents explicitly use Luna Max. Terra/Sol are
+  escalation-only; Caveman compression is limited to read-only research/docs
+  roles. Agent sandbox declarations and current Codex hook envelopes are
+  rendered and behavior-tested.
+- Session-end memory rotation, in-session checkpoints, and pre-compact memory
+  saving are removed. Raw cross-harness transcripts and offline ingest are the
+  continuity mechanism.
+
+### Fixed — live behavior gaps found by the STC audit
+- Codex top-level TOML defaults now update safely during deploy instead of
+  being silently ignored by the namespaced MCP-only merge path.
+- Managed hooks remain recognized across script renames, stale session-end
+  tails are removed only by exact legacy matching, and manifest pruning rejects
+  absolute, escaping, or symlinked targets.
+- H01 now hard-blocks `git commit --no-verify` and `-n`; the Playwright CDP port
+  is constrained to an integer from 1–65535. Launchd bootstrap retries bounded
+  transient failures.
+- Coverage expanded from renderer smoke tests to 201 adapter, hook behavior,
+  deploy safety, memory migration, Graphify/Snapshot, weekly audit, canary,
+  launchd, and calendar tests.
+
 ### Added — isolated transcript memory pipeline and monthly Obsidian review
 - **`core/scripts/transcript_corpus.py` + `core/scripts/memory_ingest.py`:** import
   the shared cross-harness transcript corpus, extract explicit `📌 MEMORY` /

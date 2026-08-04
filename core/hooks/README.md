@@ -49,9 +49,9 @@ H08 (link-integrity), H13 (web-route), H14 (buy-vs-build), H18 (graphify-first).
 
 ## The 6 event-guards (flow-point → file)
 
-`core/hooks/` holds 21 guard scripts: H01–H19, H21, H22 (H20 was never
-assigned — a historical numbering gap, not a removed hook; do not invent a
-script to fill it). On the claude harness 20 of the 21 are wired into the
+`core/hooks/` holds 20 guard scripts: H01–H18, H21, H22 (H19 is historical
+and lives only in the retired-code register; H20 was never assigned). On the
+claude harness the adapter declares which of these are wired into the
 `settings.json` matcher groups across ~6 flow points; H11 ships in `core/`
 but is `supported: false` on the claude adapter (see "Beyond the 6-guard
 map" below). One file = one guard (single-responsibility, auditable).
@@ -63,7 +63,7 @@ map" below). One file = one guard (single-responsibility, auditable).
 | **read-first router** (edit project code) | `read-first-router.sh` H10 | 💉 domain reminders (DS / security / docs / data / tdd / legal / reuse) |
 | **git guard** (Bash) | `block-dangerous-git.sh` H01 | 🔒 dangerous patterns + 🔒 I08 push-to-main + 💉 I17 commit-verify |
 | **agent guard** (Task) | `agent-reuse-contract.sh` H04 | 🔒 I21 build-agent reuse-contract + 🔒 FR-28 fork-protocol marker (executors must stop on architectural/business forks, DECIDED lines for trivia) + 💉 I20 reviewer baseline |
-| **session guards** (UserPromptSubmit / SessionStart / Stop) | `stop_services_reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 + `prompt-lens.sh` H22 | H03: SELF-EXEC + I05b secret-in-prompt. H06: initial always-context inject + audit cadence. H08: link integrity. H22: prompt lens (FR-30) — additive hint, NOT a rewrite. H19 is retired. |
+| **session guards** (UserPromptSubmit / SessionStart / Stop) | `prompt-safety-reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 + `prompt-lens.sh` H22 | H03: SELF-EXEC + I05b secret-in-prompt. H06: initial always-context inject + audit cadence. H08: link integrity. H22: prompt lens (FR-30) — additive hint, NOT a rewrite. |
 
 Beyond the 6-guard map (legitimate extras):
 
@@ -101,7 +101,7 @@ STC source. Example matcher routing (Claude Code shape):
       { "matcher": "Grep|Bash", "hooks": [{"type":"command","command":".../graphify-first.sh"}] },
       { "matcher": "WebSearch|WebFetch", "hooks": [{"type":"command","command":".../web-route-guard.sh"}] }
     ],
-    "UserPromptSubmit": [{ "hooks": [{"type":"command","command":".../stop_services_reminder.sh"}] }],
+    "UserPromptSubmit": [{ "hooks": [{"type":"command","command":".../prompt-safety-reminder.sh"}] }],
     "SessionStart": [{ "hooks": [{"type":"command","command":".../session-start-context.sh"}] }],
     "Stop": [{ "hooks": [{"type":"command","command":".../link-integrity-guard.sh"}] }]
   }
@@ -120,8 +120,6 @@ Each hook references `${VARS}` resolved by `deploy.py` from `stc.yaml`:
 | `${HARNESS_NAME}` | adapter (`claude`) | H16 (infra-scope skip) |
 | `${USER_LANG}` | `user.language` | all (message language) |
 | `${USER_NAME}` | `user.name` | H03 |
-| `${DEV_PORTS}` | `workspace.dev_ports` | H03 |
-| `${COMPACT_CMD}` | adapter (harness-native compact) | no universal memory hook |
 | `${SECRETS_ENV}` | adapter (the .env file) | H03, H05 |
 | `${RELEASE_ACK_FILE}` | adapter (per-session marker path) | H01 |
 | `${CDP_PORT}` | `mcp.playwright.cdp_port` | H02 |

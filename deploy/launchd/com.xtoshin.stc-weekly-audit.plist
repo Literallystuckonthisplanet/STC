@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.xtoshin.stc-weekly-audit</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/xtoshin/Work/STC/core/scripts/weekly_audit.py</string>
+    <string>--repo</string>
+    <string>/Users/xtoshin/Work/STC</string>
+    <string>--memory-root</string>
+    <string>/Users/xtoshin/Work/memory</string>
+    <string>--corpus-root</string>
+    <string>/Users/xtoshin/Work/transcripts</string>
+    <string>--agentshield-root</string>
+    <string>/Users/xtoshin/Work/memory/infra-audit/agentshield</string>
+    <string>--launchd-root</string>
+    <string>/Users/xtoshin/Work/memory</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>STC_LOCAL_MODEL</key>
+    <string>qwen3:4b</string>
+    <key>STC_OLLAMA_ENDPOINT</key>
+    <string>http://127.0.0.1:11434/api/chat</string>
+    <key>PATH</key>
+    <string>/Users/xtoshin/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <!-- RunAtLoad covers boot/wake after a missed calendar event. The Python
+       ISO-week guard makes the load and Monday trigger idempotent. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/xtoshin/Work/memory/weekly-audit/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/xtoshin/Work/memory/weekly-audit/launchd.stderr.log</string>
+</dict>
+</plist>

@@ -54,7 +54,6 @@ vars:
   HARNESS_NAME:  "claude"
   MEMORY_DIR:    "${HOME}/Work/memory"    # canonical workspace memory shared by all harnesses
   STC_CORE:      "${HOME}/.stc/core"       # shared cross-harness rules/memory (H06 injects from here)
-  COMPACT_CMD:   "/compact"                 # harness-native compact command
   SECRETS_ENV:   "${HOME}/.claude/.env"
   RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
 
@@ -112,7 +111,7 @@ hooks:
     # the event hooks, where matcher="*" carries no event information.
     H01_block_dangerous_git:   { supported: true, matcher: ["Bash"],                                  binding: { file: block-dangerous-git.sh } }
     H02_playwright_reminder:   { supported: true, matcher: ["mcp__playwright__browser"],              binding: { file: playwright_reminder.sh } }
-    H03_stop_services:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: stop_services_reminder.sh } }
+    H03_prompt_safety:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",          binding: { file: prompt-safety-reminder.sh } }
     H04_agent_reuse_contract:  { supported: true, matcher: ["Task"],                                  binding: { file: agent-reuse-contract.sh } }
     H05_secret_scan_memory:    { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: secret-scan-memory.sh } }
     H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",              binding: { file: session-start-context.sh } }
@@ -131,7 +130,6 @@ hooks:
     H16_integration_docs_gate: { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: integration-docs-gate.sh } }
     H17_secret_read_guard:     { supported: true, matcher: ["Read|Glob|Grep"],                         binding: { file: secret-read-guard.sh } }   # L8 read-side; pairs with permissions.deny (claude runs BOTH — deny is faster when it short-circuits pre-tool, this hook covers any harness gap)
     H18_graphify_first:        { supported: true, matcher: ["Grep|Bash"],                               binding: { file: graphify-first.sh } }   # in a repo with a built code-graph, nudge `graphify query` over grep-chains (acknowledge-once)
-    H19_precompact_memory:     { supported: false, matcher: ["*"], event: "PreCompact",                 binding: { file: precompact-memory-guard.sh } }   # retired: compaction is not a memory boundary
     H21_exit_plan_grill:       { supported: true, matcher: ["ExitPlanMode"],                            binding: { file: exit-plan-grill.sh } }   # FR-28 exit-plan-gate: leaving plan mode without AC/DoD + block→executor decomposition + a forks-resolved line → hard-block once (acknowledge-once; the plan is the dispatch artifact for cheap executors)
     H22_prompt_lens:           { supported: true, matcher: ["*"], event: "UserPromptSubmit",             binding: { file: prompt-lens.sh } }   # FR-30 prompt lens: additive hint (NOT a rewrite) — degree word/dangling ref/open verb/multi-task/nick → flag for echo-reformulation; deterministic, no model; rules counted against the transcript corpus (candidate ≠ bug)
 
@@ -252,7 +250,6 @@ skills:
     code-graph:     { supported: true, binding: { required: true } }   # S18 — REQUIRED capability (graphify)
     llm-wiki:       { supported: true }                                # S19 — Karpathy pattern
     transcript-history: { supported: true }                            # S20 — unified cross-harness transcript corpus
-    session-checkpoint: { supported: false }                           # retired: raw transcripts + offline ingest are the handoff
 
 # ============================================================
 # LAYER 7 — mcp

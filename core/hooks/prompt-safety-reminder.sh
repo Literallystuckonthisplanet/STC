@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# H03 — UserPromptSubmit: small, immediate reminders only.
+# H03 — Prompt safety: small, immediate reminders only.
 #
-# Durable memory is handled outside the harness by memory_ingest.py. H03 no
-# longer infers task transitions, compact boundaries, or session end; those
-# triggers were too unreliable and made the old memory protocol recidivate.
+# Durable memory is handled outside the harness by memory_ingest.py.
 #
 # Render-time vars: ${USER_LANG}, ${SECRETS_ENV}.
 

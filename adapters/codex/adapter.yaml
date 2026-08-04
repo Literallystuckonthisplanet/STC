@@ -34,6 +34,9 @@ harness_facts:
   rules_delivery: "hook"                  # H06 injects rules on SessionStart (verified: Codex supports additionalContext inject); bundle = pointer
   supports_typed_subagents: true          # ~/.codex/agents/*.toml
   subagent_format: "toml"                 # render emits *.stc.toml (name/description/developer_instructions)
+  supports_agent_sandbox_mode: true       # codex --sandbox contract: read-only|workspace-write|danger-full-access
+  default_model: "gpt-5.6-luna"
+  default_reasoning_effort: "max"
   subagent_dispatch_tool: "Agent"         # Codex subagent spawn tool
   hook_config_file: "hooks.json"          # standalone hooks JSON (NOT settings.json)
   hook_event_names:                       # Codex supported subset (verified via docs/hooks.md)
@@ -41,6 +44,7 @@ harness_facts:
     - PostToolUse
     - UserPromptSubmit
     - SessionStart
+    - SubagentStart
     - PreCompact
     - Stop
   mcp_config_file: "config.toml"          # [mcp_servers.*] tables (add-only TOML merge)
@@ -57,7 +61,6 @@ vars:
   HARNESS_NAME:  "codex"
   MEMORY_DIR:    "${HOME}/Work/memory"    # canonical workspace memory shared by all harnesses
   STC_CORE:      "${HOME}/.stc/core"      # shared cross-harness rules/memory (H06 injects from here)
-  COMPACT_CMD:   "/compact"               # harness-native compact command
   SECRETS_ENV:   "${HOME}/.codex/.env"
   RELEASE_ACK_FILE: "/tmp/stc-release-${SESSION_ID}"
 
@@ -98,9 +101,11 @@ rules:
 
 # ============================================================
 # LAYER 3 — hooks
-# Codex hook contract ≈ Claude: stdin carries tool_name/tool_input/session_id/
-# source; inject = hookSpecificOutput.additionalContext; block = exit 2 + stderr
-# (or permissionDecision: deny). The neutral scripts port nearly verbatim.
+# Codex hook contract: stdin carries event-specific top-level fields plus
+# tool_name/tool_input/session_id/permission_mode; SubagentStart exposes
+# agent_type/prompt, while PreToolUse(Agent) keeps the fields under tool_input.
+# Inject = hookSpecificOutput.additionalContext; block = exit 2 + stderr (or
+# permissionDecision: deny). The neutral scripts branch by harness where needed.
 #
 # SHARP EDGES (documented per hook):
 #   - apply_patch: file edits carry tool_name="apply_patch" and the path INSIDE
@@ -120,8 +125,10 @@ hooks:
     H01_block_dangerous_git:   { supported: true, matcher: ["Bash"],                                    binding: { file: block-dangerous-git.sh } }
     H02_playwright_reminder:   { supported: true, matcher: ["mcp__playwright__browser"],                binding: { file: playwright_reminder.sh } }
     # Codex UserPromptSubmit delivers .prompt + accepts bare stdout as additionalContext.
-    H03_stop_services:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",            binding: { file: stop_services_reminder.sh } }
-    H04_agent_reuse_contract:  { supported: true, matcher: ["Agent"],                                   binding: { file: agent-reuse-contract.sh } }
+    H03_prompt_safety:         { supported: true, matcher: ["*"], event: "UserPromptSubmit",            binding: { file: prompt-safety-reminder.sh } }
+    # Current Codex emits SubagentStart with top-level agent_type/prompt and
+    # still emits PreToolUse(Agent) for direct tool dispatch; H04 handles both.
+    H04_agent_reuse_contract:  { supported: true, matcher: ["Agent"], event_matchers: { SubagentStart: ".*", PreToolUse: "Agent" }, events: ["SubagentStart", "PreToolUse"], binding: { file: agent-reuse-contract.sh } }
     # apply_patch normalize: H05/H07/H09/H10/H16 wrap the body in _apply_patch_normalize.sh
     H05_secret_scan_memory:    { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: secret-scan-memory.sh } }
     H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",                binding: { file: session-start-context.sh } }
@@ -136,14 +143,16 @@ hooks:
     H12_acquire_dedup:         { supported: true, matcher: ["Read","Grep","Glob","Bash"],               binding: { file: acquire-dedup-guard.sh } }
     # H13: hosted web tools (WebSearch/WebFetch) bypass local hooks → instruction/skill, not a guard
     H13_web_route:             { supported: false, matcher: ["WebSearch|WebFetch"],                      binding: { file: web-route-guard.sh }, note: "hosted web tools bypass local hooks; enforced via instruction/skill instead" }
-    # H14/H21: no EnterPlanMode/ExitPlanMode in Codex — adapted to a PreToolUse apply_patch pre-write gate
+    # H14/H21 bind real Codex apply_patch payloads; permission_mode=plan is the
+    # planning boundary, while routine default-mode production is not an escalation trigger.
     H14_buy_vs_build:          { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: buy-vs-build-reminder.sh } }
     H15_exec_offload:          { supported: true, matcher: ["Bash"],                                    binding: { file: exec-offload-guard.sh } }
     H16_integration_docs_gate: { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: integration-docs-gate.sh } }
-    H17_secret_read_guard:     { supported: true, matcher: ["Read","Glob","Grep"],                       binding: { file: secret-read-guard.sh } }   # load-bearing — Codex has no permissions.deny engine
+    # H17 also covers Codex unified exec/Bash reads; the Codex-specific body
+    # reports only a protected pattern, never the command or its output.
+    H17_secret_read_guard:     { supported: true, matcher: ["Read","Glob","Grep","Bash","exec","unified_exec","unifiedExec"], binding: { file: block-secret-read.sh } }   # load-bearing — Codex has no permissions.deny engine
     H18_graphify_first:        { supported: true, matcher: ["Grep","Bash"],                             binding: { file: graphify-first.sh } }
-    H19_precompact_memory:     { supported: false, matcher: ["*"], event: "PreCompact",                  binding: { file: precompact-memory-guard.sh } }  # retired: compaction is not a memory boundary
-    H21_exit_plan_grill:       { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: exit-plan-grill.sh }, note: "adapted: no ExitPlanMode event → pre-write gate checking plan/AC discipline" }
+    H21_exit_plan_grill:       { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: exit-plan-grill.sh }, note: "Codex-native apply_patch + permission_mode gate; never falls back to Claude plan files" }
     H22_prompt_lens:           { supported: true, matcher: ["*"], event: "UserPromptSubmit",             binding: { file: prompt-lens.sh } }   # FR-30 prompt lens: additive hint (NOT a rewrite) — degree word/dangling ref/open verb/multi-task/nick → flag for echo-reformulation; deterministic, no model; rules counted against the transcript corpus (candidate ≠ bug)
 
 # ============================================================
@@ -176,7 +185,7 @@ commands:
 subagents:
   realization: "typed agent files in ~/.codex/agents/*.stc.toml (name/description/developer_instructions); dispatched via the Agent tool"
   native_path: "${native_dir}/agents/*.stc.toml"
-  import_syntax: "copy + emit TOML (no tools field; model inherited from parent)"
+  import_syntax: "copy + emit TOML (no tools field; explicit model + sandbox_mode; model overrides only when explicitly escalated)"
   capabilities:
     # Reviewer / QA pipeline
     code-reviewer:  { supported: true,  binding: { model_tier: mid,  skill_link: code-reviewer } }
@@ -191,6 +200,19 @@ subagents:
     cleanup:        { supported: true,  binding: { model_tier: fast, skill_link: null } }
     docs:           { supported: true,  binding: { model_tier: fast, skill_link: docs } }
     harness-docs:   { supported: true,  binding: { model_tier: fast, affinity: claude-only, skill_link: null }, note: "claude-oriented (answers about harness docs); less relevant on codex but harmless" }
+
+# ------------------------------------------------------------
+# Codex routing policy
+# ------------------------------------------------------------
+# The skill remains available by explicit request, but routing never turns on
+# Caveman compression globally. Terra/Sol are explicit output-contract paths.
+routing:
+  default_model: "gpt-5.6-luna"
+  default_reasoning_effort: "max"
+  subagent_compression: "none"
+  escalations:
+    terra: { model: "gpt-5.6-terra", explicit_only: true }
+    sol:   { model: "gpt-5.6-sol", explicit_only: true }
 
 # ============================================================
 # LAYER 6 — skills
@@ -219,7 +241,6 @@ skills:
     code-graph:     { supported: true, binding: { required: true } }   # S18 — REQUIRED capability (graphify)
     llm-wiki:       { supported: true }                                # S19 — Karpathy pattern
     transcript-history: { supported: true }                            # S20 — unified cross-harness transcript corpus
-    session-checkpoint: { supported: false }                           # retired: raw transcripts + offline ingest are the handoff
 
 # ============================================================
 # LAYER 8 — permissions
@@ -229,14 +250,15 @@ skills:
 # ============================================================
 permissions:
   native: false   # no permissions.deny engine — enforced by H17 hook instead
-  realization: "H17_secret_read_guard hook (PreToolUse Read|Glob|Grep)"
-  native_path: "hooks/secret-read-guard.stc.sh"
+  realization: "H17_secret_read_guard hook (PreToolUse Read|Glob|Grep|Bash|exec|unified exec)"
+  native_path: "hooks/block-secret-read.stc.sh"
   deny:
     - "Read(./**/.env)"
     - "Read(./**/.env.local)"
     - "Read(./**/.env.*.local)"
     - "Read(./**/*.pem)"
     - "Read(./**/id_rsa)"
+    - "Read(./**/credentials*)"
 
 # ============================================================
 # LAYER 7 — mcp

@@ -23,6 +23,21 @@ on a project), detail lives in repo docs:
 - **CHANGELOG** — append-only, **thin**: `### YYYY-MM-DD — 1-2 lines`. Read
   only the last entry.
 
+## Generated project snapshots
+
+The central project index is `~/Work/memory/projects/SNAPSHOT.md`. Each
+registered project also has a generated root `SNAPSHOT.md` containing only
+freshness, status, document, memory, and Graphify pointers. The system refreshes
+both at load/wake and once per day; the file is not a handoff or a second Wiki.
+
+`SNAPSHOT.md` is generated and must not be manually edited, staged, committed,
+or included in a release diff. STC installs it in the repository's local git
+exclude file; if it appears in `git status`, repair the local exclude rather
+than adding the file.
+
+Graphify is the code layer only. Project memory remains the source for status,
+decisions, and open questions; the Wiki remains the reviewed knowledge layer.
+
 **Don't duplicate repo docs.** Detail lives in a repo doc (`CLAUDE.md` /
 `DECISIONS.md` / `DATAMODEL.md` / `PLAN.md` / `DEPLOY.md`); memory = a
 pointer + the doc list.

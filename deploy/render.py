@@ -8,7 +8,7 @@ render is testable in isolation and safe to dry-run.
 The result is four things:
   files        — { native_relpath: text }    markdown/script artifacts to write
   json_patches — { "settings.json" | ".mcp.json" | "hooks.json": <dict> }  namespaces to merge
-  toml_patches — { "config.toml": <str> }    STC-owned TOML tables to merge (add-only)
+  toml_patches — { "config.toml": <str> }    STC-owned TOML entries/tables to merge
   marker       — { filepath: content }       the single @import block to inject
                                               into the user's always-context file
   manifest     — list of {path, kind, source} for uninstall + idempotent re-deploy
@@ -46,7 +46,7 @@ PLUGIN_DIR = f"cli/plugins/cache/{PLUGIN_MARKETPLACE}/{PLUGIN_NAME}/{PLUGIN_VERS
 # render substitutes exactly those tokens and leaves all other ${...} (script
 # locals: SESSION, BROKEN, HITS, …) to bash. See _hook_declared_vars().
 RENDER_VARS = {
-    "CDP_PORT", "COMPACT_CMD", "DEPLOY_SCRIPT", "DEV_PORTS", "E2E_CLI_CMD",
+    "CDP_PORT", "DEPLOY_SCRIPT", "E2E_CLI_CMD",
     "HARNESS_DIR", "HARNESS_LIST", "HARNESS_NAME", "MEMORY_DIR", "RELEASE_ACK_FILE",
     "SECRETS_ENV", "SESSION_ID", "STC_CORE", "USER_LANG", "USER_NAME", "DOCS_ROOT",
     "LENS_MIN_LEN", "LENS_MAX_FLAGS",
@@ -153,14 +153,12 @@ def resolve_vars(adapter, stc, provider):
     # stc.yaml-sourced vars (override/complete adapter defaults)
     v["USER_LANG"] = stc.get("user", {}).get("language", "en")
     v["USER_NAME"] = stc.get("user", {}).get("name", "")
-    v["DEV_PORTS"] = " ".join(str(p) for p in stc.get("workspace", {}).get("dev_ports", []))
     v["CDP_PORT"] = str(stc.get("mcp", {}).get("playwright", {}).get("cdp_port", "9222"))
     v["DOCS_ROOT"] = stc.get("doc_backend", {}).get("root", os.path.join(ws_root, ".stc-docs"))
     v["DOCS_ROOT"] = v["DOCS_ROOT"].replace("${workspace.root}", ws_root).replace("${HOME}", home)
-    v["COMPACT_CMD"] = v.get("COMPACT_CMD", "/compact")
     v["E2E_CLI_CMD"] = stc.get("e2e_cli_cmd", "")
     v["USER_LANG"] = stc.get("user", {}).get("language", v.get("USER_LANG", "en"))
-    # DEPLOY_SCRIPT — the path to deploy.py, for session-end infra re-apply.
+    # DEPLOY_SCRIPT — the path to deploy.py for an explicit infra re-apply.
     # Derived from STC_CORE (the shared core root): deploy.py is a sibling's
     # child at <repo>/deploy/deploy.py, i.e. ${STC_CORE}/../deploy/deploy.py.
     # Pre-2026-07-09 this was a phantom token the agent interpreted literally;
@@ -331,10 +329,15 @@ def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
         # SessionStart/Stop/UserPromptSubmit, where matcher="*" carries no
         # event info); otherwise infer from the matcher tool-names.
         explicit_event = cap.get("event")
-        events = [explicit_event] if explicit_event else _matcher_events(matchers)
+        explicit_events = cap.get("events")
+        event_matchers = cap.get("event_matchers", {}) or {}
+        if explicit_events:
+            events = explicit_events
+        else:
+            events = [explicit_event] if explicit_event else _matcher_events(matchers)
         for ev in events:
             wiring["hooks"].setdefault(ev, []).append({
-                "matcher": "|".join(matchers),
+                "matcher": event_matchers.get(ev, "|".join(matchers)),
                 "_stc_managed": True,          # tags this as STC-owned (idempotent
                 "_stc_cap": cap_name,          #   update + uninstall strip)
                 "hooks": [{"type": "command", "command": f"{cmd_prefix}/{out_name}"}],
@@ -549,6 +552,8 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
     tool_map = adapter.get("subagents", {}).get("tool_map", {}) or {}
     facts = adapter.get("harness_facts", {})
     agent_format = facts.get("subagent_format", "markdown")  # "markdown" | "toml"
+    default_model = facts.get("default_model") or provider.get("default_model", "")
+    supports_sandbox = facts.get("supports_agent_sandbox_mode") is True
     for name, cap in caps.items():
         sup = cap.get("supported")
         if sup is False:
@@ -560,23 +565,40 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
         if tier and provider.get("tiers"):
             model_id = provider["tiers"].get(tier, "")
         tools = _resolve_tools(binding.get("tools"), tool_map)
-        dispatch = registry["agents"].get(name, {}).get("dispatches", cap.get("native", ""))
+        registry_binding = registry["agents"].get(name, {})
+        dispatch = registry_binding.get("dispatches", cap.get("native", ""))
+        explicit_model = binding.get("model") or registry_binding.get("model")
+        agent_model = explicit_model or model_id or default_model
+        sandbox_mode = binding.get("sandbox_mode") or registry_binding.get("sandbox_mode")
 
         if sup is True or sup == "true":
             # native typed agent file: generate frontmatter + body from core/
             src = os.path.join(core_dir, "agents", f"{name}.md")
             body = _read(src) if os.path.exists(src) else f"# {name}\n"
+            compression = binding.get("compression") or registry_binding.get("compression")
+            if compression == "caveman":
+                body = body.rstrip() + (
+                    "\n\n<!-- CAVEMAN_PIPELINE -->\n"
+                    "Return the result in Caveman form: terse telegraphic clauses, "
+                    "preserving exact evidence, paths, errors, links, decisions, and caveats. "
+                    "Do not compress away uncertainty or verification status.\n"
+                )
 
             if agent_format == "toml":
                 # Codex ~/.codex/agents/*.toml: name/description/developer_instructions.
                 # No `tools` field (Codex TOML schema has none — tool access is via
-                # sandbox_mode, not a tools list). model omitted → inherits parent.
-                # model_reasoning_effort optional; emit when the provider maps a tier.
+                # sandbox_mode, not a tools list). Pin the adapter/provider default
+                # so a stale parent model cannot silently route a custom agent.
+                # model_reasoning_effort is emitted from the neutral effort tier.
                 toml_lines = [
                     f'name = {_toml_quote(name)}',
                     f'description = {_toml_quote(dispatch)}',
                 ]
-                effort_tier = registry["agents"].get(name, {}).get("effort_tier")
+                if agent_model:
+                    toml_lines.append(f'model = {_toml_quote(agent_model)}')
+                if supports_sandbox and sandbox_mode:
+                    toml_lines.append(f'sandbox_mode = {_toml_quote(sandbox_mode)}')
+                effort_tier = registry_binding.get("effort_tier")
                 if effort_tier:
                     toml_lines.append(
                         f'model_reasoning_effort = {_toml_quote({"low": "low", "mid": "medium", "high": "high"}[effort_tier])}')
@@ -592,7 +614,7 @@ def _render_subagents(core_dir, registry, provider, adapter, result, native_agen
             # effort_tier (registry, neutral low|mid|high) → harness knob
             # `effort:` (per-agent reasoning effort; unknown fields are
             # ignored by harnesses without the knob)
-            effort_tier = registry["agents"].get(name, {}).get("effort_tier")
+            effort_tier = registry_binding.get("effort_tier")
             if effort_tier:
                 fm["effort"] = {"low": "low", "mid": "medium", "high": "high"}[effort_tier]
             # tools == "*" → inherit-all: OMIT the key (no harness spells this
@@ -720,7 +742,7 @@ def _render_always_context(core_dir, adapter, result, native_dir, harness):
         # them so the agent can fall back to a manual read if the hook did
         # not fire.
         lines.append("Hook H06 (`session-start-context`) injects these rule "
-                     "files into context on startup/compact/clear — they "
+                     "files into context on startup — they "
                      "should already be present:")
         lines.append("")
         for label, rel in rule_files:
@@ -928,6 +950,33 @@ def _render_mcp_toml(servers):
     return "\n\n".join(blocks) + "\n"
 
 
+def _render_codex_defaults(adapter, provider, result):
+    """Prepend Codex's main-session defaults to its config.toml patch.
+
+    Codex's installed config contract accepts top-level ``model`` and
+    ``model_reasoning_effort`` keys. Keep this harness-specific because Claude
+    and ZCode deliver session defaults through different native surfaces.
+    This function describes the exact native entries for render/dry-run; it
+    does not modify a live Codex config.
+    """
+    if adapter.get("harness") != "codex":
+        return
+    facts = adapter.get("harness_facts", {}) or {}
+    model = facts.get("default_model") or provider.get("default_model", "")
+    effort = facts.get("default_reasoning_effort") or provider.get("default_reasoning_effort", "")
+    if not model and not effort:
+        return
+    target = facts.get("mcp_config_file", "config.toml")
+    lines = []
+    if model:
+        lines.append(f"model = {_toml_quote(model)}")
+    if effort:
+        lines.append(f"model_reasoning_effort = {_toml_quote(effort)}")
+    defaults = "\n".join(lines) + "\n"
+    existing = result.toml_patches.get(target, "")
+    result.toml_patches[target] = defaults + ("\n" + existing if existing else "")
+
+
 def _render_permissions(adapter, result):
     """Render the static permissions.deny block into the settings.json patch.
 
@@ -1031,6 +1080,7 @@ def render_harness(stc, registry, provider, adapter, core_dir, repo_dir):
     _render_subagents(core_dir, registry, provider, adapter, result, agents_dir)
     _render_skills(core_dir, adapter, varmap, result, skills_dir)
     _render_mcp(adapter, stc, result)
+    _render_codex_defaults(adapter, provider, result)
     _render_permissions(adapter, result)
     _render_session_defaults(adapter, stc, result)
     _render_glue(repo_dir, adapter, result)

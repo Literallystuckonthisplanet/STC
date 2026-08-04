@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""toml_merge.py — add-only merge of STC TOML tables into a harness config.toml.
+"""Merge STC-owned Codex defaults and namespaced TOML tables safely.
 
 Codex keeps its settings in ~/.codex/config.toml (model, personality, marketplaces,
 plugins, mcp_servers). This module merges STC's OWNED tables (namespaced under
@@ -7,7 +7,9 @@ plugins, mcp_servers). This module merges STC's OWNED tables (namespaced under
 user's content — the same non-destructive guarantee stc_block.py gives for the
 AGENTS.md/CLAUDE.md marker, extended to TOML.
 
-Strategy (add-only, borrowed from ECC's merge-mcp-config.js):
+Strategy (table merge borrowed from ECC's merge-mcp-config.js):
+  0. Upsert the allowlisted top-level Codex defaults emitted by STC
+     (``model`` and ``model_reasoning_effort``), preserving all other text.
   1. tomllib.parse the live file to DETECT which stc-* tables already exist.
   2. Append raw TOML text for ONLY the missing tables — preserves the existing
      file byte-for-byte (no parse→reserialise round-trip, which would lose the
@@ -25,6 +27,9 @@ ops, exactly the proven split ECC uses. Zero new dependencies.
 import os
 import re
 import tomllib
+
+
+MANAGED_TOP_LEVEL = {"model", "model_reasoning_effort"}
 
 
 def _read(path):
@@ -59,6 +64,65 @@ def _existing_stc_servers(parsed):
     """The stc-* server names already present in the live config.toml."""
     servers = parsed.get("mcp_servers", {}) or {}
     return {n for n in servers if isinstance(n, str) and n.startswith("stc-")}
+
+
+def _managed_top_level(tables_text):
+    """Return allowlisted top-level assignments before the first TOML table."""
+    result = {}
+    for line in tables_text.splitlines():
+        if re.match(r"^\s*\[", line):
+            break
+        match = re.match(r"^\s*([A-Za-z0-9_-]+)\s*=\s*(.*?)\s*$", line)
+        if match and match.group(1) in MANAGED_TOP_LEVEL:
+            result[match.group(1)] = match.group(2)
+    return result
+
+
+def _table_text(tables_text):
+    """Drop rendered top-level assignments; retain table blocks verbatim."""
+    lines = tables_text.splitlines()
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*\[", line):
+            return "\n".join(lines[index:]).rstrip() + "\n"
+    return ""
+
+
+def _upsert_managed_top_level(text, desired):
+    """Update only allowlisted scalars in the top-level TOML preamble."""
+    if not desired:
+        return text, False
+    lines = text.splitlines()
+    table_index = next(
+        (index for index, line in enumerate(lines) if re.match(r"^\s*\[", line)),
+        len(lines),
+    )
+    seen = set()
+    changed = False
+    for index in range(table_index):
+        match = re.match(
+            r"^(\s*)([A-Za-z0-9_-]+)(\s*=\s*)(.*?)(\s+#.*)?$", lines[index]
+        )
+        if not match or match.group(2) not in desired:
+            continue
+        key = match.group(2)
+        suffix = match.group(5) or ""
+        replacement = f"{match.group(1)}{key}{match.group(3)}{desired[key]}{suffix}"
+        if replacement != lines[index]:
+            lines[index] = replacement
+            changed = True
+        seen.add(key)
+    missing = [key for key in desired if key not in seen]
+    if missing:
+        insert_at = table_index
+        while insert_at > 0 and not lines[insert_at - 1].strip():
+            insert_at -= 1
+        additions = [f"{key} = {desired[key]}" for key in missing]
+        if insert_at < len(lines):
+            additions.append("")
+        lines[insert_at:insert_at] = additions
+        changed = True
+    suffix = "\n" if text.endswith("\n") else ""
+    return "\n".join(lines) + suffix, changed
 
 
 def _strip_section(text, header):
@@ -110,7 +174,8 @@ def merge_toml(path, tables_text, overwrite=False):
     the caller checks the `ok` return and refuses (never silently clobber).
     """
     want = _managed_names(tables_text)
-    if not want:
+    desired_top = _managed_top_level(tables_text)
+    if not want and not desired_top:
         return ("noop", False)
 
     live = _read(path)
@@ -125,12 +190,16 @@ def merge_toml(path, tables_text, overwrite=False):
     if not ok:
         raise ValueError(f"refusing to merge into corrupt TOML: {path}")
 
+    updated_live, top_changed = _upsert_managed_top_level(live, desired_top)
+    rendered_tables = _table_text(tables_text)
+
     if overwrite:
         # strip every STC-managed section the render owns, then re-append current
-        new_text = live
+        new_text = updated_live
         for name in want:
             new_text = _strip_section(new_text, f"[mcp_servers.{name}]")
-        new_text = new_text.rstrip() + "\n\n" + tables_text
+        if rendered_tables:
+            new_text = new_text.rstrip() + "\n\n" + rendered_tables
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(new_text)
         return ("updated", True)
@@ -138,20 +207,28 @@ def merge_toml(path, tables_text, overwrite=False):
     present = _existing_stc_servers(parsed)
     missing = want - present
     if not missing:
+        if top_changed:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(updated_live)
+            return ("updated", True)
         return ("noop", False)
 
     # add-only: append the whole STC block once (the missing servers are in it;
     # present ones are a noop-detect, and append is cheaper than per-section split).
     # To stay byte-accurate we still only append servers that are actually missing:
     # split the tables_text into per-server blocks and append the missing ones.
-    missing_blocks = _filter_blocks(tables_text, missing)
+    missing_blocks = _filter_blocks(rendered_tables, missing)
     if not missing_blocks:
+        if top_changed:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(updated_live)
+            return ("updated", True)
         return ("noop", False)
     append = "".join(missing_blocks)
-    body = live.rstrip() + "\n\n" + (append if append.endswith("\n") else append + "\n")
+    body = updated_live.rstrip() + "\n\n" + (append if append.endswith("\n") else append + "\n")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(body)
-    return ("appended", True)
+    return ("updated" if top_changed else "appended", True)
 
 
 def _filter_blocks(tables_text, names):

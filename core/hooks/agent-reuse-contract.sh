@@ -1,5 +1,5 @@
 #!/bin/bash
-# H04 — hook: agent guard (PreToolUse Task)
+# H04 — hook: agent guard (Codex SubagentStart + PreToolUse Agent; Claude Task)
 #   - 🔒 reuse-before-reinvent: build-capable sub-agents (general-purpose /
 #       claude / builder) must carry a reuse contract in their prompt, otherwise
 #       they start cold and reinvent what the repo already has → block.
@@ -13,11 +13,14 @@
 #       problems in the prompt, so it doesn't re-report them (security
 #       HIGH/CRITICAL never go under baseline). Inject.
 #
-# Render-time vars: ${USER_LANG} (en|ru, default en).
+# Render-time vars: ${USER_LANG} (en|ru, default en), ${HARNESS_NAME}.
 
 INPUT=$(cat)
-SUBAGENT=$(echo "$INPUT" | jq -r '.tool_input.subagent_type // empty')
-PROMPT=$(echo "$INPUT" | jq -r '.tool_input.prompt // empty')
+HARNESS_NAME="${HARNESS_NAME:-claude}"
+EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // "PreToolUse"')
+SUBAGENT=$(echo "$INPUT" | jq -r '.agent_type // .tool_input.agent_type // .tool_input.subagent_type // .tool_input.role // empty')
+PROMPT=$(echo "$INPUT" | jq -r '.prompt // .tool_input.prompt // .tool_input.instructions // .tool_input.input // empty')
+MODEL=$(echo "$INPUT" | jq -r '.model // .tool_input.model // empty')
 
 USER_LANG="${USER_LANG:-en}"
 
@@ -45,8 +48,35 @@ case "$SUBAGENT" in
         ru) MSG="🧪 I20 baseline ('$SUBAGENT'): если у репо есть baseline принятых/вне-скоупа проблем (с пометкой «почему accepted») — передай его в промпт, чтобы агент не репортил повторно. Новую осознанно принятую проблему из отчёта → дозапиши в baseline. Security HIGH/CRITICAL под baseline НЕ попадают (всегда блок). Детали → playbook §Baseline для агентов." ;;
         *) MSG="🧪 I20 baseline ('$SUBAGENT'): if the repo has a baseline of accepted/out-of-scope problems (with a 'why accepted' note) — pass it in the prompt so the agent doesn't re-report. A newly accepted problem from the report → append to the baseline. Security HIGH/CRITICAL never go under baseline (always a block). Details → playbook § Agent baseline." ;;
       esac
-      jq -cn --arg c "$MSG" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}'
+      jq -cn --arg e "$EVENT" --arg c "$MSG" '{hookSpecificOutput:{hookEventName:$e,additionalContext:$c}}'
     fi
     ;;
 esac
+
+# Codex has an explicit model field on SubagentStart/Agent payloads. Terra/Sol
+# are valid only when the caller deliberately overrides the Luna default and
+# carries a bounded escalation output contract; ordinary production prompts do
+# not trigger this branch. The check is intentionally marker-based and never
+# prints the task prompt/model value back to the caller.
+if [ "$HARNESS_NAME" = "codex" ]; then
+  case "$MODEL $SUBAGENT" in
+    *gpt-5.6-terra*|*gpt-5.6-sol*|*terra*|*sol*)
+      if ! echo "$PROMPT" | grep -qiE 'escalat|why[[:space:]]+luna|luna[[:space:]]+(is[[:space:]]+)?insufficient|bounded[[:space:]]+(scope|task)|output[[:space:]]+contract'; then
+        case "$USER_LANG" in
+          ru) echo "BLOCKED: Codex Terra/Sol override требует escalation output contract: trigger; почему Luna недостаточна; bounded scope; continuation on Luna; статус FORK/BLOCKED/UNVERIFIED. Обычная production-задача сама по себе escalation не запускает." >&2 ;;
+          *) echo "BLOCKED: a Codex Terra/Sol override requires an escalation output contract: trigger; why Luna is insufficient; bounded scope; continuation on Luna; FORK/BLOCKED/UNVERIFIED status. Routine production alone does not escalate." >&2 ;;
+        esac
+        exit 2
+      fi
+      if ! echo "$PROMPT" | grep -qiE 'FORK|BLOCKED|UNVERIFIED|status'; then
+        case "$USER_LANG" in
+          ru) echo "BLOCKED: Codex Terra/Sol escalation contract должен явно вернуть статус FORK/BLOCKED/UNVERIFIED." >&2 ;;
+          *) echo "BLOCKED: a Codex Terra/Sol escalation contract must return an explicit FORK/BLOCKED/UNVERIFIED status." >&2 ;;
+        esac
+        exit 2
+      fi
+      ;;
+  esac
+fi
+
 exit 0

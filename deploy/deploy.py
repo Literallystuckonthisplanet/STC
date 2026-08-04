@@ -959,6 +959,28 @@ def _prunable(rel):
     return rel.endswith((".stc.md", ".stc.sh")) or os.path.basename(rel) == "SKILL.md"
 
 
+def _native_manifest_path(native_dir, rel):
+    """Resolve a manifest entry only when it stays inside ``native_dir``.
+
+    Manifests are persisted data and must be treated as untrusted: an absolute
+    path, ``..`` component, or symlink escape must never turn orphan pruning
+    into deletion outside the harness directory.
+    """
+    if not isinstance(rel, str) or not rel or os.path.isabs(rel):
+        return None
+    normalized = os.path.normpath(rel)
+    if normalized == os.pardir or normalized.startswith(os.pardir + os.sep):
+        return None
+    root = os.path.realpath(native_dir)
+    candidate = os.path.realpath(os.path.join(root, normalized))
+    try:
+        if os.path.commonpath((root, candidate)) != root:
+            return None
+    except ValueError:
+        return None
+    return candidate
+
+
 def _prune_orphans(target, native_dir, new_files):
     """Remove STC artifacts a prior deploy wrote that this render no longer emits.
 
@@ -977,7 +999,9 @@ def _prune_orphans(target, native_dir, new_files):
     orphans = sorted(rel for rel in (old_files - set(new_files)) if _prunable(rel))
     pruned = []
     for rel in orphans:
-        p = os.path.join(native_dir, rel)
+        p = _native_manifest_path(native_dir, rel)
+        if p is None:
+            continue
         if os.path.isfile(p):
             os.remove(p)
             pruned.append(rel)

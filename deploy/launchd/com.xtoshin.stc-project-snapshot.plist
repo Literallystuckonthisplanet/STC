@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.xtoshin.stc-project-snapshot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/xtoshin/Work/STC/core/scripts/project_snapshot.py</string>
+    <string>run</string>
+    <string>--config</string>
+    <string>/Users/xtoshin/Work/STC/stc.yaml</string>
+    <string>--state-file</string>
+    <string>/Users/xtoshin/Work/memory/stc-scheduler/graphify-state.json</string>
+    <string>--require-graphify-state</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GRAPHIFY_CLI</key>
+    <string>/Users/xtoshin/.local/bin/graphify</string>
+    <key>PATH</key>
+    <string>/Users/xtoshin/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <!-- Refresh after wake/boot and once daily.  The script is deterministic,
+       atomic, and only writes generated navigation artifacts. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/xtoshin/Work/memory/project-snapshot/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/xtoshin/Work/memory/project-snapshot/launchd.stderr.log</string>
+</dict>
+</plist>

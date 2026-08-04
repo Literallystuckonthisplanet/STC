@@ -2,15 +2,15 @@
 # STC model provider — Codex (OpenAI / ChatGPT on macOS)
 #
 # The MODEL axis, independent of the harness axis. See core/models/claude.yaml
-# for the rationale. Codex subagents inherit the parent session's model
-# (config.toml sets the global model), so the .stc.toml files omit `model` —
-# tiers here document the INTENT and are surfaced only when a future Codex
-# build supports per-agent model overrides (today model_reasoning_effort is
-# the per-agent knob, emitted from registry effort_tier).
+# for the rationale. Codex's current custom-agent TOML contract accepts an
+# explicit `model`, so rendered agents pin the Luna default instead of
+# inheriting a possibly stale user-level model.
 # ============================================================
 
 provider: codex
 display_name: "Codex (OpenAI / ChatGPT)"
+default_model: "gpt-5.6-luna"
+default_reasoning_effort: "max"
 
 api:
   kind: openai
@@ -18,13 +18,22 @@ api:
   auth: bearer
   key_env: "OPENAI_API_KEY"
 
-# Tier ids map to the parent-inherited model; no concrete override is emitted
-# into agents/*.stc.toml (model field omitted → inherits). Revisit when Codex
-# gains per-agent model selection.
+# Routine tiers remain on Luna. Terra/Sol are escalation-only overrides and are
+# never selected by a routine tier.
 tiers:
-  fast:  "inherit"
-  mid:   "inherit"
-  heavy: "inherit"
+  fast:  "gpt-5.6-luna"
+  mid:   "gpt-5.6-luna"
+  heavy: "gpt-5.6-luna"
+
+escalations:
+  terra:
+    model: "gpt-5.6-terra"
+    explicit_only: true
+    output_contract: "trigger; why Luna is insufficient; bounded Terra scope; continuation on Luna; FORK/BLOCKED/UNVERIFIED status"
+  sol:
+    model: "gpt-5.6-sol"
+    explicit_only: true
+    output_contract: "trigger; why Luna is insufficient; bounded Sol scope; continuation on Luna; FORK/BLOCKED/UNVERIFIED status"
 
 context:
   fast:  200000

@@ -11,6 +11,8 @@
     <string>refresh</string>
     <string>--config</string>
     <string>/Users/xtoshin/Work/STC/stc.yaml</string>
+    <string>--state-file</string>
+    <string>/Users/xtoshin/Work/memory/stc-scheduler/graphify-state.json</string>
     <string>--bootstrap-missing</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -20,18 +22,24 @@
     <key>PATH</key>
     <string>/Users/xtoshin/.local/bin:/usr/bin:/bin</string>
   </dict>
+  <!-- Refresh after wake/boot and once daily. The maintenance script only
+       updates stale/missing code graphs; semantic extraction remains explicit. -->
+  <key>RunAtLoad</key>
+  <true/>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Weekday</key>
-    <integer>7</integer>
     <key>Hour</key>
-    <integer>4</integer>
+    <integer>10</integer>
     <key>Minute</key>
-    <integer>0</integer>
+    <integer>5</integer>
   </dict>
   <key>StandardOutPath</key>
   <string>/Users/xtoshin/Work/memory/graphify-maintenance/launchd.stdout.log</string>
   <key>StandardErrorPath</key>
   <string>/Users/xtoshin/Work/memory/graphify-maintenance/launchd.stderr.log</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
 </dict>
 </plist>

@@ -1,305 +1,100 @@
 ---
 name: behavior-rules
-layer: rules            # always-context
+layer: rules
 scope: global
 ---
 
 # Behavioral rules
 
-Firing rules of the form "situation → action". Apply in the moment when the
-situation arises. These are imperatives, not suggestions. Where a rule is
-**enforced by a hook** (ADR-001), the anchor notes which one — the always-text
-here is a pointer; the hook is the guarantee.
+Only firing rules live here: situation → required action. Procedures and
+examples are lazy in `playbook.md`, `code_standard.md`, project docs, and
+skills.
 
-## Secrets → .env, facts → memory
-<!-- I05 I06 -->
+## Secrets and durable facts
+<!-- I05 I06 I26 -->
 
-- **Rule 1 — Secrets → .env immediately:** any credential, token, key, or
-  password goes into `${SECRETS_ENV}` on first sight. Never echo it back in
-  full; reference it by env-var name. Memory is forbidden for secrets.
-  **Enforced: H03/I05b** (detects a secret in the prompt → directive) +
-  **H05** (blocks a secret write into memory).
-- **Rule 2 — Facts → transcript/Wiki pipeline:** the session leaves the raw
-  transcript and marks durable facts or decisions with the explicit `📌 MEMORY`
-  / `📌 запомнил` marker when appropriate. An isolated offline ingest process
-  reads the shared transcript corpus and prepares candidates for the Obsidian
-  Wiki. It may update canonical memory only through the documented review
-  path; it never mutates rules or always-context from one unreviewed message.
-- In code, examples, logs, or handoffs, replace real secrets with a
-  placeholder (`<TOKEN>`, `${API_TOKEN}`). Treat the user's real values as
-  toxic.
-- `.env` files are never committed. `.gitignore` must cover them.
-- **Leaked = compromised, not removable:** if a real key ever reached project
-  code, git history, a deployed build, a log, or chat, deleting it is NOT a fix
-  — the value is already out. **Rotate it** (revoke + reissue), then wire the
-  new value via `${SECRETS_ENV}`. This is the vibe-coding trap: an inline key
-  "just to test" hits a public repo in minutes. **Enforced: H01** scans the
-  staged diff before every `git commit` and hard-blocks a real key format
-  (length-gated, `secret-ok` on the line vouches for a deliberate public value).
-  Code-standard rationale: [SEC-2].
+- Secret/token/password appears → put it in `${SECRETS_ENV}`, never print it
+  in full, never write it to memory or git. Suspected leak → revoke/rotate.
+  Guards: H03 (prompt), H05 (memory write), H01 (commit).
+- Durable decision/preference appears → mark it `📌 MEMORY` when useful. Raw
+  transcripts feed the independent ingest and Obsidian review pipeline.
 
-## Offline memory pipeline
-<!-- I26 -->
-
-Raw transcripts are the durable audit trail. The scheduled ingest writes
-staging candidates and a monthly Obsidian report. Monthly review decides
-whether a candidate becomes a Wiki fact, a preference, an Instinct candidate,
-or a separate rule/process proposal. The active session is not required to
-maintain STATE/CHANGELOG for memory continuity.
-
-## Worktrees and parallel sessions
+## Worktrees and parallel work
 <!-- I07 -->
 
-- Choose the concurrency mode by the task:
-  - Small task, clearly isolated files → parallel agents + a pre-check for overlap.
-  - Medium/large task, fuzzy scope, or shared files (`package.json`, types, configs) → worktree (clean per-branch review, rollback-friendly).
-- **Before any new task:** `git worktree list` — what is already in flight.
-  A worktree of the same area → merge BEFORE starting.
-  **Enforced: H07** (task-start guard — nudges on >1 worktree at the first edit).
-- Safe-parallelism criterion: worktree A and B must touch unrelated files. If
-  both touch one page/component — that's a conflict.
-- Closing a worktree: create → work → checks → merge → delete. Don't leave
-  them open. An open worktree is a hanging debt.
-- Worktree e2e checks run in main after merge, not inside the worktree. After
-  merging all worktrees — a full check cycle over `git diff main...branch
-  --name-only`, even if the worktree-agent already verified. Why/detail →
-  `[[playbook]]` § Worktree checks.
-- **Overlap zones — main only:** DB migrations, `package.json` + lockfile,
-  shared types, configs, `.env.example` are never edited by a worktree builder.
-  A builder that needs such a change STOPS and returns a FORK — main applies it.
-- **Merge protocol:** merge worktree branches strictly ONE at a time; rebase the
-  branch on fresh `main` before merging; run the check cycle after EACH merge,
-  not once at the end. Lockfiles are never merged textually — merge
-  `package.json`, then regenerate (`pnpm install`). Branches are short-lived;
-  don't stack drift.
+- Before work → inspect existing worktrees and dirty state.
+- Independent files → parallel work is allowed. Shared files, fuzzy scope, or
+  overlapping concerns → isolate in a worktree.
+- Parallel writers must have disjoint write scopes. Overlap or an unexpected
+  shared-file change → stop that stream and return a fork to main.
+- Merge one branch at a time and verify after each merge. Detail → playbook
+  § Worktree checks. Guard: H07 (dirty/worktree warning).
 
-## Git push and production
-<!-- I08 -->
+## Git push and deployment
+<!-- I08 I09 -->
 
-- **Release** → push to `main` only by explicit "releasing" from the user,
-  executed by the agent. **Enforced: H01** (git guard blocks push-to-main
-  without a one-shot ack marker).
-- **Production edits** → only via dev → commit → push + explicit OK. No direct
-  SSH edits (env/files/pm2 reload) on the server without the go-ahead — even
-  for a config/env change. *(not hook-covered — keep in mind)*
-- **Deploy = the project's versioned script** (`deploy/deploy.sh`) — the ONLY
-  way to deploy. Never ad-hoc rsync/pm2/ssh steps typed in chat, including
-  "quick fixes". The release gate (explicit OK) stays; the script is what runs
-  after it. No script yet → create one from the pattern BEFORE deploying.
-- **The script fails → fix the script** (and commit the fix), then rerun —
-  never fall back to manual steps. The procedure changed → the change goes INTO
-  the script, same commit discipline. **Critical deploy errors** (prod down,
-  data at risk) → STOP, no improvised recovery on prod — surface to the user
-  for a joint разбор; rollback only via the script's rollback mode.
-- **Backup** → scheduled (every 3 days) into a `backup` branch of the private
-  repo. All repos are private. *(TODO: the launchd job is not yet built —
-  carry this forward, do not assume it runs.)*
+- Commit only a verified logical change. H01 supplies the commit checklist and
+  blocks dangerous git, secrets, and unapproved push to main.
+- Push/release only on the user's explicit release instruction.
+- Deploy through the project's versioned deploy/rollback script. A broken
+  script → fix the script; never replace it with improvised production edits.
+- Routine production with a tested rollback/runbook stays on Luna. Unknown
+  state, missing rollback, destructive migration, money/personal-data risk, or
+  broad blast radius → escalation.
 
-## Commits
-<!-- I09 -->
-
-Commit-invariants (one task = one commit; don't commit unfinished/broken even
-"temporarily"; no check = no commit) + the verify-checklist + the `--no-verify`
-reminder — **delivered JIT by H01/B2** before every `git commit`. A dirty tree
-before the first edit of a session (may be a parallel session's WIP) → **H07**.
-Task-start = the first Edit / "going to do", not only the session start
-(discussion → doing = also task-start).
-
-Adjudicating a dirty tree (own WIP → Verify→commit / someone else's WIP →
-lock it down with the user) + committing inside a worktree after checks before
-merge → `[[playbook]]`.
-
-## Self-execution (SELF-EXEC)
+## SELF-EXEC
 <!-- I10 -->
 
-Run everything you can yourself: docker, npm/pip, the `.env` setup, launching
-the browser, starting/stopping services. Ask the user only for a **value** (a
-token, a choice between options) or a **decision** (which approach). Never ask
-permission to do the obvious next mechanical step. If a command fails, read
-the error, fix it, retry — don't surface a failed command to the user as their
-problem. **Reinforced: H03** (prints SELF-EXEC every prompt).
+Run safe mechanical steps yourself: installs, tests, services, browser,
+Docker, and retries. Ask only for a missing value or a decision. External
+access and irreversible/destructive actions are the exceptions. H03 reinforces
+the reminder; examples → playbook § SELF-EXEC.
 
-**Only two exceptions:** (1) an external service without API/tool access
-(GitHub OAuth, Vercel, DNS) → explain where and what, prepare the rest
-yourself; (2) irreversible/destructive (drop table, force push) → confirm
-before. Concrete patterns → `[[playbook]]` § SELF-EXEC.
+## Services and long strings
+<!-- I11 I12 -->
 
-## Background services
-<!-- I11 -->
+- Operation needs a service → check/start it; config changed → restart the
+  dependent service; failure → diagnose. Stop services only for explicit
+  cleanup or a project requirement.
+- Never hand-transcribe tokens, hashes, encoded URLs, JWT/base64, or other long
+  ASCII strings. Transform programmatically and verify the result.
 
-- **Auto-start before an operation:** if the work needs a service, verify it's
-  running, start it yourself if not. Take the port and start command from the
-  project's instruction file or `package.json`.
-
-  | Service needed | When |
-  |---|---|
-  | Dev server | e2e, `/verify`, Playwright |
-  | Docker / DB | migrations, DB-backed tests, any backend that needs a database |
-
-  If the service fails to start — diagnose the cause (port in use, config
-  error) and fix it. Don't report "failed to start" and stop there.
-- **Cascade restarts after a config change:** restart the dependent service
-  yourself, don't tell the user "restart it".
-- **Stop:** stop services only when the user explicitly requests an
-  operational cleanup or the project requires it. There is no universal
-  session-end memory protocol, and compact does not touch services.
-
-## Long ASCII strings (base64 / tokens / hashes) — don't type by hand
-<!-- I12 -->
-
-Never reproduce a long ASCII string (base64, JWT, hash, key, URL with encoded
-content) by hand in a tool-call or file. Homoglyph substitution (latin↔cyrillic)
-silently breaks the whole string. Generate/transform programmatically
-(python/bash), read from a file — don't transcribe in the answer. If an edit
-is unavoidable — change a short unique anchor pointwise, don't rewrite the
-whole string. **After any insert/edit — verify:** grep for non-ASCII
-(`[^\x00-\x7F]`) + by meaning (base64 → decode without errors; an image URL →
-`curl` to `HTTP 200`). The homoglyph pair list → `[[playbook]]` § Homoglyphs.
-
-## Project start
-<!-- I13 -->
-
-A new project begins from `${TEMPLATES_DIR}/new-project.md` (Phase 0 Kickoff).
-Don't improvise the structure on the fly. The kickoff determines the stack for
-*this* project — it is not inherited from a global default. The project-memory
-file uses the STATE/OPEN/CHANGELOG format (R08) — don't duplicate repo docs →
-`[[project_docs]]` § R08.
-
-**Integration registry:** if the project talks to external services outside
-the global H16 lexicon → create `.claude-integrations` in the repo root (one
-service key per line) so the H16 docs-first gate catches them precisely.
-Set this up at project start, not after the gate misses.
-
-## Code conventions
-<!-- I14 -->
-
-- Always use **python3** (not python).
-- Always install dependencies via **pip**.
-- Downloads go to `~/Downloads/`.
-
-## Agent baseline (accepted/out-of-scope problems)
-<!-- I20 -->
-
-A reviewer agent (security-deps / qa / code-reviewer / e2e / security-arch)
-reports a deliberately-accepted or out-of-scope problem → record it in the
-repo's baseline file (with a "why accepted" note) → on the next run, pass the
-baseline in the prompt so it doesn't re-report. Security HIGH/CRITICAL never
-go under baseline — always a block. **Enforced: H04** (agent guard — nudges
-passing the baseline when launching a reviewer). Detail/example → `[[playbook]]`
-§ Agent baseline.
-
-## Find the existing way before making a new one
+## Existing way, docs, and dependencies
 <!-- I21 -->
 
-**Trigger:** about to implement something that may already exist (auth / data
-access / errors / logs / cache; an operation on an entity; an API-response
-format; money/dates; id/sku/slug) → FIRST find (grep/`Explore`) how it's done
-in the repo → reuse. A second way = only an explicit recorded decision (the
-instruction file / an ADR); a divergence = stop for review.
-**Enforce-nudge: H10** (read-first router, the reuse branch). Broader → pev
-Step 3. The class of error/example → `[[code-standard]]` [ARCH-6].
+- Before implementing a concern → find and reuse the existing project pattern.
+  A second implementation requires an explicit recorded decision. H10 gives
+  the read-first nudge.
+- Named integration/API/SDK → read current primary docs before code and record
+  reusable failure modes. H16 enforces the docs-first gate.
+- New non-trivial capability or common-library territory → evaluate a ready
+  dependency first and record buy-vs-build. H14 is the backstop.
 
-**Buy-vs-build (DEP-4):** before writing a non-trivial piece by hand — a new
-domain capability >~50 lines OR the territory of typical libraries (parsing/
-validation/dates/rate-limit/retries/files/crypto/state-machines/HTTP-clients)
-→ evaluate a READY solution first (`docs` agent / Context7, or `research`
-agent), fix the decision as an ADR line. **Enforced: H14** (JIT-inject on
-entering plan mode + a new-module backstop). Detail → `[[code-standard]]`
-[DEP-4].
+## Snapshot and project routing
+<!-- I13 I27 -->
 
-**Docs-first on integrations:** editing the code of a named integration
-without saved research (the failure-modes catalog or notes/research) is
-blocked — read the contract FIRST, then edit. **Enforced: H16** (a block,
-lifted by saving the research or a `// docs-checked:` marker). The catalogs
-→ `[[reference-failure-modes]]` / `[[reference-abuse-cases]]`.
+- New project → use `${TEMPLATES_DIR}/new-project.md`; project documentation
+  follows `project_docs.md`.
+- Project status → central project index, then that project's `SNAPSHOT.md`.
+- STC/infra status → `core/memory/SNAPSHOT.md` first.
+- Code relationships/impact → Graphify after the snapshot. Graphify covers
+  code, not project memory or the Wiki.
 
-**Delegating to a build-agent** (`general-purpose` / `claude`) → the prompt
-opens with a contract (zoom-out + `reuse-before-reinvent` + a return
-contract); the `reuse-before-reinvent` marker is mandatory, otherwise H04
-blocks the launch. Template/who it concerns → `[[playbook]]` § Agent prompt
-contract.
+## Research, output, and code names
+<!-- I14 I22 I28 I29 -->
 
-## Code-label reference — always with the name
-<!-- I22 -->
+- Reusable research → save under `${DOCS_ROOT}/notes/research/` and update its
+  index; one-off lookup stays in the transcript.
+- Tool output → request the smallest useful slice; preserve exact errors,
+  paths, commands, security findings, and caveats.
+- Mention an internal code to the user → add its human name, for example
+  `H01 (git safety)`, never a bare code.
+- Use `python3`; downloads go to `~/Downloads/`.
 
-Mentioning a code-label (I/S/A/H/R/T/N + number) in an answer to the user →
-write it with a short name in parens: `I08 (git push/prod)`, `R09 (code
-standard)`, `H04 (agent contract)` — not a bare code. The name = the §-heading
-at the label (source of truth = the files). The user doesn't memorize codes.
-
-## Question about the infra → the snapshot, not a scan
-<!-- I27 -->
-
-**Trigger:** what exists in the infra (rule/hook/agent/skill/template/
-reference), what a code-label means, where something is configured, "do we
-have anything for X" — and before editing anything under `core/` / `~/.stc/`.
-**Action:** read `core/memory/SNAPSHOT.md` FIRST (`CODE | TYPE | FILE | WHAT |
-RELATED` — the whole infra in one file) → open only the files its FILE column
-names. Never grep the `core/` tree for this, never answer from a past
-session's memory of the infra.
-
-Generated (`infra_graph.py --snapshot`, re-run by `deploy.py apply`) — never
-hand-edit: wrong content there = fix the source label or the scanner. Gaps and
-retired codes are explained in its header. Anchor: `[[snapshot]]`.
-
-## Saving research
-<!-- I18 -->
-
-Produced a research result (market/technologies/strategy, legal, an
-approach comparison) — via the `research` agent OR in main → save it **locally**
-(`memory/notes/research/`, brief = delta not raw) + a line in the research
-index; the run cost → FR-21 (`agent-cost.py --latest`). How → `[[playbook]]`
-§ Saving research.
-
-## Progress tracking — live todo-list
-<!-- I23 -->
-
-A task with >1 step or a sequence of edits/plan-items → keep a live
-`TodoWrite` list (one `in_progress` item, mark `completed` as you go). The
-user wants to see progress constantly — don't let the list slide into history.
-A tiny single-action task — no list.
-
-## Command output hygiene — don't flood the window
-<!-- I24 -->
-
-Don't show raw command output in the window by default (the user: "remove
-command output forever and everywhere"). Build commands to emit only a short
-summary line: redirect noisy output (`>/dev/null 2>&1`), capture into a
-variable → print only the point ("built ✓", "3/3 tests", a specific
-number/path). One-liners without a useful result (`chmod`/`mkdir`/`mv`) —
-quietly, no echo and no comment. Long output → filter (`grep`/`tail`/counter)
-to the fact, don't dump it whole. Show raw output ONLY when (a) the user
-explicitly asks, or (b) error diagnosis needs a specific fact. In the answer —
-conclusions, not raw output. **Enforced: H11** (output-hygiene guard, FR-15).
-
-**Expensive-Bash offload:** a noisy data-script (import/seed/publish/scrape/
-sync) or a wall-of-text audit is not run silently in the main context —
-offload it to an ephemeral agent (run → return the summary/counters, not the
-whole stdout). **Enforced: H15** (exec-offload guard — blocks unless stdout
-is redirected, carries `--json`, or is marked `# in-main`). The lever → pev
-Step 2 / `[[playbook]]` § Token economy.
-
-## Docs-first over hypothesis-guessing
-<!-- I25 -->
-
-Unfamiliar behavior of someone else's tool / platform / API / format that is
-**in the task scope** → read the authoritative source BEFORE the first edit.
-Do not start a guess-and-check loop (edit → run → edit). Library/SDK → `docs`
-agent (Context7); app/platform → `research` agent (official help docs) or a
-WebFetch of the help site. The threshold sits at the ENTRY: read the contract
-before touching it, on Plan/spec too (`to-spec` step 2, integration inventory)
-— not reactively after misses.
-
-**Backstop** (if you took the unfamiliar for familiar and started guessing
-anyway): ≥2 failed hypotheses about the tool's behavior = hard STOP, go read
-the docs. On the code of a named integration this is a gate, not advice:
-**H16** (integration-docs-gate). Overlap → pev Step 3, `[[code-standard]]` § 6
-(uncertainty map).
-
-## Tokens economy on inter-agent traffic
+## Token economy
 <!-- I13b -->
 
-- When dispatching sub-agents (research, review, analysis), instruct them to
-  answer in caveman style if `${SUBAGENT_COMPRESSION}` is enabled. The final
-  answer to the user is always rendered in normal prose.
-- See the caveman skill for the exact compression rules.
+Delegate bounded independent work to the cheapest capable model. Caveman is
+allowed only for read-only exploration, research, docs, and status collection;
+never for builders, review, QA, security, E2E, architecture, or user-facing
+answers.

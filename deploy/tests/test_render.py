@@ -62,7 +62,7 @@ def _patch_with_hooks():
                 entry("H05_secret_scan_memory", "Write|Edit|MultiEdit", "secret-scan-memory"),
             ],
             "UserPromptSubmit": [
-                entry("H03_stop_services", "*", "stop_services_reminder"),
+                entry("H03_prompt_safety", "*", "prompt-safety-reminder"),
             ],
         }
     }
@@ -342,7 +342,7 @@ def test_event_hooks_use_star_matcher():
     # H06 → SessionStart, H03 → UserPromptSubmit, H08 → Stop — all '*'
     expected = {
         ("SessionStart", "H06_session_start_context"),
-        ("UserPromptSubmit", "H03_stop_services"),
+        ("UserPromptSubmit", "H03_prompt_safety"),
         ("Stop", "H08_link_integrity"),
     }
     found = set()
@@ -354,6 +354,32 @@ def test_event_hooks_use_star_matcher():
                         f"{ev}/{e.get('_stc_cap')} matcher is {e.get('matcher')!r}, expected '*'"
                     found.add((ev, e.get("_stc_cap")))
     assert expected == found, f"missing event hooks: {expected - found}"
+
+
+def test_codex_native_changes_do_not_rewire_claude_hooks():
+    """Codex H04/H17 changes must not replace Claude's Task/read contracts."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "claude", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["claude"], D.CORE, REPO)
+    hooks = rr.json_patches["settings.json"]["hooks"]
+    assert "SubagentStart" not in hooks
+
+    pretool = hooks["PreToolUse"]
+    h04 = [
+        entry for entry in pretool
+        if entry.get("_stc_cap") == "H04_agent_reuse_contract"
+    ]
+    assert len(h04) == 1
+    assert h04[0]["matcher"] == "Task"
+    assert h04[0]["hooks"][0]["command"].endswith("/agent-reuse-contract.stc.sh")
+
+    h17 = [
+        entry for entry in pretool
+        if entry.get("_stc_cap") == "H17_secret_read_guard"
+    ]
+    assert len(h17) == 1
+    assert h17[0]["matcher"] == "Read|Glob|Grep"
+    assert h17[0]["hooks"][0]["command"].endswith("/secret-read-guard.stc.sh")
 
 
 def test_pretooluse_matchers_are_tool_names():
@@ -683,7 +709,18 @@ def test_precheck_rejects_unknown_rules_delivery_mode():
     assert any("rules_delivery" in err and "both" in err for err in errs)
 
 
-RULE_FINGERPRINTS = ("Facts → transcript/Wiki pipeline", "Plan→Do→Verify", "Offline memory pipeline")
+def test_precheck_rejects_non_numeric_cdp_port():
+    """The Playwright health probe must never receive shell-shaped port text."""
+    import copy
+    import checks as C
+    stc, registry, adapters, _ = D._gather()
+    bad = copy.deepcopy(stc)
+    bad["mcp"]["playwright"]["cdp_port"] = "9222; touch /tmp/injected"
+    errs = C.precheck(bad, registry, None, adapters, D.CORE)
+    assert any("cdp_port" in err for err in errs)
+
+
+RULE_FINGERPRINTS = ("# Behavioral rules", "# Plan → Execute → Verify", "# Session rules")
 
 
 def test_zcode_bundle_inlines_rules():
@@ -1049,6 +1086,31 @@ def test_statusline_own_not_reported_as_collision():
     collisions2 = C.detect_collisions(rr2, d2, "claude")
     kinds2 = [c.kind for c in collisions2]
     assert "statusline" in kinds2, f"a genuine user statusLine must still collide: {collisions2}"
+
+
+def test_managed_hook_with_renamed_script_is_not_user_collision():
+    """A tagged prior STC hook stays owned even when its script is renamed."""
+    patch = {
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Read|Glob|Grep|Bash",
+                "_stc_managed": True,
+                "_stc_cap": "H17_secret_read_guard",
+                "hooks": [{"type": "command", "command": "/new/block-secret-read.stc.sh"}],
+            }]
+        }
+    }
+    live = {
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Read|Glob|Grep",
+                "_stc_managed": True,
+                "_stc_cap": "H17_secret_read_guard",
+                "hooks": [{"type": "command", "command": "/old/secret-read-guard.stc.sh"}],
+            }]
+        }
+    }
+    assert C._settings_collisions(patch, live) == []
 
 
 def test_session_defaults_rendered_and_merged():

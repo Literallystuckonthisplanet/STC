@@ -354,9 +354,8 @@ decisions, verification judgment. Enforcement: H14 (orchestrator gate), H21
     prefix at ~10% — cheap; compacting here loses money.
   - **~40–75%:** compact only if the next task is UNrelated to the current
     context (drop the ballast); related → keep going.
-  - **>~75% (≈>150k):** always compact, via your own compact-and-save
-    (memory saves correctly) — don't wait for a blind auto-compact to catch
-    you.
+  - **>~75% (≈>150k):** compact according to the harness flow — don't wait
+    for a blind auto-compact to catch you.
   A new session instead of compacting — only when the work is fully
   independent AND otherwise you'd drag along a large irrelevant context.
 

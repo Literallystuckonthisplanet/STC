@@ -18,6 +18,7 @@ user/projects/*
 # Deploy output
 # =========================
 # Rendered config is generated; source of truth is STC repo
+graphify-out/
 deploy/_rendered/
 *.rendered.json
 *.rendered.md

@@ -34,9 +34,8 @@ short — situation → action. Examples below; edit freely.
   — the agent runs these itself. It asks me only for a value or a decision.
 - **Commit style:** small commits, one logical change each, commit-then-push
   immediately (the git-guardrails hook does NOT block push).
-- **Long context:** when the agent needs to compress context, it rotates memory
-  first (behavior.md § Memory rotation, I26), then tells me to run the
-  harness-native compact command — it never silently compacts.
+- **Memory pipeline:** raw transcripts are processed by independent offline
+  ingest; monthly review materializes durable facts into canonical memory.
 
 ## Voice-input dictionary  <!-- optional; delete if not using voice input -->
 
@@ -51,12 +50,12 @@ Keep it short — only entries that actually recur.
 | PEV | plan–execute–verify (the task loop) |
 | ADR | architecture decision record |
 
-## Projects I work on  <!-- pointers only; detail lives in user/projects/<name>.md -->
+## Projects I work on  <!-- pointers only; detail lives in ${DOCS_ROOT}/project_<name>.md -->
 
 <!--
 One line per project: slug, one-phrase description, where it lives.
-The full per-project memory (stack, schema, gotchas, status) lives in
-user/projects/<name>.md — see user/projects/example.example.md for the shape.
+The full per-project memory (stack, schema, gotchas, status) lives in the
+configured doc backend as `project_<name>.md`.
 -->
 
 - (none yet)

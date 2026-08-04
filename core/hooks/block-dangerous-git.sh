@@ -138,30 +138,27 @@ fi
 
 # B2 — I17 verify-gate + I09 commit-invariants before commit (JIT-inject, NOT block, FR-5).
 if echo "$NORM" | grep -qiE 'git[[:space:]]+commit'; then
+  if echo "$NORM" | grep -qiE '(--no-verify|[[:space:]]-n([[:space:]]|$))'; then
+    case "$USER_LANG" in
+      ru) echo "BLOCKED: --no-verify/-n отключает commit-проверки. STC не разрешает обходить security/verify gate; исправь причину падения хука и повтори обычный commit." >&2 ;;
+      *) echo "BLOCKED: --no-verify/-n disables commit checks. STC does not allow bypassing the security/verify gate; fix the failing hook and retry a normal commit." >&2 ;;
+    esac
+    exit 2
+  fi
   case "$USER_LANG" in
     ru)
       MSG="✅ Перед коммитом — verify (I17) + инварианты коммита (I09).
 VERIFY — проверил? СТАТИКА (lint/tsc/build по стеку). ГЛАЗАМИ (diff только нужное; нет секретов/ключей; для текстов — нет AI-маркеров). ДИНАМИКА (логика→тесты+code-reviewer; UI→Playwright/verify). Агентные по триггерам (security-arch/e2e/security-deps перед деплоем/legal).
 ИНВАРИАНТЫ — одна задача=один коммит (логически цельный, не свалка); НЕ коммить незавершённое/сломанное даже «временно/чтобы не потерять»; нет проверки = нет коммита.
- ПАМЯТЬ — коммит не является обязательной точкой memory rotation. Долговечные факты/решения помечаются в транскрипте `📌 MEMORY` / `📌 запомнил`; отдельный offline ingest вынесет их в ежемесячный обзор.
-В ответе перечисли «Проверил: X✓ Y✓ Z✓»."
+ В ответе перечисли «Проверил: X✓ Y✓ Z✓»."
       ;;
     *)
       MSG="✅ Before commit — verify (I17) + commit-invariants (I09).
 VERIFY — checked? STATIC (lint/tsc/build per the stack). EYES (diff = only the intended change; no secrets/keys; for text — no AI markers). DYNAMIC (logic → tests + code-reviewer; UI → Playwright/verify). Agent-triggered checks per playbook §Agent triggers.
 INVARIANTS — one task = one commit (logically cohesive, not a dump); do NOT commit unfinished/broken even 'temporarily / to not lose it'; no check = no commit.
-MEMORY — a commit is not a mandatory memory-rotation point. Mark durable facts/decisions in the transcript with `📌 MEMORY` / `📌 запомнил`; the independent offline ingest will put them into the monthly review.
 In your answer, list 'Checked: X✓ Y✓ Z✓'."
       ;;
   esac
-  if echo "$NORM" | grep -qiE '(--no-verify|[[:space:]]-n([[:space:]]|$))'; then
-    case "$USER_LANG" in
-      ru) MSG="$MSG
-⚠️ --no-verify: pre-commit-гейт ОБОЙДЁН. Прогнал lint/tsc вручную? Обход оправдан только когда хук падает на генерируемом коде, не для пропуска реальных ошибок." ;;
-      *) MSG="$MSG
-⚠️ --no-verify: the pre-commit gate IS BYPASSED. Ran lint/tsc manually? Bypass is justified only when the hook fails on generated code, not to skip real errors." ;;
-    esac
-  fi
   jq -cn --arg c "$MSG" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}'
   exit 0
 fi

@@ -1,6 +1,6 @@
 <!--
 PER-PROJECT MEMORY TEMPLATE (R08 format: STATE / OPEN / CHANGELOG).
-Copy to user/projects/<slug>.md (gitignored) and fill in. The <slug> matches
+Copy to `${DOCS_ROOT}/project_<slug>.md` (gitignored) and fill in. The <slug> matches
 what you pass to commands like /to-spec <slug> and /to-tasks <slug>; specs and
 tasks land under ${DOCS_ROOT}/specs/ and ${DOCS_ROOT}/tasks/.
 
@@ -40,9 +40,8 @@ description: "<one-line: project + current status>"
 - <what's blocking, what's undecided, what's next>
 
 ## CHANGELOG  <!-- append-only, THIN — read only the last entry -->
-<!-- Rotation (I26): at session end, prior STATE/CHANGELOG entries move to
-     archive/project_<name>_archive.md; leave a [[project_<name>_archive]]
-     pointer here. STATE always = the latest session only. -->
+<!-- Monthly review may update STATE/OPEN and keep CHANGELOG thin. Detail and
+     source pointers stay in the project repo or the configured doc backend. -->
 
 - **YYYY-MM-DD** — <one-line pointer; detail in repo docs / a commit>.
 - **YYYY-MM-DD** — <one-line>.

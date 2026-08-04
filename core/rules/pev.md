@@ -1,287 +1,101 @@
 ---
-name: pev
-layer: rules            # always-context
+name: pev-loop
+layer: rules
 scope: global
 ---
 
-# Plan → Do → Verify
-<!-- I15 -->
+# Plan → Execute → Verify
 
-Any non-trivial task goes through all three phases. Skipping Verify is the
-most common failure mode — do not skip it.
-
-## 1. Plan
-
-Before touching code or files, produce a plan and get alignment.
-
-**Step 1 — Clarify the task** *(M/L only; skip for small).*
-
-The task is unclear until three things are explicit:
-- Who faces the problem, and how often?
-- What happens now (current behavior), and what should happen (desired)?
-- How will we measure that it got better? (a concrete "done" criterion)
-
-If any is missing, ask focused questions iteratively until all three are
-explicit.
-
-Red flag: a **solution named without a problem** ("add a button X", "install
-tool Y"). Surface the problem BEFORE unpacking the proposal. Uncover the
-job-to-be-done; do not run to google/install on a named solution.
-
-But clarifying ≠ asking more questions. Ask the user ONLY about what is
-theirs alone (decisions, context, priorities, threat-model). Verifiable
-facts (git state, file contents, configs, what is installed) — get them
-yourself (SELF-EXEC).
-
-**Large intake:** the user dumps many tasks at once (session start) → split
-into logical clusters → take ONE into work, leave the rest for the user to
-run in parallel sessions. Do not pull several clusters into one session.
-
-**Step 2 — Understand the code and context.**
-
-- Read the relevant code, understand the current state.
-- If you do not know or are unsure — say so directly. Never invent facts,
-  details, data.
-- Heavy reading (many files / searching the repo) → delegate to an ephemeral
-  sub-agent (cheaper model + caveman), bring only the summary into context
-  (token economy → playbook §Token economy).
-
-**Step 3 — Evaluate the proposed solution.**
-
-- Does it fix the cause, or the symptom?
-- Is there a simpler path to the same result?
-- Is the complexity proportionate to the value?
-- **The TDD question:** is there business logic in this task (calculations,
-  validation, data transforms)? Answer it yourself + raise it to the user →
-  joint decision. If yes and agreed → `/tdd` in the Do phase.
-
-If the solution is suboptimal, say so and propose an alternative:
-> "[idea] won't solve [problem] because [reason]. I propose [alternative] —
-> it gives [result] more simply/quickly."
-
-Stop-pattern: agreeing with a request not because it is good, but because
-you do not want to argue = **yes-man. Forbidden.** See also `buy-vs-build`
-(DEP-4, enforced H14) — before building a non-trivial piece, evaluate a
-ready-made solution first.
-
-**Step 4 — Plan the execution.**
-
-- **AC (acceptance criteria) are mandatory** for tasks with new
-  functionality. The user writes them (BA/PO role); fix them together in
-  this step. No AC → no task to execute.
-- **Fix in the doc backend** (the agent starts this itself, not on command):
-  **large** (after the plan + AC are finalised) → `/to-spec` (spec + AC) +
-  `/to-tasks`, block-coding A0/B1 mandatory; **medium** (when taken into
-  work) → `/to-tasks` (spec/AC — only if new functionality). Small — not
-  tracked.
-- **New ADR or plan item?** — decide whether the change needs a new ADR or a
-  new plan entry → `project_docs.md`.
-- For a **large** task, name the files you will touch and the verification
-  you will run. If you cannot name them, you are not ready to start.
-- **Observability (L tasks with a prod surface).** <!-- OBS --> Before building a
-  feature that ships to prod, answer one line: **how will we learn it
-  broke?** — which signal, urgent vs durable-log, and the negative/implicit
-  events (a flow that silently emits nothing). Plan the instrumentation into
-  the code now, not after an incident. Details → `code_standard.md` § OBS.
-- **Design system (UI tasks):** <!-- I19 --> a UI task → read the project's `DESIGN.md`
-  before generating; map the element onto a token/scale, no token → add a
-  token (not raw). No `DESIGN.md` yet → adopt the process first
-  (`templates/design-system/process.md`), do not generate UI on stock
-  defaults. Enforced nudge: H10 (DS branch). See playbook §Design system.
-- **Legal review:** assess whether the planned features need one (triggers →
-  playbook § research agent (legal review)). Needed → run a `research` agent
-  BEFORE implementation;
-  re-check by the triggers after. A clear violation → STOP, surface it.
-- **grill-me / Council:** large task with ≥3 open forks → `grill-me` →
-  `Council` → plan. Medium + uncertain → offer Council.
-- A large task → ask clarifying questions + show the plan. After drawing it
-  up, always say:
-  > "Plan ready. Read it and check it is ideal. If you want to change it,
-  > say so. I will not start coding until you approve."
-- **Exec slice — who runs this (mandatory for M/L, per plan block).** <!-- FR-28 -->
-  Under orchestrator mode **main is NOT an executor tier for code** — it plans,
-  dispatches, verifies, and decides forks. Route each block to its executor:
-  - `cleanup` (haiku) — mechanical, no judgment (codemods, renames, applying
-    an enumerated list, running scripts) → ephemeral agent. Also: mechanical
-    git routine (batch commits from an enumerated list, backup pushes,
-    worktree cleanup) + running the project's existing operational scripts
-    (backfill / content sync / e2e snapshot re-baseline) returning counters,
-    not stdout.
-  - `builder` (sonnet) — feature code against a ready spec/brief; the DEFAULT
-    for code blocks. Isolated blocks touching shared files → dispatch it into
-    a **worktree** (isolation is orthogonal to tier).
-  - `sub-sonnet` reviewers/investigators (code-reviewer, qa, e2e, research,
-    docs, security-*) — judgment but isolated (review, tests, research, docs).
-  - `cheap-session` — needs dialogue with the user but low error-risk
-    (routine feature on a ready spec, copy, configs, content/landing text
-    edits). I prepare a brief file
-    (what / why / files / AC / steps / stop-conditions + a link to
-    project-memory); the user opens a sonnet session on it. No context lost.
-  - `main` — **exception only, always with a written WHY**: a few-line
-    touch-up during Verify, a merge-conflict resolution, `.env`/secrets.
-    Architecture and open forks are main's JOB — but as decisions feeding a
-    spec, not as main typing the code.
-  When showing a plan, present this as a table (block / size / executor /
-  model). **Enforced: H14 (orchestrator gate)** — after plan mode, every main
-  edit of a project file is hard-blocked once per file (retry passes after
-  the WHY is stated); **H21 (exit-plan-gate)** — the plan cannot leave plan
-  mode without AC/DoD + this decomposition + a forks-resolved line.
-- **«Правила проекта: задача → модель → режим» + «Промпт для новой сессии» —
-  mandatory in every plan shown to the user.** <!-- FR-29 -->
-  Two required parts of any plan presented to Anton:
-  1. A section headed **«Правила проекта: задача → модель → режим»** — a table
-     mapping each kind of work → which model (opus/sonnet/haiku) → run mode
-     (main / subagent, batched / parallel). This is the Exec-slice table above,
-     but named and framed for the user in his own terms (task → model →
-     main-or-subagent), not agent jargon.
-  2. At the very end of the plan, a copy-paste **«Промпт для новой сессии»**
-     block (fenced) so work can resume cleanly in a fresh session: project,
-     absolute path to the plan, key files/folders, hard constraints, and the
-     session model to switch to.
-  **Enforced: H21 (exit-plan-gate)** greps for this section (RU/EN markers
-  `Правила проекта|задача → модель|task → model`) — a plan without it does not
-  leave plan mode without a conscious retry.
-
-- **Echo-reformulation before costly work (small tasks especially).** <!-- FR-30 -->
-  «Caveman наоборот»: a fuzzy ~15-word phrase → a compressed, exact skeleton
-  the user confirms with one word. Costs ~60–80 tokens. Fires **by signal, not
-  by task size** — this matters: every measured miss was on a small task (style
-  tweak, «turn off») where no plan is shown and the H14/H21 gates don't run.
-
-  Format (Russian first; English mirror):
-  ```
-  Понял так: <объект> · <действие> · <не трогаю: …> · <готово, когда: …>
-  Не уверен: <1–2 пункта или «—»>
-  ```
-  ```
-  Understood as: <object> · <action> · <not touching: …> · <done when: …>
-  Unsure: <1–2 points or "—">
-  ```
-
-  Triggers (any one):
-  - the lens (H22) raised a flag (degree word, dangling ref, open verb,
-    multi-task, nick). The hook only highlights; **this rule says what to do
-    with the flag** — the agent formulates the echo, the hook can't.
-  - a costly action follows: a sub-agent launch, a prod deploy, money, or a
-    mass edit. Even without a lens flag, the cheap echo prevents the ~3 000
-    characters of output thrown away before a rollback.
-
-  Why a rule and not only a hook: by the user's own history «discipline drifts
-  between sessions → move checkable things into hooks» (2026-06-21 (2)). The
-  hook raises the flag; this rule fixes the behaviour. After a month,
-  `prompt-audit.py` checks whether rollback count dropped — that is the only
-  honest criterion; until then everything else is a hypothesis.
-
-## 2. Do — orchestration
-<!-- FR-28 -->
-
-Main runs the loop; executors write the code:
-
-- **Dispatch from the tasks file, not from memory of the chat.** The plan's
-  blocks live as task lines (`/to-tasks`) and spec sections (`/to-spec`).
-  Take a block → mark `[/]` → dispatch → accept → mark `[x]`. The brief =
-  the block's spec section; the agent prompt links to it (plus the agent
-  preamble: zoom-out + reuse-before-reinvent + fork-protocol + return
-  contract — H04 blocks a build-agent launch without it).
-- Executor per the plan's exec slice: `builder` / `cleanup` agent, a worktree
-  for shared-file isolation, or a cheap-session brief. Independent sub-blocks
-  (no dependency between them) may run in parallel worktrees (I07).
-- **Accept a report, not raw output:** status / AC met / checks / DECIDED /
-  FORK / file:line summary. Then main verifies (§3) and merges/commits.
-- **Fork protocol (mid-execution decision points):**
-  - *Local technical trivia* — the executor decides itself and reports a
-    `DECIDED:` line; main just reads them at acceptance.
-  - *Architectural fork* (data structure, API contract, new dependency,
-    deviation from spec) — the executor STOPS and returns a `FORK:` report
-    (options / trade-offs / recommendation). **Main decides** — this is what
-    the expensive model is for — fixes the decision as an ADR line in the
-    spec, re-dispatches the block.
-  - *Business fork* (what the user sees, money, personal data, legal) — main
-    does NOT decide: surface to the user in plain language (options +
-    recommendation), fix the answer in the spec.
-  - *A discovered constraint breaks the plan* — new information; re-plan the
-    affected blocks (mini plan pass), update spec/tasks. Independent blocks
-    keep running; never paper over it.
-- Stay in scope — stray changes belong in a separate task. Changes go through
-  the plan: update the plan/spec → show → approval → re-dispatch.
-- **TDD:** if Step 3 agreed on TDD → the block's brief carries the `tdd` mark;
-  the builder runs red → green → refactor inside the block. Only business
-  logic (calculations, validation, transforms). UI, configs, copy — without.
-- Commit per accepted block (see `behavior.md` § Commits) — commits and
-  merges stay with main. Exception: mechanical git batches with zero judgment
-  (enumerated batch commits, backup pushes, worktree cleanup) may go to
-  `cleanup`; content commits never — the commit message needs the task's
-  history.
-
-## 3. Verify
-<!-- I17 -->
-
-Verification is mandatory before claiming "done". "Should work" is not
-verification. Pick at least one method, matching the task:
-
-| Kind | What it means | When |
-|------|---------------|------|
-| **static** | type-check, lint, build, dry-run | always available; cheap floor |
-| **eyes** | re-read the diff against the task; read the changed output | always — do this even when tests pass |
-| **dynamic** | run it: tests, dev server, the actual flow | when there is executable behavior |
-| **agent** | dispatch a review/qa sub-agent for an independent check | M/L tasks, security-sensitive areas |
-| **design-system** (UI) | anti-generic + conformance (everything from the system, reuse primitives) | UI tasks |
-
-- For **L** tasks, run at least two kinds, one of which is `agent`.
-- **Eyes checklist:** the diff has nothing extra (touched only what was
-  asked, no drive-by edits to neighboring code); it logically matches the
-  task; no hardcoded secrets/keys/passwords in the diff. For text content
-  (posts, legal pages, descriptions) — no AI-tell markers, no factual
-  errors.
-- **Dynamic split:** the change contains **logic** → tests are mandatory (if
-  missing, create them via the `qa` sub-agent, then run). The change is
-  **UI/style only** → Playwright + the `verify` skill instead of tests.
-- **Agent triggers (quick reference; full list → playbook.md § Agent
-  triggers):** `code-reviewer` — the change contains logic (not for typos /
-  style / copy / config with no logic). `security-arch` — auth / API /
-  upload / personal data / CORS. `e2e` sub-agent — behavior in a user
-  scenario / middleware / layout. `security-deps` — before every deploy;
-  result STOP (HIGH/CRITICAL) blocks the deploy, report it. `research` agent
-  (legal review) — data collection / third parties / monetization / UGC.
-- A UI fix is "done" only when proven by **appearance** (before/after), not
-  by "compiled / mounted without errors". Take a screenshot of the target
-  element before (bug state) and after the fix → compare yourself: did the
-  right element change, and does it match the design system.
-- Report what you verified and the command you ran, not just "done". Read
-  the actual command output before reporting success.
-- **Verification failure** → diagnose → correct the plan → repeat. Max 3
-  iterations, then → to the user.
-
-Verify passed → commit (see `behavior.md` § Commits). Decision to compact
-**by context fill**: <~40% do not compact (warm cache is cheaper); ~40–75%
-compact only if the next task is unrelated to the current context; >~75%
-compact based on context fill and task boundaries. Compaction is a harness
-operation, not a memory-save boundary; the raw transcript remains available
-to the independent offline ingest process.
+PEV mode is selected by the task-scale table below. Procedures, role prompts,
+spec formats, and verification matrices are lazy in playbook/skills.
 
 ## Task scale
 <!-- I16 -->
 
-| Size | Criteria | PEV mode | Static | Eyes | Dynamic |
-|------|----------|----------|--------|------|---------|
-| **S** | 1 file. Typo, style, config, copy. | Verify only | if the extension has one (`.py`/`.yaml`/`.json`/`.ts`/…) | yes | — |
-| **M** | 2–5 files, no architectural decisions. A component, a bug, an API endpoint. | Plan in head + Verify | yes | yes | logic → `qa` tests; UI → Playwright + `verify` |
-| **L** | 6+ files / DB+API+UI / architectural decisions / deploy. | Full Plan→Do→Verify + show the plan | yes | yes | tests + Playwright + `verify` — all of it |
+| Size | Trigger | Required loop |
+|---|---|---|
+| **S** | 1 file; local reversible typo/style/copy/config change; no behavior or infra effect | Execute → eyes/static Verify |
+| **M** | 2–5 files or 2+ dependent implementation steps; no override below | short Plan → Execute → Verify |
+| **L** | 6+ files or an override below | full shown Plan → Execute → Verify |
 
-When in doubt → pick the more thorough mode. Agent checks fire by triggers
-(see playbook), not tied to scale.
+Override to L: architecture/API/data schema/lifecycle change; a security
+boundary; an irreversible or non-recoverable action; 2+ executors; or one unresolved implementation fork that can change the solution. Routine
+production/deploy is not an override when runbook, backup/rollback, and smoke
+checks are proven. Three or more open forks → grill-me/Council.
 
-## Skills — when to launch
+## Plan
 
-The "which skill, when" trigger summary table + per-skill nuances live in
-`skills_triggers.md` (lazy — read it when choosing a skill). Kept out of
-always-context on purpose (detailed tables → lazy). Agent checks
-(`code-reviewer`, `security-arch`, `e2e`, `security-deps`, legal review) —
-see § Verify above.
+For M/L, state:
 
-## When the loop does not apply
+1. outcome, scope, and what is not changing;
+2. affected files/systems and current evidence;
+3. acceptance criteria and verification;
+4. implementation blocks and dependencies;
+5. delegation/model/isolation for each independent block;
+6. unresolved user decisions.
 
-- Trivial, reversible single-line changes (a typo, a comment) can skip Plan.
-  They still get Verify (eyes on the diff).
-- Never skip Verify. If you cannot verify, say so explicitly rather than
-  implying success.
+Do not start an unresolved branch. Technical trivia may be recorded as
+`DECIDED`; architecture/API/schema/dependency deviations return `FORK`;
+business/user-visible/money/personal-data/legal choices go to the user.
+
+For new behavior or a bug, use TDD when applicable: one failing behavior test
+→ minimal pass → refactor while green. Config/generated/throwaway work follows
+its own verification contract.
+
+## Delegation, model routing, and Escalation
+<!-- FR-27 FR-28 -->
+
+- Main default = **Luna Max**. Decompose M/L work before execution and delegate
+  every bounded independent stream that has a clear input, output, write scope,
+  and acceptance check.
+- Luna handles normal planning, implementation, routine deploys, exploration,
+  and verification. Prefer escalating one specialist stream instead of the
+  whole main session.
+- Terra handles broad but bounded integration/synthesis when Luna returns
+  contradictory or incomplete evidence.
+- Sol handles architecture or high-risk decisions when the uncertainty cannot
+  be isolated. Main changes model only when the continuing user conversation
+  itself requires that depth.
+- Escalate after two bounded failed Luna attempts, a `FORK/BLOCKED/UNVERIFIED`
+  result, contradictory evidence, an unbounded blast radius, missing recovery,
+  or a security/irreversibility decision. File count and routine production
+  alone are not escalation triggers.
+- Before escalation, report: trigger, why Luna is insufficient, recommended
+  Terra/Sol scope, and what can safely continue on Luna.
+- Read-only roles get technical read-only isolation. Parallel writers get
+  disjoint worktrees/write scopes.
+- Caveman only for read-only exploration/research/docs/status. All builders,
+  reviewers, QA, security, E2E, architects, and final answers use normal
+  structured prose.
+
+Agent role triggers and prompt contracts → `skills_triggers.md` and playbook
+§ Agent prompt contract. H04 validates dispatch metadata.
+
+## Execute
+
+- Work one accepted block at a time. The executor changes only its declared
+  write scope and returns status, files, checks, AC, `DECIDED`, and `FORK`.
+- Main owns user decisions, cross-block integration, acceptance, commits, and
+  final reporting. A discovered plan-breaking constraint → update the affected
+  plan before continuing.
+- Keep unrelated findings out of the patch; report them separately.
+
+## Verify
+<!-- I17 -->
+
+Never claim done without evidence:
+
+- **static:** parse/type/lint/build/dry-run as applicable;
+- **eyes:** inspect the actual diff/output against scope and secrets;
+- **dynamic:** run behavior/tests; UI uses Playwright and appearance evidence;
+- **independent:** M/L logic → QA/review; auth/API/data/security → security
+  review; deploy → dependency/security check; user flow → E2E.
+
+L requires at least two kinds, including an independent check. A verification
+failure → diagnose, correct, rerun; after three failed repair iterations,
+surface the blocker. Report commands and observed results.
+
+## No full Plan
+
+S tasks may skip Plan, never Verify. Read-only explanation/status work uses
+evidence collection and an explicit confidence boundary.

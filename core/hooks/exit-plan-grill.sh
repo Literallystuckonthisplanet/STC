@@ -28,7 +28,7 @@
 # block message; a passing plan needs no nag).
 # Log: /tmp/stc-exitplan-gate-<session> (ack marker).
 #
-# Render-time vars: ${USER_LANG}. $NATIVE_DIR is substituted at deploy time.
+# Render-time vars: ${USER_LANG}, ${HARNESS_NAME}. $NATIVE_DIR is substituted at deploy time.
 
 USER_LANG="${USER_LANG:-ru}"
 
@@ -36,6 +36,48 @@ input=$(cat)
 session=$(echo "$input" | jq -r '.session_id // "nosess"' 2>/dev/null)
 agent_id=$(echo "$input" | jq -r '.agent_id // ""' 2>/dev/null)
 [ -n "$agent_id" ] && exit 0   # sub-agents don't drive the plan gate
+
+HARNESS_NAME="${HARNESS_NAME:-claude}"
+tool_name=$(echo "$input" | jq -r '.tool_name // empty' 2>/dev/null)
+permission_mode=$(echo "$input" | jq -r '.permission_mode // empty' 2>/dev/null)
+
+# Codex has no Claude plan-file lifecycle. Bind H21 to the real
+# PreToolUse(apply_patch) payload and inspect only an inline plan, if Codex
+# supplies one. Never fall back to $NATIVE_DIR/plans or ~/.claude/plans here:
+# a foreign plan must not make an apply_patch decision for Codex.
+if [ "$HARNESS_NAME" = "codex" ]; then
+  [ "$tool_name" = "apply_patch" ] || exit 0
+  [ "$permission_mode" = "plan" ] || exit 0
+
+  ack="/tmp/stc-exitplan-gate-${session}"
+  [ -f "$ack" ] && exit 0
+  codex_plan=$(echo "$input" | jq -r '.tool_input.plan // .plan // ""' 2>/dev/null)
+  missing=""
+  if [ -z "$codex_plan" ]; then
+    missing="inline plan with AC/DoD, executor decomposition, resolved forks, and task→model→mode contract; "
+  else
+    if ! echo "$codex_plan" | grep -qiE '(^|[^a-zA-Z])AC([^a-zA-Z]|$)|acceptance|DoD|definition of done|критери'; then
+      missing="${missing}AC/DoD; "
+    fi
+    if ! echo "$codex_plan" | grep -qiE 'sub-haiku|sub-sonnet|builder|cleanup|worktree|cheap-session|exec::|ворктри|исполнител'; then
+      missing="${missing}decomposition→executors; "
+    fi
+    if ! echo "$codex_plan" | grep -qiE 'развил|fork'; then
+      missing="${missing}forks-resolved line; "
+    fi
+    if ! echo "$codex_plan" | grep -qiE 'Правила проекта|задача → модель|task → model'; then
+      missing="${missing}«задача→модель→режим» table + new-session prompt; "
+    fi
+  fi
+  [ -z "$missing" ] && exit 0
+
+  : > "$ack"
+  case "${USER_LANG:-ru}" in
+    ru) echo "⛔ H21 Codex apply_patch gate: permission_mode=plan не может применить патч — ${missing}Передай inline-план с AC/DoD, исполнителями, развилками и контрактом задача→модель→режим; Claude plan files не используются." >&2 ;;
+    *)  echo "⛔ H21 Codex apply_patch gate: permission_mode=plan cannot apply a patch — ${missing}Provide an inline plan with AC/DoD, executors, forks, and the task→model→mode contract; Claude plan files are not used." >&2 ;;
+  esac
+  exit 2
+fi
 
 ack="/tmp/stc-exitplan-gate-${session}"
 [ -f "$ack" ] && exit 0

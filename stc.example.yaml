@@ -44,7 +44,6 @@ models:
 # ------------------------------------------------------------
 workspace:
   root: "${HOME}/projects"     # where your projects live; agents resolve project memory relative to this
-  dev_ports: [3000, 3001, 3002]  # ports scanned by the stop-services hook on session end
 
 # ------------------------------------------------------------
 # Deploy options
@@ -52,7 +51,7 @@ workspace:
 deploy:
   # Token economy on inter-agent traffic: main agent instructs research/review
   # sub-agents to answer in caveman (terse) style. Set to `none` for full prose.
-  subagent_compression: caveman    # caveman | none
+  subagent_compression: none       # explicit per approved read-only role in registry.yaml
 
   # Documentation backend. Where specs/tasks and the infra mirror live.
   #   markdown — write .md files under doc_backend.root (no external service; default)

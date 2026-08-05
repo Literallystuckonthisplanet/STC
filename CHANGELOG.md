@@ -26,6 +26,9 @@ release notes.
 - STC project memory is canonicalized as `project_STC.md` and the Obsidian
   review has a durable `reports/stc/review-decisions.json` registry, so accepted
   or obsolete transcript claims are not reopened in later months.
+- Added `core/scripts/harness_applicability.py`: one read-only bundle for
+  target render, full behavior tests, source Snapshot presence, and optional
+  live-canary verification.
 
 ### Changed — compact startup context and Luna-first Codex routing
 - Always-context is limited to three compact firing-rule files plus the user

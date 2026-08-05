@@ -321,6 +321,8 @@ terminal UI.
 python3 deploy/deploy.py check                    # validate config (no writes)
 python3 deploy/deploy.py render --target claude --dry-run   # preview into deploy/_rendered/
 python3 deploy/deploy.py apply --target claude    # render + write to ~/.stc/ + ~/.claude (backs up first)
+python3 core/scripts/harness_applicability.py --target claude,codex  # static applicability bundle
+python3 core/scripts/harness_applicability.py --target codex --live   # + real Codex canary
 python3 core/scripts/memory_ingest.py run --config stc.yaml  # offline transcript ingest + monthly report
 python3 deploy/launchd_install.py --apply          # install/update independent macOS jobs
 python3 core/scripts/schedule_calendar.py --output ~/Work/memory/stc-scheduled-tasks.ics
@@ -403,6 +405,47 @@ python3 deploy/tests/test_render.py    # zero-dependency stdlib runner
 # or, if pytest is installed:
 python3 -m pytest deploy/tests/        # the suite is pytest-compatible
 ```
+
+### Harness applicability bundle
+
+`core/scripts/harness_applicability.py` is the single read-only entrypoint for
+checking whether STC can be applied to a target harness. It runs `deploy.py
+check`, target-specific dry-run renders, the full `deploy/tests/` suite, and a
+source Snapshot check. It never runs `apply` or `uninstall`.
+
+```bash
+# Claude + Codex: source/render/test contract only, no model call
+python3 core/scripts/harness_applicability.py --target claude,codex
+
+# Codex: add the real startup-context canary (one bounded Luna Max call)
+python3 core/scripts/harness_applicability.py --target codex --live
+
+# Make an UNVERIFIED live layer fail the shell command as well
+python3 core/scripts/harness_applicability.py --target claude,codex --live --fail-on-warn
+```
+
+The report is written under `memory/reports/stc/YYYY-MM/`. `contract=PASS`
+means the adapter renders and the repository behavior suite passes. `live=PASS`
+requires a real canary; `live=UNVERIFIED` means that no live canary exists for
+the selected harness yet. Codex has a live canary. Claude and frozen ZCode are
+currently verified only through source/render/hook contracts.
+
+### Snapshot routing
+
+Snapshot is a navigation artifact, not part of the H06 startup payload. H06
+loads the always-context rules and user profile. The session routing rule tells
+the model when to open Snapshot with a read operation:
+
+- STC/infra question → `core/memory/SNAPSHOT.md`;
+- project status question → `~/Work/memory/projects/SNAPSHOT.md`, then that
+  project's generated `SNAPSHOT.md`;
+- code relationships → follow the project's Graphify pointer from Snapshot.
+
+Therefore the default is **model-driven read-on-demand**, not automatic
+injection. The background Snapshot job refreshes the files independently at
+load/wake and once per day. The applicability bundle additionally compares the
+source Snapshot with `~/.stc/core/memory/SNAPSHOT.md` when `--live` is used and
+reports a stale deployment as `WARN`.
 
 The suite covers renderer/deployer regressions, adapter contracts, collision handling, idempotent re-deploy, orphan pruning, provider selection, native hook behavior, always-context size and content, transcript corpus import, Graphify/Snapshot ordering, weekly audits, AgentShield orchestration, launchd/calendar generation, the Codex live canary, and the offline memory pipeline.
 

@@ -5,8 +5,8 @@ The bundle separates three questions that are often conflated:
 
 * can STC render and validate the requested harness adapter;
 * do the repository behavior tests pass;
-* does a real harness see the deployed contract (only Codex currently has a
-  live canary; Claude and ZCode are reported as UNVERIFIED).
+* does a real harness see the deployed contract (Codex and Claude have live
+  canaries; frozen ZCode is reported as UNVERIFIED).
 
 It never runs ``deploy.py apply`` or ``uninstall``.  Reports are written under
 the shared Obsidian-backed memory root, while source and live deployment files
@@ -28,7 +28,11 @@ from typing import Any, Iterable
 
 DEFAULT_REPORTS_ROOT = Path("~/Work/memory/reports/stc").expanduser()
 DEFAULT_STC_HOME = Path("~/.stc").expanduser()
-LIVE_CANARY_TARGETS = {"codex"}
+LIVE_CANARY_SCRIPTS = {
+    "codex": "codex_live_canary.py",
+    "claude": "claude_live_canary.py",
+}
+LIVE_CANARY_TARGETS = set(LIVE_CANARY_SCRIPTS)
 STEP_STATUSES = {"PASS", "FAIL", "WARN", "UNVERIFIED", "SKIPPED"}
 
 
@@ -279,7 +283,7 @@ def run_bundle(
                     "category": "live",
                     "command": [
                         sys.executable,
-                        str(repo / "core" / "scripts" / "codex_live_canary.py"),
+                        str(repo / "core" / "scripts" / LIVE_CANARY_SCRIPTS[target]),
                         "--repo",
                         str(repo),
                         "--reports-root",

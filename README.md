@@ -322,7 +322,7 @@ python3 deploy/deploy.py check                    # validate config (no writes)
 python3 deploy/deploy.py render --target claude --dry-run   # preview into deploy/_rendered/
 python3 deploy/deploy.py apply --target claude    # render + write to ~/.stc/ + ~/.claude (backs up first)
 python3 core/scripts/harness_applicability.py --target claude,codex  # static applicability bundle
-python3 core/scripts/harness_applicability.py --target codex --live   # + real Codex canary
+python3 core/scripts/harness_applicability.py --target claude,codex --live  # + real live canaries
 python3 core/scripts/memory_ingest.py run --config stc.yaml  # offline transcript ingest + monthly report
 python3 deploy/launchd_install.py --apply          # install/update independent macOS jobs
 python3 core/scripts/schedule_calendar.py --output ~/Work/memory/stc-scheduled-tasks.ics
@@ -417,8 +417,8 @@ source Snapshot check. It never runs `apply` or `uninstall`.
 # Claude + Codex: source/render/test contract only, no model call
 python3 core/scripts/harness_applicability.py --target claude,codex
 
-# Codex: add the real startup-context canary (one bounded Luna Max call)
-python3 core/scripts/harness_applicability.py --target codex --live
+# Add the real startup-context canary (one bounded call per target)
+python3 core/scripts/harness_applicability.py --target claude,codex --live
 
 # Make an UNVERIFIED live layer fail the shell command as well
 python3 core/scripts/harness_applicability.py --target claude,codex --live --fail-on-warn
@@ -427,8 +427,23 @@ python3 core/scripts/harness_applicability.py --target claude,codex --live --fai
 The report is written under `memory/reports/stc/YYYY-MM/`. `contract=PASS`
 means the adapter renders and the repository behavior suite passes. `live=PASS`
 requires a real canary; `live=UNVERIFIED` means that no live canary exists for
-the selected harness yet. Codex has a live canary. Claude and frozen ZCode are
-currently verified only through source/render/hook contracts.
+the selected harness yet. Codex and Claude both have live canaries; frozen
+ZCode is verified only through source/render/hook contracts.
+
+The Claude canary (`core/scripts/claude_live_canary.py`) runs one headless
+`claude -p` call with every file/exec tool denied, MCP disabled, `--setting-sources
+user`, and a throwaway working directory, then reads the first assistant
+message and stops the process. Cutting the run off after that message is
+deliberate: Stop hooks would otherwise continue the session and overwrite the
+answer with unrelated hook follow-up.
+
+Like the Codex canary it has a monthly `launchd` job
+(`com.xtoshin.stc-claude-live-canary`, day 1 at 11:15, 15 minutes after the
+Codex one). This is the one background job that does depend on an active Claude
+subscription — an accepted exception, decided 2026-08-09, because a live
+Claude-side check is not possible otherwise. `RunAtLoad` is `false` so
+reinstalling the jobs never spends an unplanned call; the monthly state guard in
+`.state/claude-live-canary.json` keeps it to one attempt per month.
 
 ### Snapshot routing
 
@@ -447,7 +462,7 @@ load/wake and once per day. The applicability bundle additionally compares the
 source Snapshot with `~/.stc/core/memory/SNAPSHOT.md` when `--live` is used and
 reports a stale deployment as `WARN`.
 
-The suite covers renderer/deployer regressions, adapter contracts, collision handling, idempotent re-deploy, orphan pruning, provider selection, native hook behavior, always-context size and content, transcript corpus import, Graphify/Snapshot ordering, weekly audits, AgentShield orchestration, launchd/calendar generation, the Codex live canary, and the offline memory pipeline.
+The suite covers renderer/deployer regressions, adapter contracts, collision handling, idempotent re-deploy, orphan pruning, provider selection, native hook behavior, always-context size and content, transcript corpus import, Graphify/Snapshot ordering, weekly audits, AgentShield orchestration, launchd/calendar generation, the Codex and Claude live canaries, and the offline memory pipeline.
 
 ## Repository layout
 

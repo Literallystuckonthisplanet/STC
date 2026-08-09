@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.xtoshin.stc-claude-live-canary</string>
+  <key>Description</key>
+  <string>Monthly read-only Claude Code startup-context canary.</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/xtoshin/Work/STC/core/scripts/claude_live_canary.py</string>
+    <string>--reports-root</string>
+    <string>/Users/xtoshin/Work/memory/reports/stc</string>
+    <string>--claude-bin</string>
+    <string>/Users/xtoshin/.local/bin/claude</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/xtoshin/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>11</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/xtoshin/Work/memory/reports/stc/live-canary.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/xtoshin/Work/memory/reports/stc/live-canary.stderr.log</string>
+</dict>
+</plist>

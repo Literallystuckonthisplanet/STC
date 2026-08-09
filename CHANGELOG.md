@@ -11,6 +11,18 @@ release notes.
 
 ## [Unreleased]
 
+### Added — Claude live canary
+- `core/scripts/claude_live_canary.py` closes the last live-verification gap:
+  Claude was previously reported `UNVERIFIED` because only Codex had a real
+  canary. The Claude canary spends one bounded headless `claude -p` call with
+  tools denied, MCP disabled, user-scope settings only, and a throwaway working
+  directory, then asserts six startup-context facts. The applicability bundle
+  picks the canary per target, so `--target claude --live` now yields
+  `live=PASS` instead of `UNVERIFIED`. It runs monthly through
+  `com.xtoshin.stc-claude-live-canary` (day 1, 11:15, `RunAtLoad` disabled) —
+  the one background job allowed to depend on an active Claude subscription,
+  decided 2026-08-09 because Claude-side live verification has no other route.
+
 ### Added — independent runtime verification and project navigation
 - Weekly deterministic STC audit, weekly AgentShield scan, and monthly
   read-only Codex live canary run through versioned `launchd` jobs and write

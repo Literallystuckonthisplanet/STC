@@ -255,7 +255,7 @@ def test_framing_and_solution_criteria_are_separate_lists():
     solution = {row["код"] for row in FRAMING["критерии_решения"]}
     stated = {row["код"] for row in FRAMING["критерии_постановки"]}
     assert solution & stated == set()
-    assert set(FRAMING["считает_движок_без_права_поднимать"]) <= solution
+    assert set(FRAMING["считает_движок_без_права_поднимать"]) == {"несходимость", "цена_согласования"}
 
 
 def test_the_one_change_limit_is_a_policy_not_budget_arithmetic():
@@ -347,6 +347,163 @@ def test_declared_counts_match_the_lists_they_describe():
             assert declared == len(sources[list_name]), f"{block}: {list_name}"
             checked += 1
     assert checked >= 4, "counts stopped being cross-checked"
+
+
+# --------------------------------------------------------------------------
+# coverage of the tables themselves
+#
+# Measured by mutate_roundtable_tables.py: delete one row at a time and see
+# whether anything fails. The first cut caught 57% — 22 of 29 automaton
+# transitions and all 17 validation rules could be deleted silently. A green
+# suite that does not look at the rows is the same failure STC already had on
+# 2026-07-29, when a guard with no corpus printed "skipping" and exited green.
+# The assertions below pin whole rows by the invariant they belong to, not by
+# their text, so they stay meaningful rather than becoming change detectors.
+# --------------------------------------------------------------------------
+
+def test_a_run_can_be_cancelled_from_every_working_state():
+    working = set(VOCAB["состояния_прогона"]["рабочие"])
+    have = {row["из"] for row in RUN["переходы"] if row["событие"] == "cancel-run"}
+    assert have == working, "cancel-run must reach every working state"
+
+
+def test_framing_cancellations_cover_every_state_a_live_run_can_be_in():
+    active = {"идёт_круг", "ждёт_автора", "ждёт_Антона"}
+    for decision in ("изменить_цель", "сменить_решение", "остановить"):
+        have = {r["из"] for r in RUN["переходы"] if r["событие"] == f"{decision}_framing"}
+        assert have == active, decision
+
+
+def test_every_verdict_has_an_outcome_from_a_running_round():
+    running = [r for r in RUN["переходы"] if r["из"] == "идёт_круг" and r["событие"] == "вердикт"]
+    for verdict in ("ОДОБРЕНО", "НУЖНЫ_ПРАВКИ", "РЕШЕНИЕ_АНТОНА", "НЕПОЛНЫЙ_ПРОГОН"):
+        assert any(verdict in row["условие"] for row in running), verdict
+
+
+def test_author_and_critic_turns_both_exist_in_the_issue_lifecycle():
+    # Deleting either half leaves a lifecycle where an issue can be raised but
+    # never answered, or answered but never confirmed.
+    targets = {t for row in ISSUES["переходы"] for t in row["в"]}
+    assert {"принят_автором", "оспорен_автором"} <= targets, "author has no move"
+    assert {"закрыт_исправлением", "возражение_снято"} <= targets, "critic cannot close"
+    for status in VOCAB["статусы_issue"]["ждут_автора"]:
+        answered = [r for r in ISSUES["переходы"]
+                    if r["из"] == status and "принят_автором" in r["в"]]
+        assert answered, f"{status}: the author has no move from here"
+
+
+def test_every_route_to_anton_exists():
+    to_anton = [r for r in ISSUES["переходы"] if "вынесен_Антону" in r["в"] and r["из"] is not None]
+    conditions = " | ".join(r["условие"] for r in to_anton)
+    for kind in ("сменой_решения", "только_сменой_цели"):
+        assert kind in conditions, kind
+    assert "неизвестное высокой существенности" in conditions
+    assert "круги исчерпаны" in conditions
+
+
+def test_every_blocking_kind_reaches_the_verdict_table():
+    conditions = " | ".join(row["условие"] for row in ISSUES["вердикт"])
+    for kind in VOCAB["устранимость"]:
+        assert kind in conditions, kind
+    # Both branches of "fixable" must exist: with rounds left, and without.
+    assert "круги не исчерпаны" in conditions
+    assert "блокер правкой, круги исчерпаны" in conditions
+    assert "неизвестное высокой существенности" in conditions
+
+
+def test_every_constrained_element_has_at_least_one_validation_rule():
+    # 17 rules with no test meant any of them could vanish unnoticed. Each
+    # phrase below is distinctive to exactly one rule, so losing that rule
+    # fails here — while rewording any of them stays free.
+    rules = " | ".join(row["правило"] for row in ISSUES["валидация"])
+    for element in (
+        "нечего_добавить=да", "нечего_добавить=нет",
+        "альтернатива", "при классе не блокирующая", "с полем устранимость",
+        "не из перечня", "area_id", "evidence пуст",
+        "кода возврата", "создан критиком",
+        "не найден в реестре решений", "отсутствует при",
+        "reopens_issue_id", "отпечат", "вне списка допустимых",
+        "поле вердикта", "разбиение секретаря",
+    ):
+        assert element in rules, element
+    outcomes = {row["исход"] for row in ISSUES["валидация"]}
+    assert outcomes <= {"отказ", "находка_невалидна", "ответ_отвергнут", "резюме_отвергнуто"}
+
+
+def test_who_may_close_an_issue_is_fully_stated():
+    closers = ISSUES["кто_завершает"]
+    assert set(closers["поднявший_критик"]) | set(closers["Антон"]) == ISSUE_TERMINAL
+    assert closers["никто_иной"], "the exclusion must be written down, not implied"
+
+
+def test_precheck_file_classes_and_fixture_home_are_declared():
+    assert set(PRECHECK["классы_файлов"]) == {"existing_evidence", "planned_output"}
+    assert PRECHECK["фикстуры"]["каталог"].endswith("precheck/")
+    assert PRECHECK["фикстуры"]["не_смешивать_с"], "tune/holdout test models, not code"
+
+
+def test_revoke_operation_states_both_the_allowed_and_the_refused_case():
+    revoke = RUN["revoke_operation"]
+    assert revoke["разрешено_если"] and revoke["иначе"], "a one-sided rule is not a rule"
+
+
+def test_the_change_limit_states_its_number_and_its_reason():
+    limit = FRAMING["ограничитель_смены_решения"]
+    assert limit["сколько"] == 1 and limit["за"] == "стадию"
+    assert limit["почему"], "a policy without a reason gets re-litigated"
+
+
+def test_retention_covers_every_class_of_run():
+    assert set(FRAMING["хранение"]) == {
+        "неизменяемая_запись_прогона", "полные_материалы", "незавершённые_и_ждёт_Антона",
+    }
+
+
+def test_vocabulary_subsets_stay_inside_their_parents():
+    assert set(VOCAB["операции_без_бюджета"]) <= set(VOCAB["операции"])
+    assert set(VOCAB["схемы_вне_контрактов"]) & set(VOCAB["схемы_контрактов"]) == set()
+    assert set(VOCAB["действительность_прогона"]) == {"актуален", "superseded"}
+
+
+def test_closed_vocabularies_are_pinned_exactly():
+    # These are contracts, not lists that grow: dropping a value silently
+    # narrows what the engine will accept, and nothing else would notice.
+    assert set(VOCAB["устранимость"]) == {"правкой", "сменой_решения", "только_сменой_цели"}
+    assert "СТОП" in VOCAB["вердикты"]
+    assert set(VOCAB["операции_без_бюджета"]) == {"precheck", "publish-check", "status"}
+    assert VOCAB["схемы_вне_контрактов"] == ["precheck_frontmatter"]
+    assert PRECHECK["схема_входа"].endswith("precheck_frontmatter.json")
+
+
+def test_every_working_state_has_a_way_forward_not_only_a_way_out():
+    # Without this, deleting `resume` or `submit-revision` leaves a state you
+    # can only cancel from — reachability alone would not notice.
+    for state in VOCAB["состояния_прогона"]["рабочие"]:
+        forward = [r for r in RUN["переходы"]
+                   if r["из"] == state and r["событие"] != "cancel-run"
+                   and not r["событие"].endswith("_framing")]
+        assert forward, f"{state} can only be cancelled"
+    events = {(r["из"], r["событие"]) for r in RUN["переходы"]}
+    assert ("неполный", "resume") in events
+    assert ("ждёт_автора", "submit-revision") in events
+    assert ("ждёт_автора", "бюджет_исчерпан") in events
+    assert ("ждёт_Антона", "все_разрешены") in events
+    # Both branches of сменить_решение: the first restarts, the second stops.
+    changes = {r["в"] for r in RUN["переходы"] if r["событие"] == "сменить_решение"}
+    assert changes == {"ждёт_автора", "остановлено_для_перепроектирования"}
+
+
+def test_every_type_that_reaches_anton_has_decisions_he_may_take():
+    # A route to Anton with no allowed decision is a dead end for him.
+    assert len(ISSUES["допустимые_решения"]) == 4
+    for issue_type, decisions in ISSUES["допустимые_решения"].items():
+        assert decisions, issue_type
+    assert "неизвестное_высокой_существенности" in ISSUES["допустимые_решения"]
+
+
+def test_precheck_fixtures_declare_their_oracle_and_their_rule():
+    assert PRECHECK["фикстуры"]["эталон"].endswith(".json")
+    assert "на чистом документе" in PRECHECK["фикстуры"]["правило"]
 
 
 def test_only_isolation_work_is_cleared_to_start():

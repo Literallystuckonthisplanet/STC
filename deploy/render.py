@@ -14,7 +14,8 @@ The result is four things:
   manifest     — list of {path, kind, source} for uninstall + idempotent re-deploy
 
 Non-destructive model (every artifact is collision-proof):
-  - all markdown artifacts carry a `.stc.md` suffix (never touch user files)
+  - loose markdown artifacts carry a `.stc.md` suffix; native skills use the
+    loader-required `SKILL.md` inside a namespaced directory
   - hooks are `.stc.sh` scripts + a settings.json patch (merged, not overwritten)
   - the ONLY user-owned file touched is the always-context file, via ONE marker
     block pointing at the harness's always-context bundle (.stc.md)
@@ -510,7 +511,7 @@ def _matcher_events(matchers):
 
 
 # ---------------------------------------------------------------------------
-# Markdown layer renderers (all .stc.md)
+# Markdown layer renderers
 # ---------------------------------------------------------------------------
 
 def _model_id_for(registry, provider, agent_name):
@@ -675,6 +676,70 @@ def _render_commands(core_dir, adapter, varmap, result, native_commands_dir):
         rel = os.path.join(native_commands_dir, f"{name}.stc.md")
         result.files[rel] = body
         result.manifest.append({"path": rel, "kind": "command", "source": source})
+
+
+def _split_markdown_frontmatter(text):
+    """Return ``(metadata, body)`` for a Markdown YAML frontmatter block."""
+    match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", text, re.DOTALL)
+    if not match:
+        return {}, text
+    metadata = yaml.safe_load(match.group(1)) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return metadata, text[match.end():]
+
+
+def _render_command_skills(core_dir, adapter, varmap, result, native_skills_dir):
+    """Render command sources as Codex-compatible skill folders.
+
+    ``core/commands`` remains the single source shared with Claude. Codex's
+    deprecated custom-prompt surface cannot consume those files, so this
+    adapter wraps each command body in the native ``SKILL.md`` contract while
+    preserving the command instructions verbatim after a small migration note.
+    """
+    caps = adapter.get("commands", {}).get("capabilities", {})
+    for name, cap in caps.items():
+        if cap.get("supported") is False:
+            continue
+        binding = cap.get("binding") or {}
+        source = binding.get("source") or f"core/commands/{name}.md"
+        src = os.path.join(os.path.dirname(core_dir), source) if not os.path.isabs(source) else source
+        if not os.path.exists(src):
+            raise FileNotFoundError(
+                f"command '{name}' declares missing source: {src}"
+            )
+
+        metadata, command_body = _split_markdown_frontmatter(_read(src))
+        if "name" in metadata and (
+            not isinstance(metadata["name"], str) or not metadata["name"].strip()
+        ):
+            raise ValueError(
+                f"command '{name}' requires a non-empty string frontmatter "
+                f"name in {source}"
+            )
+        description = metadata.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError(
+                f"command '{name}' requires a non-empty string frontmatter "
+                f"description in {source}"
+            )
+        skill_name = f"source-command-{name}-stc"
+        body = _substitute_vars(command_body, varmap, RENDER_VARS).strip()
+        skill_body = (
+            _frontmatter({"name": skill_name, "description": description})
+            + f"# {skill_name}\n\n"
+            + f"Use this skill when the user asks to run the migrated source command `{name}.stc`.\n\n"
+            + "## Command Template\n\n"
+            + body
+            + "\n"
+        )
+        rel = os.path.join(native_skills_dir, skill_name, "SKILL.md")
+        result.files[rel] = skill_body
+        result.manifest.append({
+            "path": rel,
+            "kind": "skill",
+            "source": source,
+        })
 
 
 def _render_skills(core_dir, adapter, varmap, result, native_skills_dir):
@@ -1076,7 +1141,15 @@ def render_harness(stc, registry, provider, adapter, core_dir, repo_dir):
 
     _render_always_context(core_dir, adapter, result, native_dir, harness)
     _render_hooks(core_dir, adapter, varmap, result, hooks_dir)
-    _render_commands(core_dir, adapter, varmap, result, commands_dir)
+    command_delivery = (adapter.get("commands") or {}).get("delivery", "commands")
+    if command_delivery == "skills":
+        _render_command_skills(core_dir, adapter, varmap, result, skills_dir)
+    elif command_delivery == "commands":
+        _render_commands(core_dir, adapter, varmap, result, commands_dir)
+    else:
+        raise ValueError(
+            f"unsupported command delivery mode for {harness}: {command_delivery!r}"
+        )
     _render_subagents(core_dir, registry, provider, adapter, result, agents_dir)
     _render_skills(core_dir, adapter, varmap, result, skills_dir)
     _render_mcp(adapter, stc, result)

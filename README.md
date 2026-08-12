@@ -356,7 +356,9 @@ The deployer is built to be safe to re-run on a live harness. Every scenario bel
 
 1. **`_render_always_context`** — the bundle (the `.stc.md` file with the `@import` lines into `~/.stc/core/...`) + the single marker `@import` line that goes into the user's always-context file.
 2. **`_render_hooks`** — the adapter-supported hook scripts (with `${VAR}` substitution) + matcher wiring. Retired capabilities are pruned from STC-owned live artifacts.
-3. **`_render_commands`** — the slash command markdown.
+3. **`_render_commands` / command delivery** — slash-command markdown where the
+   harness supports it, or native skill folders for adapters that deprecate
+   custom prompts (Codex).
 4. **`_render_subagents`** — typed agent files (native) or degraded dispatch instructions.
 5. **`_render_skills`** — the skill directories.
 6. **`_render_mcp`** — the MCP server blocks (command split via `shlex`, secrets by env-var name, `stc-` namespaced).

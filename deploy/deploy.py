@@ -2,8 +2,9 @@
 """deploy.py — the STC deploy orchestrator (CLI).
 
 Consumes the Stage-3 contracts (adapter.yaml × core/models × registry.yaml ×
-stc.yaml) and renders the harness form. Non-destructive: every markdown
-artifact is *.stc.md (collision-proof); settings/.mcp JSON are merged under
+stc.yaml) and renders the harness form. Non-destructive: loose markdown
+artifacts carry a *.stc.md suffix; native skills use the loader-required
+SKILL.md inside a namespaced directory. settings/.mcp JSON are merged under
 the stc-* namespace; the ONLY user file touched is the always-context file,
 via one marker @import line.
 
@@ -12,7 +13,7 @@ Commands:
   apply    --target <h[,...]> [--overwrite] [--skip-collisions]
                                             render + write to ~/.stc/ + the native dir
                                             (REFUSES on JSON collisions unless a flag is given)
-  uninstall --target <h[,...]>              remove *.stc.md, the marker block, stc-* JSON keys
+  uninstall --target <h[,...]>              remove STC artifacts, the marker block, stc-* JSON keys
   check                              validate config without writing
   restore  <backup-id>               roll back JSON from a backup snapshot
 
@@ -35,6 +36,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 
 # make the sibling modules importable when run as a script
@@ -547,6 +549,11 @@ def cmd_render(args):
                 home = os.path.expanduser("~")
                 rel = os.path.join("__absolute__", os.path.relpath(rel, home))
             render_files[rel] = body
+        # The render tree is derived inspection output. Clear the previous
+        # target first so retired artifacts (for example old Codex command
+        # files after command→skill migration) cannot look current.
+        if os.path.isdir(out):
+            shutil.rmtree(out)
         _write_tree(out, render_files)
         # also dump the json patches for inspection
         for jn, jp in rr.json_patches.items():
@@ -575,6 +582,7 @@ def cmd_apply(args):
     for t in targets:
         adapter = adapters[t]  # _resolve_targets already validated t ∈ adapters
         native_dir = adapter["native_dir"].replace("${HOME}", os.path.expanduser("~"))
+        external_roots = _external_manifest_roots(adapter)
         provider = R.provider_for(stc, t, REPO)
         rr = R.render_harness(stc, registry, provider, adapter, CORE, REPO)
 
@@ -592,12 +600,18 @@ def cmd_apply(args):
 
         # 1. ~/.stc/core/ (the shared, harness-neutral source — one update, all harnesses)
         _sync_stc_home()
-        # 2. *.stc.md + hook scripts into the native dir
+        # 2. rendered artifacts (including native SKILL.md files) + hook
+        #    scripts into the native dir(s)
         _write_tree(native_dir, rr.files, native_dir=native_dir)
         # 2a. prune artifacts a PRIOR deploy wrote that this render no longer emits
         #     (e.g. a retired command like handoff.stc.md) — deploy used to only
         #     ever write, never clean, so a dropped file lingered forever.
-        pruned = _prune_orphans(t, native_dir, rr.files.keys())
+        pruned = _prune_orphans(
+            t,
+            native_dir,
+            rr.files.keys(),
+            allowed_roots=external_roots,
+        )
         if pruned:
             print(f"   🧹 pruned {len(pruned)} orphaned artifact(s): {', '.join(pruned)}")
         # 2b. plugin-delivery harnesses need the plugin REGISTERED to be visible:
@@ -667,7 +681,15 @@ def cmd_uninstall(args):
             print(f"  installed targets: {avail}")
         return 1
     for target in targets:
-        manifest = _uninstall_one(target, manifest)
+        # Resolve the current adapter rather than trusting any path recorded
+        # in the persisted manifest. If the adapter was retired or is corrupt,
+        # keep absolute paths protected rather than guessing a deletion root.
+        try:
+            adapter = R.load_adapter(REPO, target)
+        except (FileNotFoundError, OSError, ValueError, TypeError, R.yaml.YAMLError):
+            adapter = {}
+        allowed_roots = _external_manifest_roots(adapter)
+        manifest = _uninstall_one(target, manifest, allowed_roots=allowed_roots)
     # ~/.stc/core/ is shared across harnesses — only remove it when the LAST
     # harness is uninstalled, so a partial uninstall keeps core for the rest.
     if not manifest:
@@ -680,7 +702,7 @@ def cmd_uninstall(args):
     return 0
 
 
-def _uninstall_one(target, manifest):
+def _uninstall_one(target, manifest, allowed_roots=()):
     """Remove a single target's STC artifacts (recorded in the manifest) from
     its native dir. Returns the updated manifest (target deleted). The caller
     decides when to purge the shared ~/.stc/core/ (only when manifest is empty).
@@ -690,10 +712,11 @@ def _uninstall_one(target, manifest):
     # detect plugin-delivery from the file paths the manifest recorded (any path
     # under cli/plugins/cache/<mkt>/ means plugin form)
     is_plugin = any("/plugins/cache/" in rel for rel in entry.get("files", []))
-    # 1. remove *.stc.md / *.stc.sh files listed in the manifest for THIS target
+    # 1. remove rendered files (including native SKILL.md) listed in the
+    #    manifest for THIS target
     for rel in entry.get("files", []):
-        p = os.path.join(native_dir, rel)
-        if os.path.exists(p):
+        p = _native_manifest_path(native_dir, rel, allowed_roots=allowed_roots)
+        if p and os.path.exists(p):
             os.remove(p)
     # 1b. plugin-delivery: unregister (config.json + known_marketplaces) and
     #     remove the versioned plugin dir entirely (manifest lists individual
@@ -959,14 +982,45 @@ def _prunable(rel):
     return rel.endswith((".stc.md", ".stc.sh")) or os.path.basename(rel) == "SKILL.md"
 
 
-def _native_manifest_path(native_dir, rel):
+def _external_manifest_roots(adapter):
+    """Return explicitly configured native roots outside a harness directory.
+
+    Codex's global skills directory is intentionally outside ``~/.codex``.
+    It is the only external root currently emitted by the file-delivery
+    adapters, and it is allowlisted from the adapter rather than inferred from
+    an untrusted manifest path.
+    """
+    native_path = ((adapter or {}).get("skills", {}) or {}).get("native_path")
+    if not isinstance(native_path, str):
+        return []
+    expanded = os.path.expandvars(os.path.expanduser(native_path))
+    if not os.path.isabs(expanded):
+        return []
+    return [os.path.realpath(expanded)]
+
+
+def _native_manifest_path(native_dir, rel, allowed_roots=()):
     """Resolve a manifest entry only when it stays inside ``native_dir``.
 
     Manifests are persisted data and must be treated as untrusted: an absolute
-    path, ``..`` component, or symlink escape must never turn orphan pruning
-    into deletion outside the harness directory.
+    path, ``..`` component, or symlink escape must never turn manifest-driven
+    cleanup into deletion outside the harness directory. An absolute path is
+    accepted only when it stays below an explicitly configured external root
+    (Codex's global skills directory).
     """
-    if not isinstance(rel, str) or not rel or os.path.isabs(rel):
+    if not isinstance(rel, str) or not rel:
+        return None
+    if os.path.isabs(rel):
+        candidate = os.path.realpath(rel)
+        for allowed in allowed_roots or ():
+            if not isinstance(allowed, str) or not allowed:
+                continue
+            root = os.path.realpath(os.path.expandvars(os.path.expanduser(allowed)))
+            try:
+                if os.path.commonpath((root, candidate)) == root:
+                    return candidate
+            except ValueError:
+                continue
         return None
     normalized = os.path.normpath(rel)
     if normalized == os.pardir or normalized.startswith(os.pardir + os.sep):
@@ -981,13 +1035,14 @@ def _native_manifest_path(native_dir, rel):
     return candidate
 
 
-def _prune_orphans(target, native_dir, new_files):
+def _prune_orphans(target, native_dir, new_files, allowed_roots=()):
     """Remove STC artifacts a prior deploy wrote that this render no longer emits.
 
     Compares the previous manifest's file list for THIS target against the
     current render and unlinks the difference (filtered by `_prunable`). Called
-    in cmd_apply BEFORE _write_manifest overwrites the record. Returns the list
-    of pruned relpaths (for the apply log).
+    in cmd_apply BEFORE _write_manifest overwrites the record. ``allowed_roots``
+    contains adapter-declared native roots for artifacts intentionally outside
+    ``native_dir``. Returns the list of pruned relpaths (for the apply log).
     """
     if not os.path.exists(MANIFEST):
         return []
@@ -999,7 +1054,7 @@ def _prune_orphans(target, native_dir, new_files):
     orphans = sorted(rel for rel in (old_files - set(new_files)) if _prunable(rel))
     pruned = []
     for rel in orphans:
-        p = _native_manifest_path(native_dir, rel)
+        p = _native_manifest_path(native_dir, rel, allowed_roots=allowed_roots)
         if p is None:
             continue
         if os.path.isfile(p):

@@ -785,6 +785,127 @@ def test_commands_and_skills_substitute_render_vars():
                     f"{rel} carries unresolved ${{{var}}} into the harness")
 
 
+def test_codex_commands_render_as_source_command_skills():
+    """REGRESSION (Codex command/skill drift): Codex has deprecated custom
+    prompts, so every declared core command must arrive as a real skill folder
+    with a loader-visible SKILL.md, not as a commands/*.stc.md file."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "codex", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["codex"], D.CORE, REPO)
+
+    names = list((adapters["codex"].get("commands") or {}).get("capabilities", {}))
+    expected = {
+        os.path.expanduser(f"~/.agents/skills/source-command-{name}-stc/SKILL.md")
+        for name in names
+    }
+    assert len(names) == 8, f"Codex command inventory changed unexpectedly: {names}"
+    assert expected <= set(rr.files), (
+        f"Codex command skills missing: {sorted(expected - set(rr.files))}")
+
+    command_files = sorted(
+        path for path in rr.files
+        if path.startswith("commands/") and path.endswith(".stc.md")
+    )
+    assert not command_files, f"Codex must not render deprecated command files: {command_files}"
+    assert not [item for item in rr.manifest if item.get("kind") == "command"], (
+        "Codex command delivery must not leave command entries in the manifest")
+
+    manifest = {item["path"]: item for item in rr.manifest}
+    for path in sorted(expected):
+        body = rr.files[path]
+        assert body.startswith("---\n"), f"{path} lacks skill frontmatter"
+        assert "\nname:" in body and "\ndescription:" in body, (
+            f"{path} lacks required skill name/description metadata")
+        assert "\n## Command Template\n" in body, (
+            f"{path} must retain the migrated command body")
+        assert manifest.get(path, {}).get("kind") == "skill", (
+            f"{path} must be tracked as a skill in the manifest")
+
+
+def test_codex_command_skill_render_fails_on_missing_declared_source():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        core = os.path.join(tmp, "core")
+        os.makedirs(os.path.join(core, "commands"))
+        adapter = {
+            "harness": "codex",
+            "commands": {
+                "capabilities": {
+                    "missing": {
+                        "supported": True,
+                        "binding": {"source": "core/commands/missing.md"},
+                    }
+                }
+            },
+        }
+        try:
+            R._render_command_skills(
+                core, adapter, {}, R.RenderResult(), os.path.join(tmp, "skills")
+            )
+        except FileNotFoundError as exc:
+            assert "missing.md" in str(exc)
+        else:
+            raise AssertionError("missing declared command source must fail the render")
+
+
+def test_codex_command_skill_render_fails_on_invalid_description():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        core = os.path.join(tmp, "core")
+        commands = os.path.join(core, "commands")
+        os.makedirs(commands)
+        with open(os.path.join(commands, "broken.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\ndescription: [not, a, string]\n---\n\n# broken\n")
+        adapter = {
+            "harness": "codex",
+            "commands": {
+                "capabilities": {
+                    "broken": {
+                        "supported": True,
+                        "binding": {"source": "core/commands/broken.md"},
+                    }
+                }
+            },
+        }
+        try:
+            R._render_command_skills(
+                core, adapter, {}, R.RenderResult(), os.path.join(tmp, "skills")
+            )
+        except ValueError as exc:
+            assert "description" in str(exc)
+        else:
+            raise AssertionError("non-string command description must fail the render")
+
+
+def test_codex_command_skill_render_fails_on_invalid_frontmatter_name():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        core = os.path.join(tmp, "core")
+        commands = os.path.join(core, "commands")
+        os.makedirs(commands)
+        with open(os.path.join(commands, "broken.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\nname: '   '\ndescription: valid\n---\n\n# broken\n")
+        adapter = {
+            "harness": "codex",
+            "commands": {
+                "capabilities": {
+                    "broken": {
+                        "supported": True,
+                        "binding": {"source": "core/commands/broken.md"},
+                    }
+                }
+            },
+        }
+        try:
+            R._render_command_skills(
+                core, adapter, {}, R.RenderResult(), os.path.join(tmp, "skills")
+            )
+        except ValueError as exc:
+            assert "name" in str(exc)
+        else:
+            raise AssertionError("non-string command name must fail the render")
+
+
 def test_bundle_inlines_profile_when_present():
     """The user profile (user/profile.md) is inlined into the bundle for BOTH
     harnesses — it must be always-context and no hook injects it, so inlining

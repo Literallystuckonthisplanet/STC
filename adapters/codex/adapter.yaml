@@ -157,12 +157,12 @@ hooks:
 
 # ============================================================
 # LAYER 4 — commands
-# Codex deprecated slash-commands; STC commands convert to skills (the
-# source-command-*-stc skills already ship to ~/.agents/skills). Commands
-# are NOT emitted as slash-command files.
+# Codex deprecated custom prompts; STC commands are rendered as skills by the
+# command delivery mode below. They are NOT emitted as command files.
 # ============================================================
 commands:
-  realization: "converted to skills (source-command-*-stc); slash-commands are deprecated in Codex"
+  delivery: "skills"
+  realization: "converted to skills (source-command-*-stc); Codex custom prompts are deprecated"
   native_path: "~/.agents/skills/source-command-*-stc/"
   import_syntax: "copy (as skills)"
   capabilities:

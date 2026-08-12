@@ -11,6 +11,14 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — Codex commands now deploy as native skills
+- Codex's eight STC source commands (`git-guardrails`, `grill-me`,
+  `improve-codebase-architecture`, `install-mcp`, `prototype`, `to-spec`,
+  `to-tasks`, and `zoom-out`) now render to
+  `~/.agents/skills/source-command-*-stc/SKILL.md` instead of deprecated
+  `~/.codex/commands/*.stc.md` files. Claude's command-file delivery remains
+  unchanged; deploy tests cover rendering, cleanup, and safe uninstall.
+
 ### Added — Claude live canary
 - `core/scripts/claude_live_canary.py` closes the last live-verification gap:
   Claude was previously reported `UNVERIFIED` because only Codex had a real

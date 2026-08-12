@@ -88,7 +88,7 @@ mapping. Degrade gracefully — never lose the capability, only its native form.
 | `always_context` | `core/memory/MEMORY.md` (+ playbook, code_standard) | `CLAUDE.md` / `AGENTS.md` |
 | `rules` | `core/rules/*.md` | inlined into always_context or hook-injected |
 | `hooks` | `core/hooks/*.sh` | `settings.json` matchers / plugin `hooks.json` |
-| `commands` | `core/commands/*.md` | `<harness>/commands/*.md` |
+| `commands` | `core/commands/*.md` | adapter-selected command files or skill folders |
 | `subagents` | `core/agents/*.md` + `registry.yaml` | typed agent files / untyped dispatch |
 | `skills` | `core/skills/*/SKILL.md` | `<harness>/skills/<name>/SKILL.md` |
 | `mcp` | `stc.yaml → mcp.*` | `<harness>/.mcp.json` / mcpServers |

@@ -11,40 +11,39 @@ Tables live in core/scripts/roundtable/tables/. The canonical prose document
 ones the engine will read.
 """
 
+import importlib.util
 import itertools
+import sys
 from pathlib import Path
 
 import yaml
 
 TABLES = Path(__file__).resolve().parents[2] / "core" / "scripts" / "roundtable" / "tables"
 
-
-class _StrictLoader(yaml.SafeLoader):
-    """Rejects duplicate keys instead of silently keeping the last one.
-
-    Round 11: `yaml.safe_load` accepts a repeated key without a word, so a
-    table could carry two different values for the same rule and look fine.
-    """
-
-
-def _no_duplicate_keys(loader, node, deep=False):
-    seen = set()
-    for key_node, _ in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if key in seen:
-            raise yaml.constructor.ConstructorError(
-                None, None, f"duplicate key {key!r}", key_node.start_mark)
-        seen.add(key)
-    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+# One loader for the suite and for the engine (БТ, acceptance criterion 1).
+# The strict loader was prototyped here and now lives in the module: a private
+# copy is exactly the "two sources" shape this design keeps failing on. The
+# module is registered under a fixed name so that both roundtable test files
+# get the *same* module object — two copies would defeat the point.
+MODULE_NAME = "roundtable_tables"
 
 
-_StrictLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys)
+def import_tables_module():
+    if MODULE_NAME in sys.modules:
+        return sys.modules[MODULE_NAME]
+    spec = importlib.util.spec_from_file_location(MODULE_NAME, TABLES.parent / "tables.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[MODULE_NAME] = module  # dataclasses resolve annotations through it
+    spec.loader.exec_module(module)
+    return module
+
+
+_MODULE = import_tables_module()
+StrictLoader = _MODULE.StrictLoader
 
 
 def _load(name):
-    with open(TABLES / f"{name}.yaml", encoding="utf-8") as fh:
-        return yaml.load(fh, Loader=_StrictLoader)
+    return _MODULE.load_table(name, TABLES)
 
 
 VOCAB = _load("vocabulary")
@@ -642,7 +641,7 @@ def test_the_loader_refuses_a_duplicated_key():
     # one rule and the suite reads only the last.
     import io
     with pytest_raises(yaml.constructor.ConstructorError):
-        yaml.load(io.StringIO("a: 1\na: 2\n"), Loader=_StrictLoader)
+        yaml.load(io.StringIO("a: 1\na: 2\n"), Loader=StrictLoader)
 
 
 def pytest_raises(exc):

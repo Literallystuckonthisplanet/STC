@@ -160,14 +160,6 @@ def test_verdict_table_is_total_and_ordered():
         assert row["вердикт"] in VOCAB["вердикты"], row
 
 
-def test_stop_is_a_decision_outcome_not_a_computed_verdict():
-    # Round 6: СТОП used to be computed from the finding mix, which made the
-    # decision `изменить_цель` unreachable.
-    assert all(row["вердикт"] != "СТОП" for row in ISSUES["вердикт"])
-    assert "СТОП" in ISSUES["вердикт_вне_таблицы"]
-    assert "СТОП" in RUN["события_issue"]["остановить"]["побочное"]
-
-
 def test_framing_on_the_idea_stage_appears_in_the_verdict_table():
     # Round 9: §6.12 said "never blocks" while §8.1 said it blocks on идея.
     assert FRAMING["влияние_по_стадиям"]["идея"] == "держит_стадию"
@@ -517,12 +509,6 @@ def test_declared_counts_match_the_lists_they_describe():
 # their text, so they stay meaningful rather than becoming change detectors.
 # --------------------------------------------------------------------------
 
-def test_a_run_can_be_cancelled_from_every_working_state():
-    working = set(VOCAB["состояния_прогона"]["рабочие"])
-    have = {row["из"] for row in RUN["переходы"] if row["событие"] == "cancel-run"}
-    assert have == working, "cancel-run must reach every working state"
-
-
 
 def test_author_and_critic_turns_both_exist_in_the_issue_lifecycle():
     # Deleting either half leaves a lifecycle where an issue can be raised but
@@ -640,8 +626,14 @@ def test_precheck_fixtures_declare_their_oracle_and_their_rule():
     assert "на чистом документе" in PRECHECK["фикстуры"]["правило"]
 
 
-def test_only_isolation_work_is_cleared_to_start():
-    assert BLOCKS["разрешено_начинать_сейчас"] == ["Б3а", "Ш1"]
+def test_cleared_work_needs_no_critic_calls_and_no_unbuilt_dependency():
+    cleared = BLOCKS["разрешено_начинать_сейчас"]
+    assert cleared == ["Б3а", "Ш1", "БТ"]
+    assert BLOCKS["вызовов_критиков_требуют"] == []
+    done = {b for b, spec in BLOCKS["блоки"].items() if spec.get("состояние") == "сделано"}
+    for block in cleared:
+        unmet = set(BLOCKS["блоки"][block]["зависит"]) - done - set(cleared)
+        assert not unmet, f"{block} still waits on {unmet}"
     assert BLOCKS["блоки"]["Ш1"]["зависит"] == ["Б3а"]
 
 

@@ -19,9 +19,32 @@ import yaml
 TABLES = Path(__file__).resolve().parents[2] / "core" / "scripts" / "roundtable" / "tables"
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """Rejects duplicate keys instead of silently keeping the last one.
+
+    Round 11: `yaml.safe_load` accepts a repeated key without a word, so a
+    table could carry two different values for the same rule and look fine.
+    """
+
+
+def _no_duplicate_keys(loader, node, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark)
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+
+_StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys)
+
+
 def _load(name):
     with open(TABLES / f"{name}.yaml", encoding="utf-8") as fh:
-        return yaml.safe_load(fh)
+        return yaml.load(fh, Loader=_StrictLoader)
 
 
 VOCAB = _load("vocabulary")
@@ -30,10 +53,12 @@ ISSUES = _load("issues")
 FRAMING = _load("framing")
 PRECHECK = _load("precheck")
 BLOCKS = _load("blocks")
+STAGES = _load("stages")
 
 ALL_TABLES = {
     "vocabulary": VOCAB, "run": RUN, "issues": ISSUES,
     "framing": FRAMING, "precheck": PRECHECK, "blocks": BLOCKS,
+    "stages": STAGES,
 }
 
 RUN_STATES = set(VOCAB["состояния_прогона"]["рабочие"]) | set(VOCAB["состояния_прогона"]["терминальные"])
@@ -122,10 +147,6 @@ def test_every_issue_type_has_at_least_one_allowed_decision():
         assert decisions, issue_type
 
 
-def test_run_event_table_matches_the_decision_vocabulary():
-    assert set(RUN["события_issue"]) == set(VOCAB["решения_по_issue"])
-    assert set(RUN["события_возражения"]) == set(VOCAB["решения_по_возражению"])
-
 
 # --------------------------------------------------------------------------
 # verdict table (rounds 6, 9)
@@ -154,7 +175,7 @@ def test_framing_on_the_idea_stage_appears_in_the_verdict_table():
 
 
 # --------------------------------------------------------------------------
-# run automaton (rounds 6, 8, 9)
+# run automaton — now condition codes, not sentences (round 11)
 # --------------------------------------------------------------------------
 
 def test_run_states_come_only_from_the_vocabulary():
@@ -165,7 +186,6 @@ def test_run_states_come_only_from_the_vocabulary():
 
 
 def test_terminal_run_states_have_no_outgoing_transitions():
-    # Round 8: `завершён` was terminal yet a late decision had to land on it.
     for row in RUN["переходы"]:
         assert row["из"] not in RUN_TERMINAL, row
 
@@ -177,55 +197,188 @@ def test_every_run_state_is_reachable_from_creation():
     assert RUN_STATES <= _reachable(edges, None)
 
 
-def test_no_two_transitions_give_different_outcomes_for_the_same_situation():
-    # Round 8: a second сменить_решение was a terminal state in one section and
-    # a rejected operation in two others.
-    seen = {}
+def test_conditions_are_closed_codes_with_declared_values():
+    # Round 11: a condition written as a Russian sentence cannot be evaluated,
+    # so its meaning would be re-implemented in Python — two sources again.
+    codes = VOCAB["коды_условий"]
     for row in RUN["переходы"]:
-        key = (row["из"], row["событие"], row["условие"])
-        assert seen.setdefault(key, row["в"]) == row["в"], key
-    assert seen[("ждёт_Антона", "сменить_решение", "вторая смена за стадию")] == \
-        "остановлено_для_перепроектирования"
+        for key, value in (row.get("условия") or {}).items():
+            assert key in codes, f"unknown condition code {key}"
+            assert value in codes[key], f"{key}={value!r} is not a declared value"
 
 
-def test_decisions_that_move_the_run_have_a_transition():
-    # Round 9: `остановить` and `изменить_цель` declared an effect on the stage
-    # with no transition anywhere in the automaton.
-    events = {row["событие"] for row in RUN["переходы"]}
-    for decision in ("запросить_ещё_правку", "сменить_решение", "остановить", "изменить_цель"):
-        assert decision in events, decision
-    assert "принять_риск" not in events, "it deliberately leaves the run where it is"
+def test_actions_and_refusals_are_closed_codes():
+    declared = set(VOCAB["коды_действий"])
+    documented = set(RUN["действия"])
+    assert declared == documented, "every action code needs one written meaning"
+    for row in RUN["переходы"]:
+        for action in row.get("действия") or []:
+            assert action in declared, action
+        if "отказ" in row:
+            assert row["отказ"] in VOCAB["коды_отказа"], row["отказ"]
 
 
-def test_framing_decisions_that_cancel_a_run_have_their_own_events():
-    events = {row["событие"] for row in RUN["переходы"]}
-    for decision in ("изменить_цель", "сменить_решение", "остановить"):
-        assert f"{decision}_framing" in events, decision
+def test_no_two_transitions_can_fire_at_once():
+    # THE determinism invariant. Two transitions from the same (state, event)
+    # must disagree on at least one condition key, otherwise both match and the
+    # engine has to guess. This is what catches "the same rule written twice in
+    # slightly different words" — round 11 demonstrated the old string
+    # comparison could not.
+    grouped = {}
+    for row in RUN["переходы"]:
+        grouped.setdefault((row["из"], row["событие"]), []).append(row)
+    for key, rows in grouped.items():
+        for i, first in enumerate(rows):
+            for second in rows[i + 1:]:
+                a, b = first.get("условия") or {}, second.get("условия") or {}
+                shared = set(a) & set(b)
+                conflicting = any(a[k] != b[k] for k in shared)
+                assert conflicting, f"{key}: two transitions can fire together"
 
 
-# --------------------------------------------------------------------------
-# mid-round policy (round 10)
-# --------------------------------------------------------------------------
+def test_every_verdict_has_an_outcome_from_a_running_round():
+    outcomes = {
+        row["условия"]["verdict"]: row["в"]
+        for row in RUN["переходы"]
+        if row["из"] == "идёт_круг" and row["событие"] == "вердикт"
+    }
+    assert outcomes == {
+        "ОДОБРЕНО": "завершён",
+        "НУЖНЫ_ПРАВКИ": "ждёт_автора",
+        "РЕШЕНИЕ_АНТОНА": "ждёт_Антона",
+        "НЕПОЛНЫЙ_ПРОГОН": "неполный",
+    }
 
-def test_every_framing_decision_declares_a_mid_round_policy():
-    policies = set(RUN["политики_середины_круга"])
-    for decision, row in RUN["события_возражения"].items():
-        assert row["середина_круга"] in policies, decision
+
+def test_every_issue_decision_has_a_transition():
+    used = {row["условия"].get("decision") for row in RUN["переходы"]
+            if row["событие"] == "submit-decision"}
+    assert used == set(VOCAB["решения_по_issue"])
+
+
+def test_a_revision_either_starts_a_round_or_goes_to_anton():
+    branches = {
+        row["условия"]["budget_allows_round"]: row["в"]
+        for row in RUN["переходы"] if row["событие"] == "submit-revision"
+    }
+    assert branches == {True: "идёт_круг", False: "ждёт_Антона"}
+
+
+def test_accepting_a_risk_has_both_the_waiting_and_the_finishing_branch():
+    branches = {
+        row["условия"]["all_verdict_blocking_resolved"]: row["в"]
+        for row in RUN["переходы"]
+        if row["условия"].get("decision") == "принять_риск"
+    }
+    assert branches == {False: "ждёт_Антона", True: "завершён"}
+
+
+def test_confirming_the_framing_covers_a_round_that_is_and_is_not_running():
+    running = {
+        row["условия"].get("round_running")
+        for row in RUN["переходы"]
+        if row["из"] == "идёт_круг"
+        and row["условия"].get("framing_decision") == "подтвердить_постановку"
+    }
+    assert running == {True, False}
+
+
+def test_asking_for_another_round_waits_for_the_author_not_the_critics():
+    # Round 11: one place sent the run straight to идёт_круг while the event
+    # table said ждёт_автора. Anton's decision carries no new revision, so
+    # there is nothing to hand the critics yet.
+    rows = [r for r in RUN["переходы"]
+            if r["событие"] == "submit-decision"
+            and r["условия"].get("decision") == "запросить_ещё_правку"]
+    allowed = [r for r in rows if r["условия"].get("budget_fits_quorum") is True]
+    refused = [r for r in rows if r["условия"].get("budget_fits_quorum") is False]
+    assert [r["в"] for r in allowed] == ["ждёт_автора"]
+    assert refused and refused[0]["отказ"] == "БЮДЖЕТ_НЕ_ВМЕЩАЕТ_КВОРУМ"
+
+
+def test_both_branches_of_changing_the_solution_exist():
+    branches = {
+        row["условия"]["change_index"]: row["в"]
+        for row in RUN["переходы"]
+        if row["условия"].get("decision") == "сменить_решение"
+        and row["событие"] == "submit-decision"
+    }
+    assert branches == {
+        "первая": "ждёт_автора",
+        "вторая": "остановлено_для_перепроектирования",
+    }
+
+
+def test_framing_decisions_reach_every_state_a_run_can_be_in():
+    # Round 11: `неполный` had no framing transition at all — yet a critic can
+    # raise an objection and the other critic then die, which is exactly how a
+    # run becomes неполный.
+    working = set(VOCAB["состояния_прогона"]["рабочие"])
+    for decision in VOCAB["решения_по_возражению"]:
+        have = {r["из"] for r in RUN["переходы"]
+                if r["событие"] == "submit-framing-decision"
+                and r["условия"].get("framing_decision") == decision}
+        assert have == working, f"{decision}: missing {working - have}"
 
 
 def test_confirming_the_framing_never_kills_a_running_round():
-    # Round 10: the blanket "any decision kills the critics" rule meant the
-    # engine killed them and then computed a verdict on a quorum that no
-    # longer existed.
-    assert RUN["события_возражения"]["подтвердить_постановку"]["середина_круга"] == "не_трогать"
-    for decision in ("изменить_цель", "сменить_решение", "остановить"):
-        assert RUN["события_возражения"][decision]["середина_круга"] == "убить_процессы"
+    for row in RUN["переходы"]:
+        if row["событие"] != "submit-framing-decision":
+            continue
+        actions = row.get("действия") or []
+        if row["условия"]["framing_decision"] == "подтвердить_постановку":
+            assert "kill_process_group" not in actions, row
+            assert row["в"] == row["из"], "confirming does not move the run"
+        elif row["из"] == "идёт_круг":
+            assert "kill_process_group" in actions, row
+            assert "mark_results_stale" in actions, row
 
 
-def test_revoke_operation_targets_an_operation_and_never_rewrites_history():
-    # Round 10: the operation was named without semantics.
-    assert RUN["revoke_operation"]["цель"] == "operation_id"
-    assert RUN["revoke_operation"]["отката_истории"] is False
+def test_accepting_an_objection_supersedes_rather_than_rewrites():
+    for row in RUN["переходы"]:
+        if row["событие"] != "submit-framing-decision":
+            continue
+        if row["условия"]["framing_decision"] in ("изменить_цель", "сменить_решение"):
+            actions = row["действия"]
+            assert "mark_run_superseded" in actions and "spawn_linked_run" in actions
+        if row["условия"]["framing_decision"] == "остановить":
+            assert "spawn_linked_run" not in row["действия"], "stop spawns nothing"
+
+
+def test_a_run_can_be_cancelled_from_every_working_state():
+    working = set(VOCAB["состояния_прогона"]["рабочие"])
+    have = {row["из"] for row in RUN["переходы"] if row["событие"] == "cancel-run"}
+    assert have == working
+
+
+def test_every_working_state_has_a_way_forward_not_only_a_way_out():
+    for state in VOCAB["состояния_прогона"]["рабочие"]:
+        forward = [r for r in RUN["переходы"]
+                   if r["из"] == state
+                   and r["событие"] not in ("cancel-run", "submit-framing-decision")]
+        assert forward, f"{state} can only be cancelled"
+    events = {(r["из"], r["событие"]) for r in RUN["переходы"]}
+    assert ("неполный", "resume") in events
+    assert ("ждёт_автора", "submit-revision") in events
+    assert ("ждёт_Антона", "submit-decision") in events
+
+
+def test_stop_is_a_decision_outcome_not_a_computed_verdict():
+    assert all(row["вердикт"] != "СТОП" for row in ISSUES["вердикт"])
+    assert "СТОП" in ISSUES["вердикт_вне_таблицы"]
+    stopped = [r for r in RUN["переходы"]
+               if r["событие"] == "submit-decision"
+               and r["условия"].get("decision") == "остановить"]
+    assert [r["в"] for r in stopped] == ["завершён"]
+
+
+def test_revoke_operation_states_both_the_allowed_and_the_refused_case():
+    revoke = RUN["revoke_operation"]
+    assert revoke["цель"] == "operation_id"
+    assert revoke["отката_истории"] is False
+    assert revoke["разрешено_если"] and revoke["зависимое_событие"]
+    assert revoke["иначе"] in VOCAB["коды_отказа"]
+    assert revoke["компенсация"]
 
 
 # --------------------------------------------------------------------------
@@ -294,10 +447,12 @@ def test_only_the_author_side_can_produce_an_executed_command():
 # precheck (rounds 9, 10)
 # --------------------------------------------------------------------------
 
-def test_precheck_codes_are_unique_and_each_has_a_fixture():
+def test_precheck_codes_are_unique_and_each_declares_a_fixture():
     codes = [row["код"] for row in PRECHECK["коды"]]
     assert len(codes) == len(set(codes))
     for row in PRECHECK["коды"]:
+        # Declared, not yet present: the files land with Б15. Round 11 was
+        # right that the old name promised more than the assertion did.
         assert row["фикстура"], row["код"]
 
 
@@ -339,6 +494,7 @@ def test_declared_counts_match_the_lists_they_describe():
         "схемы_контрактов": VOCAB["схемы_контрактов"],
         "операции": VOCAB["операции"],
         "коды_предпроверки": PRECHECK["коды"],
+        "таблицы": BLOCKS["списки"]["таблицы"],
         "фикстуры_репетиции": BLOCKS["списки"]["фикстуры_репетиции"],
     }
     checked = 0
@@ -367,18 +523,6 @@ def test_a_run_can_be_cancelled_from_every_working_state():
     assert have == working, "cancel-run must reach every working state"
 
 
-def test_framing_cancellations_cover_every_state_a_live_run_can_be_in():
-    active = {"идёт_круг", "ждёт_автора", "ждёт_Антона"}
-    for decision in ("изменить_цель", "сменить_решение", "остановить"):
-        have = {r["из"] for r in RUN["переходы"] if r["событие"] == f"{decision}_framing"}
-        assert have == active, decision
-
-
-def test_every_verdict_has_an_outcome_from_a_running_round():
-    running = [r for r in RUN["переходы"] if r["из"] == "идёт_круг" and r["событие"] == "вердикт"]
-    for verdict in ("ОДОБРЕНО", "НУЖНЫ_ПРАВКИ", "РЕШЕНИЕ_АНТОНА", "НЕПОЛНЫЙ_ПРОГОН"):
-        assert any(verdict in row["условие"] for row in running), verdict
-
 
 def test_author_and_critic_turns_both_exist_in_the_issue_lifecycle():
     # Deleting either half leaves a lifecycle where an issue can be raised but
@@ -392,13 +536,23 @@ def test_author_and_critic_turns_both_exist_in_the_issue_lifecycle():
         assert answered, f"{status}: the author has no move from here"
 
 
-def test_every_route_to_anton_exists():
-    to_anton = [r for r in ISSUES["переходы"] if "вынесен_Антону" in r["в"] and r["из"] is not None]
-    conditions = " | ".join(r["условие"] for r in to_anton)
-    for kind in ("сменой_решения", "только_сменой_цели"):
-        assert kind in conditions, kind
-    assert "неизвестное высокой существенности" in conditions
-    assert "круги исчерпаны" in conditions
+def test_every_route_to_anton_exists_from_both_author_statuses():
+    # Round 11: a fresh finding is always `открыт`, so a route declared only
+    # from `остался` left the blocker stuck with a verdict that demanded a
+    # decision Anton had no way to make.
+    routes = {}
+    for row in ISSUES["переходы"]:
+        if "вынесен_Антону" in row["в"] and row["из"] is not None:
+            routes.setdefault(row["условие"], set()).add(row["из"])
+    kinds = [
+        "блокер сменой_решения, любой круг",
+        "блокер только_сменой_цели, любой круг",
+        "неизвестное высокой существенности, любой круг",
+        "блокер правкой, круги исчерпаны",
+    ]
+    assert set(routes) == set(kinds)
+    for kind in kinds:
+        assert routes[kind] == {"открыт", "остался"}, kind
 
 
 def test_every_blocking_kind_reaches_the_verdict_table():
@@ -442,9 +596,6 @@ def test_precheck_file_classes_and_fixture_home_are_declared():
     assert PRECHECK["фикстуры"]["не_смешивать_с"], "tune/holdout test models, not code"
 
 
-def test_revoke_operation_states_both_the_allowed_and_the_refused_case():
-    revoke = RUN["revoke_operation"]
-    assert revoke["разрешено_если"] and revoke["иначе"], "a one-sided rule is not a rule"
 
 
 def test_the_change_limit_states_its_number_and_its_reason():
@@ -475,23 +626,6 @@ def test_closed_vocabularies_are_pinned_exactly():
     assert PRECHECK["схема_входа"].endswith("precheck_frontmatter.json")
 
 
-def test_every_working_state_has_a_way_forward_not_only_a_way_out():
-    # Without this, deleting `resume` or `submit-revision` leaves a state you
-    # can only cancel from — reachability alone would not notice.
-    for state in VOCAB["состояния_прогона"]["рабочие"]:
-        forward = [r for r in RUN["переходы"]
-                   if r["из"] == state and r["событие"] != "cancel-run"
-                   and not r["событие"].endswith("_framing")]
-        assert forward, f"{state} can only be cancelled"
-    events = {(r["из"], r["событие"]) for r in RUN["переходы"]}
-    assert ("неполный", "resume") in events
-    assert ("ждёт_автора", "submit-revision") in events
-    assert ("ждёт_автора", "бюджет_исчерпан") in events
-    assert ("ждёт_Антона", "все_разрешены") in events
-    # Both branches of сменить_решение: the first restarts, the second stops.
-    changes = {r["в"] for r in RUN["переходы"] if r["событие"] == "сменить_решение"}
-    assert changes == {"ждёт_автора", "остановлено_для_перепроектирования"}
-
 
 def test_every_type_that_reaches_anton_has_decisions_he_may_take():
     # A route to Anton with no allowed decision is a dead end for him.
@@ -509,3 +643,113 @@ def test_precheck_fixtures_declare_their_oracle_and_their_rule():
 def test_only_isolation_work_is_cleared_to_start():
     assert BLOCKS["разрешено_начинать_сейчас"] == ["Б3а", "Ш1"]
     assert BLOCKS["блоки"]["Ш1"]["зависит"] == ["Б3а"]
+
+
+def test_the_loader_refuses_a_duplicated_key():
+    # Guards the loader itself: without this, a table can hold two values for
+    # one rule and the suite reads only the last.
+    import io
+    with pytest_raises(yaml.constructor.ConstructorError):
+        yaml.load(io.StringIO("a: 1\na: 2\n"), Loader=_StrictLoader)
+
+
+def pytest_raises(exc):
+    class _Ctx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, kind, value, tb):
+            assert kind is not None and issubclass(kind, exc), "expected a refusal"
+            return True
+    return _Ctx()
+
+
+# --------------------------------------------------------------------------
+# stages: the panel looks for the right solution first (Anton, 2026-08-12)
+# --------------------------------------------------------------------------
+
+def test_every_stage_is_described_and_only_the_declared_ones():
+    declared = set(VOCAB["стадии"]["в_MVP"]) | set(VOCAB["стадии"]["вне_MVP"])
+    assert set(STAGES["стадии"]) == declared
+
+
+def test_the_idea_stage_asks_before_it_shows():
+    idea = STAGES["стадии"]["идея"]
+    assert idea["первый_вопрос"] == "предложи_решение"
+    assert idea["второй_вопрос"] == "сравни_с_предложенным"
+    assert idea["итог"] == "сравнение_подходов", "not a verdict on one option"
+    assert idea["критиков"] == 2, "no saving on the cheapest, most valuable stage"
+
+
+def test_the_blind_question_hides_the_solution_and_nothing_else():
+    blind = STAGES["слепой_вопрос"]
+    assert "предложенное_решение" in blind["прячем"]
+    assert {"задача", "ограничения", "критерий_успеха"} <= set(blind["показываем"])
+    assert not set(blind["показываем"]) & set(blind["прячем"])
+
+
+def test_two_independent_alternatives_reach_anton_before_any_counting():
+    signal = STAGES["сигнал_нежизнеспособности"]
+    assert signal["действие"] == "сразу_Антону"
+    assert signal["до"] == "подсчёта_блокеров"
+
+
+def test_the_cost_of_understanding_is_recorded_with_a_baseline():
+    metric = STAGES["метрика_цены_понимания"]
+    assert {"стадия", "круг", "потрачено_вызовов", "кто_назвал"} <= set(metric["что_пишем"])
+    assert metric["базовая_точка"]["круг"] == 10, "our own number stays visible"
+
+
+def test_stage_rules_agree_between_tables():
+    for stage, rules in STAGES["стадии"].items():
+        expected = FRAMING["влияние_по_стадиям"][stage]
+        actual = rules["возражение_к_постановке"]
+        assert (actual == "держит_стадию") == (expected == "держит_стадию"), stage
+        assert rules["постановка"] == FRAMING["права_по_стадиям"][stage]["постановка"]
+
+
+def test_spending_priority_favours_the_earliest_stage():
+    priority = STAGES["приоритет_расхода"]
+    assert "идея" not in priority["экономим_на"]
+    assert set(priority["экономим_на"]) <= set(STAGES["стадии"])
+
+
+def test_closed_code_lists_are_pinned_whole():
+    # Deleting a refusal code or a condition code silently narrows what the
+    # engine can express, and every other test would still pass.
+    assert set(VOCAB["коды_отказа"]) == {
+        "БЮДЖЕТ_НЕ_ВМЕЩАЕТ_КВОРУМ", "КОНФЛИКТ_ВХОДА",
+        "РЕШЕНИЕ_ВНЕ_ТИПА", "ЕСТЬ_ЗАВИСИМЫЕ_СОБЫТИЯ",
+    }
+    assert set(VOCAB["коды_условий"]) == {
+        "verdict", "decision", "framing_decision", "budget_allows_round",
+        "budget_fits_quorum", "change_index", "round_running",
+        "run_finished", "all_verdict_blocking_resolved",
+    }
+    assert set(VOCAB["решения_по_возражению"]) == {
+        "подтвердить_постановку", "изменить_цель", "сменить_решение", "остановить",
+    }
+
+
+def test_every_stage_rule_carries_its_reason():
+    # A rule with no stated reason gets re-litigated; that is how ten rounds
+    # happen. Each block below is a decision Anton made explicitly.
+    assert STAGES["слепой_вопрос"]["почему"] and STAGES["слепой_вопрос"]["ограничение"]
+    assert STAGES["сигнал_нежизнеспособности"]["условие"] == \
+        "оба_критика_независимо_назвали_другой_подход"
+    assert STAGES["сигнал_нежизнеспособности"]["почему"]
+    assert STAGES["метрика_цены_понимания"]["когда"]
+    assert STAGES["метрика_цены_понимания"]["зачем"]
+    for key in ("правило", "почему", "отменяет"):
+        assert STAGES["приоритет_расхода"][key], key
+
+
+def test_the_foundation_block_states_what_it_must_deliver():
+    # БТ is the block that makes the tables executable rather than decorative;
+    # dropping any of its criteria quietly turns it back into a formality.
+    criteria = " | ".join(BLOCKS["приёмка_БТ"])
+    for requirement in (
+        "загрузчик", "дубликаты", "закрытые коды", "ровно один исход",
+        "не только отмена", "без правки Python", "генерируются", "мутации",
+    ):
+        assert requirement in criteria, requirement

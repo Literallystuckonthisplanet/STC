@@ -42,7 +42,7 @@ H14 | Hook | hooks/buy-vs-build-reminder.sh | Pain: process rules in always-text
 H15 | Hook | hooks/exec-offload-guard.sh | (PEV §Step2 / playbook §Token economy). Event: PreToolUse(Bash). | —
 H16 | Hook | hooks/integration-docs-gate.sh | generalized to all projects 2026-07-01, I25). PreToolUse(Write/Edit/MultiEdit): editing the CODE of a named integration is BLOCKE… | —
 H17 | Hook | hooks/secret-read-guard.sh | PreToolUse(Read/Glob/Grep): blocks reading secret files (.env / .pem / id_rsa). | —
-H18 | Hook | hooks/graphify-first.sh | PreToolUse(Grep/Bash): in a repo where a code-graph is already built (graphify-out/graph.json exists), the FIRST grep-style searc… | —
+H18 | Hook | hooks/graphify-first.sh | Two branches, one question: "what is the first place to look in this project?" | —
 H21 | Hook | hooks/exit-plan-grill.sh | Event: PreToolUse(ExitPlanMode). | —
 H22 | Hook | hooks/prompt-lens.sh | Pain: по корпусу переписки (1994 сообщения, 186 сессий) проколы всплывают не уточняющим вопросом (2% случаев), а откатом после ~4… | —
 I01 | Instruction | rules/session.md | Load once: compact behavior.md, pev.md, this file, and the user profile. Do not manually reload them. Playbook, code standard, pr… | —

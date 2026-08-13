@@ -167,6 +167,121 @@ def test_h18_graphify_first_blocks_once_then_allows_exact_retry(tmp_path):
         marker.unlink(missing_ok=True)
 
 
+def test_h18_first_touch_of_a_project_points_at_snapshot_without_blocking(tmp_path):
+    """Ветка 2: обход каталогов ls/find/Read раньше проходил без единого указателя.
+
+    Именно эта дыра дала «граф и снапшот собраны, но агент в них не смотрит»:
+    ветка 1 стережёт только поиск по содержимому.
+    """
+    project = tmp_path / "projects" / "some-app"
+    project.mkdir(parents=True)
+    (project / "SNAPSHOT.md").write_text("# snapshot", encoding="utf-8")
+    payload = {
+        "tool_name": "Bash",
+        "session_id": "behavior-entry",
+        "tool_input": {"command": f"ls -la {project}"},
+    }
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(project))
+    marker = Path(f"/tmp/stc-projectfirst-behavior-entry-{slug}")
+    marker.unlink(missing_ok=True)
+    first = _run("graphify-first.sh", payload, tmp_path, USER_LANG="en")
+    second = _run("graphify-first.sh", payload, tmp_path, USER_LANG="en")
+    try:
+        # подсказка, а не блок: чтение легитимно
+        assert first.returncode == 0
+        assert "project-first" in first.stdout
+        assert "SNAPSHOT.md" in first.stdout
+        assert json.loads(first.stdout)["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+        # один раз на проект за сессию
+        assert second.stdout == ""
+    finally:
+        marker.unlink(missing_ok=True)
+
+
+def test_h18_does_not_fire_when_the_snapshot_itself_is_being_read(tmp_path):
+    """Чтение снапшота — это и есть нужное поведение, подсказка была бы шумом."""
+    project = tmp_path / "projects" / "quiet-app"
+    project.mkdir(parents=True)
+    snapshot = project / "SNAPSHOT.md"
+    snapshot.write_text("# snapshot", encoding="utf-8")
+    result = _run(
+        "graphify-first.sh",
+        {
+            "tool_name": "Read",
+            "session_id": "behavior-quiet",
+            "tool_input": {"file_path": str(snapshot)},
+        },
+        tmp_path,
+        USER_LANG="en",
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_h18_grep_branch_still_blocks_after_the_entry_branch_was_added(tmp_path):
+    """Страж против регресса: у веток отдельные маркеры.
+
+    Если бы они делили один маркер, первое же чтение съедало бы блокировку
+    grep-цепочки, и ветка 1 замолчала бы незаметно.
+    """
+    project = tmp_path / "projects" / "graphed-app"
+    (project / "graphify-out").mkdir(parents=True)
+    (project / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+    (project / "SNAPSHOT.md").write_text("# snapshot", encoding="utf-8")
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(project))
+    entry_marker = Path(f"/tmp/stc-projectfirst-behavior-both-{slug}")
+    grep_marker = Path(f"/tmp/stc-graphify-behavior-both-{slug}")
+    for m in (entry_marker, grep_marker):
+        m.unlink(missing_ok=True)
+    read_first = _run(
+        "graphify-first.sh",
+        {
+            "tool_name": "Read",
+            "session_id": "behavior-both",
+            "tool_input": {"file_path": str(project / "app.ts")},
+        },
+        tmp_path,
+        USER_LANG="en",
+    )
+    then_grep = _run(
+        "graphify-first.sh",
+        {
+            "tool_name": "Grep",
+            "session_id": "behavior-both",
+            "tool_input": {"path": str(project)},
+        },
+        tmp_path,
+        USER_LANG="en",
+    )
+    try:
+        assert read_first.returncode == 0
+        assert "project-first" in read_first.stdout
+        assert then_grep.returncode == 2
+        assert "graphify-first" in then_grep.stderr
+    finally:
+        for m in (entry_marker, grep_marker):
+            m.unlink(missing_ok=True)
+
+
+def test_h18_leaves_the_agents_own_infra_alone(tmp_path):
+    """Инфра агента маршрутизируется своими правилами — H05/H09/session.md."""
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    (memory / "SNAPSHOT.md").write_text("# infra snapshot", encoding="utf-8")
+    result = _run(
+        "graphify-first.sh",
+        {
+            "tool_name": "Read",
+            "session_id": "behavior-infra",
+            "tool_input": {"file_path": str(memory / "project_x.md")},
+        },
+        tmp_path,
+        USER_LANG="en",
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
 def test_h22_is_additive_and_only_warns_on_underspecified_prompt(tmp_path):
     # Слово-градус при правке текста: осталось после снятия OPEN_VERB (2026-08-12)
     # и остаётся единственным классом с задокументированным реальным проколом.

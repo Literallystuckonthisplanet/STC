@@ -527,8 +527,13 @@ def main(argv: list[str] | None = None) -> int:
         ENV_FILE.unlink(missing_ok=True)
 
     verdicts = [p["verdict"] for p in report["probes"]]
+    # Every machine check has exactly one outcome that lets the spike close.
+    # TOOL_ROUTER_BROKEN is deliberately absent: a host that cannot run tools
+    # at all makes the positive control unreachable, and an unreachable control
+    # is the one thing that must never be read as a pass.
     machine_ok = all(check.get("verdict") in
-                     ("TARGET_REACHABLE", "CONTEXT_ABSENT", "CAPABILITY_ABSENT", "NO_COPIES")
+                     ("TARGET_REACHABLE", "CONTEXT_ABSENT", "TOOL_ROUTER_OK",
+                      "CAPABILITY_ABSENT", "NO_COPIES")
                      for check in report["machine_checks"])
     report["verdict"] = ("PASS" if verdicts and all(v == "PASS" for v in verdicts) and machine_ok
                          else "FAIL" if "FAIL" in verdicts

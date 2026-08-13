@@ -25,17 +25,22 @@ TABLES = Path(__file__).resolve().parents[2] / "core" / "scripts" / "roundtable"
 # copy is exactly the "two sources" shape this design keeps failing on. The
 # module is registered under a fixed name so that both roundtable test files
 # get the *same* module object — two copies would defeat the point.
-MODULE_NAME = "roundtable_tables"
+SCRIPTS = TABLES.parents[1]
+MODULE_NAME = "roundtable.tables"
 
 
 def import_tables_module():
-    if MODULE_NAME in sys.modules:
-        return sys.modules[MODULE_NAME]
-    spec = importlib.util.spec_from_file_location(MODULE_NAME, TABLES.parent / "tables.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[MODULE_NAME] = module  # dataclasses resolve annotations through it
-    spec.loader.exec_module(module)
-    return module
+    """Import the real package module, not a copy loaded from a path.
+
+    `state.py` imports `tables` as a sibling, so the package has to be importable
+    for real; loading the file twice under two names would also give the suite a
+    different `StrictLoader` object than the engine's, which is precisely what
+    criterion 1 of приёмка_БТ forbids.
+    """
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    import roundtable.tables
+    return roundtable.tables
 
 
 _MODULE = import_tables_module()
@@ -575,6 +580,18 @@ def test_who_may_close_an_issue_is_fully_stated():
     assert closers["никто_иной"], "the exclusion must be written down, not implied"
 
 
+def test_the_attempt_journal_declares_its_key_states_and_flag():
+    # Б1 reads all four out of the table: a private copy inside state.py would
+    # be the "two sources" shape again, and this journal is what decides whether
+    # a critic gets called twice.
+    attempt = VOCAB["попытка"]
+    assert attempt["ключ"] == ["прогон", "стадия", "круг", "критик", "попытка"]
+    assert attempt["состояния"] == [
+        "подготовлена", "запущена", "получена", "провалидирована", "зафиксирована"]
+    assert attempt["флаг_неопределённого_окна"] == "возможен_дубль"
+    assert attempt["почему"], "the unreachable guarantee must keep its reason"
+
+
 def test_precheck_file_classes_and_fixture_home_are_declared():
     assert set(PRECHECK["классы_файлов"]) == {"existing_evidence", "planned_output"}
     assert PRECHECK["фикстуры"]["каталог"].endswith("precheck/")
@@ -730,7 +747,7 @@ def test_closed_code_lists_are_pinned_whole():
     # engine can express, and every other test would still pass.
     assert set(VOCAB["коды_отказа"]) == {
         "БЮДЖЕТ_НЕ_ВМЕЩАЕТ_КВОРУМ", "КОНФЛИКТ_ВХОДА",
-        "РЕШЕНИЕ_ВНЕ_ТИПА", "ЕСТЬ_ЗАВИСИМЫЕ_СОБЫТИЯ",
+        "РЕШЕНИЕ_ВНЕ_ТИПА", "ЕСТЬ_ЗАВИСИМЫЕ_СОБЫТИЯ", "ПРОГОН_ЗАНЯТ",
     }
     assert set(VOCAB["коды_условий"]) == {
         "verdict", "decision", "framing_decision", "budget_allows_round",

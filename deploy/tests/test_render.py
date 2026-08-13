@@ -254,6 +254,34 @@ def test_render_harness_produces_agent_files():
             f"{rel} has no model: line"
 
 
+def test_user_disabled_hook_is_not_rendered_and_returns_on_re_enable():
+    """A hook listed in stc.yaml `hooks.disabled` must not reach the harness —
+    and must come back the moment the line is removed.
+
+    The switch exists because a hook can be technically fine and still not worth
+    its noise (H22 prompt-lens, retired 2026-08-12 on measurement). It must stay
+    separate from the adapter's `supported: false`, which means the harness
+    cannot realise the capability at all — otherwise a personal decision is
+    recorded as a harness limitation and nobody can tell them apart later.
+    """
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "claude", REPO)
+
+    off = copy.deepcopy(stc)
+    off["hooks"] = {"disabled": ["prompt-lens.sh"]}
+    rendered_off = R.render_harness(off, registry, provider, adapters["claude"], D.CORE, REPO)
+    assert not any("prompt-lens" in k for k in rendered_off.files), \
+        "disabled hook still rendered"
+    wiring_off = json.dumps(rendered_off.json_patches.get("settings.json", {}))
+    assert "prompt-lens" not in wiring_off, "disabled hook still wired in settings.json"
+
+    on = copy.deepcopy(stc)
+    on["hooks"] = {"disabled": []}
+    rendered_on = R.render_harness(on, registry, provider, adapters["claude"], D.CORE, REPO)
+    assert any("prompt-lens" in k for k in rendered_on.files), \
+        "hook did not come back after the switch was cleared"
+
+
 def test_claude_agents_use_anthropic_aliases():
     """REGRESSION (the core bug this session): claude-harness agents must use
     the short Anthropic aliases (haiku/sonnet/opus), NOT glm-* ids and NOT the

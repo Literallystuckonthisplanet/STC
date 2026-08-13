@@ -129,6 +129,16 @@ graphify:
 # ------------------------------------------------------------
 # Offline transcript -> memory/Wiki ingest
 # ------------------------------------------------------------
+# Personal hook switch. The adapter says what a harness CAN do; this says what
+# you do not want. The hook file, its tests and its rules stay in place — drop
+# the line and the next deploy brings the hook back.
+#
+# Use it when a hook is measurably not worth its noise, and write down why:
+# the point of the switch is that the decision stays reversible and explained.
+hooks:
+  disabled: []
+  #  - prompt-lens.sh
+
 memory_pipeline:
   enabled: true
   lookback_hours: 36              # local semantic pass; deterministic scan is full-corpus

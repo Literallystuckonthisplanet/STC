@@ -11,6 +11,26 @@ release notes.
 
 ## [Unreleased]
 
+### Changed — the lens retires its noisiest rule, and its corpus stops shrinking
+- **OPEN_VERB removed from `lens_rules.py` (H22).** Over 42 days of live traffic
+  it fired 78 times — 45% of all lens flags — and not one firing was followed by
+  a rollback or a clarifying question; it warned on ordinary questions like
+  «обнови статус». That is noise by `prompt-audit.py`'s own definition, so the
+  rule is gone from the hook, the audit and the guard test. Flag rate:
+  **15.3% → 11.3%** of messages. DEGREE, DANGLING, MULTI_TASK and NICK stay:
+  rare and targeted.
+- **`collect_corpus.py` now reads the rotated archive too.** The harness prunes
+  `~/.claude/projects` to ~40 days, so the single-source corpus silently shrank
+  from 1994 to 665 messages and the guard test began failing live nick aliases
+  for lack of data. It now reads `$STC_PROJECTS_DIR` **and**
+  `$STC_TRANSCRIPTS_RAW` (default `~/Work/transcripts/raw`), deduplicated, and
+  prints every source with its file count — an absent source is visible, never
+  silent.
+- **The guard test tells a dead alias from a rare one.** Zero corpus hits still
+  fails (that is the latin-normalization bug it was built to catch); 1–2 hits
+  warns when the alias carries a recorded `_freq` confirmation, and still fails
+  without one, so a new alias cannot be added by guess.
+
 ### Fixed — Codex commands now deploy as native skills
 - Codex's eight STC source commands (`git-guardrails`, `grill-me`,
   `improve-codebase-architecture`, `install-mcp`, `prototype`, `to-spec`,
@@ -100,8 +120,9 @@ release notes.
 - **`core/hooks/prompt-lens.sh` (H22, UserPromptSubmit):** appends a short hint
   to the user's message instead of rewriting it — the original text reaches the
   model intact. Flags a degree word without a measure, a dangling reference, an
-  open verb with neither a done-criterion nor an object, ≥3 tasks in one
-  message, and project nicks. Deterministic (no model in the path).
+  open verb with neither a done-criterion nor an object (retired 2026-08-12 —
+  see Unreleased), ≥3 tasks in one message, and project nicks. Deterministic (no
+  model in the path).
 - **`core/rules/pev.md` (FR-30):** echo-reformulation before costly work —
   triggered by a lens flag or by an expensive next step, not by task size.
 - **`core/scripts/lens_rules.py`:** the single source of the rules, imported by

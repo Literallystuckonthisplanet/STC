@@ -6,7 +6,15 @@
 переписке — «кандидат ≠ баг» (см. core/memory/reference_cyrillic_regex.md).
 Этот скрипт готовит корпус, по которому считает страж-тест и месячный аудит.
 
-ЧИТАЕТ:  $STC_PROJECTS_DIR (по умолчанию ~/.claude/projects)/**/*.jsonl
+ЧИТАЕТ:  ДВА источника, оба целиком, с дедупом по (сессия, текст):
+           1) $STC_PROJECTS_DIR   (по умолчанию ~/.claude/projects) — живой каталог;
+           2) $STC_TRANSCRIPTS_RAW (по умолчанию ~/Work/transcripts/raw) — архив.
+         Живой каталог харнесс ротирует (сейчас держит ~40 дней), архив — нет.
+         Пока источник был один, корпус молча худел вместе с ротацией: 2026-08-12
+         он собрался на 665 сообщений вместо 1994, и страж-тест начал валить
+         клички «форест/дриада/вт/ворктри» не потому, что они умерли, а потому
+         что история уехала в архив. Измеритель, теряющий данные молча, — это та
+         же болезнь, от которой лечит сам страж.
 ФИЛЬТР:  живые сообщения пользователя под --root; без tool_result, медиа,
          системных пастов и повторов
 ПИШЕТ:   $STC_CORPUS (по умолчанию ~/.stc/.corpus/corpus.jsonl), права 600
@@ -30,7 +38,19 @@ from lens_rules import normalize, analyze  # noqa: E402
 
 DEFAULT_ROOT = os.path.expanduser("~/Work")
 PROJECTS_DIR = os.environ.get("STC_PROJECTS_DIR") or os.path.expanduser("~/.claude/projects")
+ARCHIVE_DIR = os.environ.get("STC_TRANSCRIPTS_RAW") or os.path.expanduser("~/Work/transcripts/raw")
 DEFAULT_OUT = os.environ.get("STC_CORPUS") or os.path.expanduser("~/.stc/.corpus/corpus.jsonl")
+
+
+def sources() -> list[str]:
+    """Каталоги-источники, которые реально существуют (порядок: живой → архив)."""
+    out, seen = [], set()
+    for d in (PROJECTS_DIR, ARCHIVE_DIR):
+        real = os.path.realpath(os.path.expanduser(d))
+        if os.path.isdir(real) and real not in seen:
+            seen.add(real)
+            out.append(real)
+    return out
 
 
 def extract_text(content) -> str:
@@ -80,7 +100,9 @@ def is_live_message(text: str) -> bool:
 
 
 def collect(root: str, limit: int | None = None):
-    files = glob.glob(os.path.join(PROJECTS_DIR, "**", "*.jsonl"), recursive=True)
+    files = []
+    for src in sources():
+        files.extend(glob.glob(os.path.join(src, "**", "*.jsonl"), recursive=True))
     records = []
     seen = set()  # дедуп: один и тот же текст в той же сессии = повтор (resume/fork)
     for fp in files:
@@ -183,6 +205,13 @@ def main():
 
     m = metrics(records)
     print(f"corpus: {out} (права 600)")
+    # Источники печатаем всегда: пропавший архив обязан быть виден в выводе, а
+    # не выясняться через месяц по осыпавшимся счётчикам стража.
+    for src in sources():
+        n_files = len(glob.glob(os.path.join(src, "**", "*.jsonl"), recursive=True))
+        print(f"источник: {src} ({n_files} файлов)")
+    for absent in (d for d in (PROJECTS_DIR, ARCHIVE_DIR) if not os.path.isdir(os.path.expanduser(d))):
+        print(f"⚠ источник отсутствует: {absent} — корпус собран не полностью")
     print(f"records: {m.get('messages',0)} messages across {m.get('sessions',0)} sessions (root={args.root})")
     print("--- metrics (по тем же правилам, что в хуке) ---")
     for k, v in m.items():

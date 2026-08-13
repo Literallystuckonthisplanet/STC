@@ -56,9 +56,7 @@ expect_flag "висячая ссылка «это»"            "посмотр�
 expect_flag "градус ПРИ правке текста"        "стиль немного нейтральнее сделай"       "градус без меры"
 expect_flag "градус БЕЗ правки"               "я немного устал сегодня"                ""
 expect_flag "мульти-задача ≥3"                "сделай x, проверь y, поправь z"         "задач"
-expect_flag "открытый глагол"                 "посмотри логи"                          "открытый глагол"
-expect_flag "критерий уже назван"             "поправь заголовок, готово когда тесты зелёные"  ""
-expect_flag "объект уже назван"               "посмотри ~/Work/STC/core/hooks/prompt-lens.sh"  ""
+expect_flag "объект уже назван — кличка молчит" "посмотри ~/Work/STC/core/hooks/prompt-lens.sh"  ""
 expect_flag "глаголы в цитате — не задачи"    "заказчик пишет: «сделай проверь поправь» — про что он" ""
 expect_flag "слишком коротко"                 "да"                                     ""
 
@@ -130,7 +128,7 @@ for r in recs:
         rule_sample.setdefault(rule, r["raw"][:60].replace("\n", " "))
 
 fails = 0
-for rule in ("DANGLING", "DEGREE", "OPEN_VERB", "MULTI_TASK", "NICK"):
+for rule in ("DANGLING", "DEGREE", "MULTI_TASK", "NICK"):
     n = rule_hits.get(rule, 0)
     ok = n >= min_tp
     fails += 0 if ok else 1
@@ -138,14 +136,31 @@ for rule in ("DANGLING", "DEGREE", "OPEN_VERB", "MULTI_TASK", "NICK"):
 
 # Кличка считается отдельно: правило может быть живым, а половина его
 # альтернатив — мёртвой (так и было с латинскими кличками).
+#
+# ЧТО ИМЕННО ЛОВИМ. Мёртвая кличка — это НОЛЬ совпадений: шаблон не может
+# совпасть в принципе (латинские клички после нормализации). Именно это и было
+# багом. Редкая кличка — это 1–2 совпадения: она работает, просто человек редко
+# так говорит. Раньше обе валили тест одинаково, и после ротации транскриптов
+# (корпус стал скользящим окном ~40 дней) страж начал требовать удалить живые
+# клички. Теперь: 0 — провал всегда; 1–2 — предупреждение, если кличку когда-то
+# подтвердили счётом (`_freq` в личном словаре), и провал, если подтверждения
+# нет: новую кличку по-прежнему нельзя завести «на глаз».
 print("  --- по кличкам ---")
 for p in L.PROJECTS:
     for alias in p["aliases"]:
         rx = re.compile(L.NICK_EDGE + re.escape(L.normalize(alias)) + L.NICK_EDGEE)
         n = sum(1 for r in recs if rx.search(L.normalize(r["raw"])))
-        ok = n >= min_tp
-        fails += 0 if ok else 1
-        print(f"  [{'PASS' if ok else 'FAIL'}] кличка {alias:<10} TP={n:>4}  → {p['key']}")
+        confirmed = int(p.get("freq", {}).get(alias, 0))
+        if n >= min_tp:
+            mark, note = "PASS", ""
+        elif n == 0:
+            mark, note = "FAIL", "  МЁРТВАЯ: ни одного совпадения — проверь нормализацию"
+        elif confirmed >= min_tp:
+            mark, note = "WARN", f"  редкая, подтверждена ранее счётом {confirmed}"
+        else:
+            mark, note = "FAIL", "  не подтверждена счётом: «кандидат ≠ баг»"
+        fails += 1 if mark == "FAIL" else 0
+        print(f"  [{mark}] кличка {alias:<10} TP={n:>4}  → {p['key']}{note}")
 
 print(f"  сообщений в корпусе: {len(recs)}, с любым флагом: {flagged} "
       f"({100*flagged/len(recs):.1f}%)")

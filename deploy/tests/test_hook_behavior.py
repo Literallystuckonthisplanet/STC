@@ -168,9 +168,11 @@ def test_h18_graphify_first_blocks_once_then_allows_exact_retry(tmp_path):
 
 
 def test_h22_is_additive_and_only_warns_on_underspecified_prompt(tmp_path):
+    # Слово-градус при правке текста: осталось после снятия OPEN_VERB (2026-08-12)
+    # и остаётся единственным классом с задокументированным реальным проколом.
     flagged = _run(
         "prompt-lens.sh",
-        {"prompt": "проверь"},
+        {"prompt": "стиль немного нейтральнее сделай"},
         tmp_path,
         STC_LENS_RULES=str(REPO / "core" / "scripts" / "lens_rules.py"),
     )

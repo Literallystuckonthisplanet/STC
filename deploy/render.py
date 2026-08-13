@@ -281,7 +281,22 @@ def _inject_apply_patch_normalize(hook_text, fname):
     return hook_text.replace(marker, inject, 1)
 
 
-def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
+def _disabled_hooks(stc):
+    """Hook scripts the USER switched off in stc.yaml (`hooks.disabled: [x.sh]`).
+
+    Deliberately NOT the adapter's `supported: false`, which states that the
+    HARNESS cannot realise the capability. Here the harness can — the user
+    decided the hook is not worth its noise (H22 prompt-lens, 2026-08-12: 78
+    firings, zero catches). Keeping the two switches apart matters: a personal
+    decision must not masquerade as a harness limitation inside the adapter
+    contract, and it has to survive a redeploy without editing that contract.
+    """
+    block = (stc or {}).get("hooks") or {}
+    names = block.get("disabled") or []
+    return {os.path.basename(str(n)).strip() for n in names if str(n).strip()}
+
+
+def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir, disabled=()):
     """Render the 16 hook scripts + the matcher wiring.
 
     Wiring shape depends on capability_delivery:
@@ -308,6 +323,8 @@ def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir):
         fname = (cap.get("binding") or {}).get("file")
         if not fname:
             continue
+        if fname in disabled:
+            continue  # switched off by the user in stc.yaml, not by the harness
         src = os.path.join(core_dir, "hooks", fname)
         if not os.path.exists(src):
             continue
@@ -1140,7 +1157,7 @@ def render_harness(stc, registry, provider, adapter, core_dir, repo_dir):
     result = RenderResult()
 
     _render_always_context(core_dir, adapter, result, native_dir, harness)
-    _render_hooks(core_dir, adapter, varmap, result, hooks_dir)
+    _render_hooks(core_dir, adapter, varmap, result, hooks_dir, _disabled_hooks(stc))
     command_delivery = (adapter.get("commands") or {}).get("delivery", "commands")
     if command_delivery == "skills":
         _render_command_skills(core_dir, adapter, varmap, result, skills_dir)

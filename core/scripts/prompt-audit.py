@@ -217,7 +217,7 @@ def _covered_words() -> set[str]:
     words = set()
     for p in L.PROJECTS:
         words.update(L.normalize(a) for a in p["aliases"])
-    for group in (L.DANGLING_WORDS, L.DEGREE_WORDS, L.OPEN_VERBS, L.TASK_VERBS):
+    for group in (L.DANGLING_WORDS, L.DEGREE_WORDS, L.TASK_VERBS):
         words.update(L.normalize(w) for w in group)
     words.update(L.normalize(w) for w in (
         "форест", "ворктри", "мвп", "репо", "прод", "лента", "отсев", "порция",
@@ -241,7 +241,7 @@ def dictionary_candidates(sessions, topn=15):
 
 
 # --- 3 и 4. мёртвые / шумные правила -------------------------------------
-RULE_NAMES = ("DANGLING", "DEGREE", "OPEN_VERB", "MULTI_TASK", "NICK")
+RULE_NAMES = ("DANGLING", "DEGREE", "MULTI_TASK", "NICK")
 
 
 def rule_health(sessions):

@@ -7,11 +7,16 @@ present only in the startup rules/profile injected by the session-start hook.
 
 Two deliberate differences from the Codex canary:
 
-* Claude Code has no ``--output-schema``, so the answer is requested as one raw
-  JSON object and parsed from the first assistant message.
-* The run is cut off after that first message.  Stop hooks would otherwise keep
-  the session going and replace the answer with unrelated hook follow-up, and a
-  single turn is also the cheapest bound on the call.
+* The run is cut off right after the first assistant message.  Stop hooks would
+  otherwise keep the session going and replace the answer with unrelated hook
+  follow-up, and a single turn is also the cheapest bound on the call.
+* That cut-off — not a missing flag — is why the answer is requested as one raw
+  JSON object and parsed out of the streamed first message.  Claude Code does
+  have ``--json-schema`` (checked against 2.1.227), but its validated answer is
+  delivered in the ``structured_output`` field of the single ``--output-format
+  json`` envelope, which is printed only once the session has finished; waiting
+  for that is exactly what this canary must not do.  The schema path is used by
+  the roundtable adapter (``core/scripts/roundtable/adapters.py``) instead.
 
 The canary is read-only: every file/exec tool is denied, MCP is disabled, only
 user-scope settings are loaded, and the process runs in a throwaway directory so

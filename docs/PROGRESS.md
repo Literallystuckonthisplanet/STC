@@ -645,6 +645,47 @@ rollback count drop? Baseline re-measured after the audit was fixed:
 double-counted resumed sessions and counted messages that merely contained the
 word "стоп").
 
+**Mid-term reading (2026-08-12, half the window).** Post-deploy 2026-07-29 →
+08-12: 109 messages, 42 sessions, **0 rollbacks**. Pre-deploy 07-02 → 07-29: 758
+messages, 7 rollbacks = 0.92%. The zero is not evidence — at that base rate ~1
+rollback was expected and P(0) ≈ 37%. **The criterion itself does not work at
+this traffic:** detecting a halving needs ~5 000 messages per arm, i.e. ~1.5–2
+years at ~230 messages/month. Replace it with per-rule precision, which is
+already decisive: over 42 days the lens fired 171 times against 7 rollbacks
+(24:1), and OPEN_VERB alone accounts for 78 firings (13.8% of messages in the
+last window) with **not one** followed by a rollback or a clarifying question —
+noise by the audit's own definition. DEGREE (19), MULTI_TASK (10) and DANGLING
+(3) stay: rare and targeted. FR-30 is in use ("Понял так" appears in 12
+transcripts since 07-29). Note: the audit's rollback register prints raw message
+excerpts and can echo pasted credentials — scrub before writing it to a file.
+
+**Acted on the same day.** OPEN_VERB is retired from the rules module, the audit
+and the guard test; the flag rate drops to **11.3%**. The corpus collector was
+found to read only the harness directory, which is pruned to ~40 days — it had
+silently shrunk from 1994 to 665 messages — so it now reads the rotated archive
+as well and names its sources out loud. The guard test now separates a dead
+alias (0 hits, always a failure) from a rare one (1–2 hits with a recorded
+frequency confirmation). 288 tests green, deployed to claude and codex.
+
+**Retired the next day (2026-08-13).** On reflection the user doubted the whole
+feature was worth keeping — not on rule quality (just cleaned up) but because
+the hint duplicates what the always-context glossary already carries, and the
+honest verify-in-a-month criterion needs ~5000 messages per arm (~1.5–2 years
+at this traffic) to prove anything. Switched off, not deleted: a new
+`hooks.disabled` list in `stc.yaml`, read by `deploy/render.py`
+(`_disabled_hooks()`), kept deliberately separate from the adapter's
+`supported: false` — one is a personal call, the other a harness limitation,
+and conflating them would hide which is which on the next audit. Deployed; the
+rendered hook file was pruned from both `~/.claude` and `~/.codex`, zero
+`prompt-lens` references remain in `settings.json`. FR-30 and the glossary are
+untouched — neither lives in the hook. Regression test:
+`test_user_disabled_hook_is_not_rendered_and_returns_on_re_enable`.
+
+**Corpus collection moved off manual runs.** It only ever ran by hand, so the
+corpus was two weeks stale the moment this story started. New daily launchd job
+`com.xtoshin.stc-corpus-collect` (10:20, after memory-ingest and snapshot),
+installed and verified live. 330 tests green.
+
 ## Stages still ahead
 - Stage 5: stc.yaml + end-to-end (real `apply` against `~/.claude`/`~/.zcode`,
   resolving the live 19 collisions; the consent gate opens here)

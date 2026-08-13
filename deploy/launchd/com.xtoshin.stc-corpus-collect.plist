@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.xtoshin.stc-corpus-collect</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/xtoshin/Work/STC/core/scripts/collect_corpus.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>STC_PROJECTS_DIR</key>
+    <string>/Users/xtoshin/.claude/projects</string>
+    <key>STC_TRANSCRIPTS_RAW</key>
+    <string>/Users/xtoshin/Work/transcripts/raw</string>
+    <key>STC_CORPUS</key>
+    <string>/Users/xtoshin/.stc/.corpus/corpus.jsonl</string>
+    <key>PATH</key>
+    <string>/Users/xtoshin/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <!-- 10:20 — после ингеста памяти (10:00) и снапшотов (10:15): к этому часу
+       архив транскриптов уже пополнен, и корпус собирается по свежим данным.
+       RunAtLoad добирает пропущенный день после сна/перезагрузки; сборка
+       идемпотентна — файл перезаписывается целиком. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>20</integer>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <!-- Логи лежат рядом с корпусом, в приватном каталоге (700): сам корпус —
+       личная переписка. В лог печатаются только счётчики и пути, не тексты. -->
+  <key>StandardOutPath</key>
+  <string>/Users/xtoshin/.stc/.corpus/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/xtoshin/.stc/.corpus/launchd.stderr.log</string>
+</dict>
+</plist>

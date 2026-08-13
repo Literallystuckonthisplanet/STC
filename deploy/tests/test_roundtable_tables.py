@@ -661,13 +661,49 @@ def test_precheck_fixtures_declare_their_oracle_and_their_rule():
     assert "на чистом документе" in PRECHECK["фикстуры"]["правило"]
 
 
-def test_cleared_work_needs_no_critic_calls_and_no_unbuilt_dependency():
-    cleared = BLOCKS["разрешено_начинать_сейчас"]
-    assert cleared, "the plan must always name what may be picked up next"
-    assert BLOCKS["вызовов_критиков_требуют"] == []
+def test_the_reviewed_clearance_is_a_fact_and_not_a_progress_pointer():
+    # 2026-08-13: this list was rewritten four times as "what I am doing next"
+    # — [Ш1] → [Б1] → [Б2] → [Б15] — and the assertion that pinned it was
+    # weakened in the same series of commits. That turned "what the critics
+    # cleared" into "what I intend to do", which is a permission granted to
+    # oneself. The pin is back, and it is exact: this list moves only when a
+    # review round moves it.
+    assert BLOCKS["разрешено_ревью"] == ["Б3а", "Ш1", "БТ"]
+
+
+def test_nothing_was_started_that_nobody_cleared():
+    # The guard that was missing. A block may be under way only if a review
+    # cleared it, or Anton did so personally and the reason is written down.
+    cleared = set(BLOCKS["разрешено_ревью"])
+    by_anton = BLOCKS["разрешено_Антоном"]
+    assert not cleared & set(by_anton), "одно разрешение из двух источников — выбери"
+    for block, why in by_anton.items():
+        assert block in BLOCKS["блоки"], block
+        assert why and "13.08" in why or why, "разрешение без основания не разрешение"
+
+    started = {b for b, spec in BLOCKS["блоки"].items()
+               if spec.get("состояние") in ("сделано", "неполный")}
+    unauthorised = started - cleared - set(by_anton) - {"Б0а"}
+    assert not unauthorised, f"начаты без разрешения: {sorted(unauthorised)}"
+
+
+def test_everything_not_cleared_is_listed_as_needing_a_round():
+    # The three sets must together cover the plan: a block that is in none of
+    # them is a block whose permission nobody ever stated.
     done = {b for b, spec in BLOCKS["блоки"].items() if spec.get("состояние") == "сделано"}
+    accounted = (done | set(BLOCKS["разрешено_ревью"]) | set(BLOCKS["разрешено_Антоном"])
+                 | set(BLOCKS["вызовов_критиков_требуют"]))
+    assert set(BLOCKS["порядок"]) <= accounted, (
+        f"не сказано, кем разрешены: {sorted(set(BLOCKS['порядок']) - accounted)}")
+    assert not set(BLOCKS["вызовов_критиков_требуют"]) & done, (
+        "нельзя одновременно требовать круг и быть сделанным")
+
+
+def test_cleared_work_has_no_unbuilt_dependency():
+    done = {b for b, spec in BLOCKS["блоки"].items() if spec.get("состояние") == "сделано"}
+    cleared = set(BLOCKS["разрешено_ревью"])
     for block in cleared:
-        unmet = set(BLOCKS["блоки"][block]["зависит"]) - done - set(cleared)
+        unmet = set(BLOCKS["блоки"][block]["зависит"]) - done - cleared
         assert not unmet, f"{block} still waits on {unmet}"
     assert BLOCKS["блоки"]["Ш1"]["зависит"] == ["Б3а"]
 

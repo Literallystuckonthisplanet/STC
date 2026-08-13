@@ -580,6 +580,25 @@ def test_who_may_close_an_issue_is_fully_stated():
     assert closers["никто_иной"], "the exclusion must be written down, not implied"
 
 
+def test_the_package_rules_are_complete_and_pinned():
+    # Guarantee 1 lives on these seven rows: what is refused, what never enters,
+    # how big is too big, and why a build carries no timestamp. Б2 reads every
+    # one of them, so losing a row here would quietly widen the package.
+    package = VOCAB["пакет"]
+    assert package["предел_файла_байт"] > 0 and package["предел_пакета_байт"] > 0
+    assert package["предел_файла_байт"] < package["предел_пакета_байт"]
+    assert set(package["отвергается"]) == {
+        "симлинк", "путь_с_родительским_переходом", "путь_вне_корня",
+        "превышение_размера", "отсутствие_обязательного_файла"}
+    assert set(package["не_попадает"]) == {
+        "инструкции_харнесса", "прошлые_протоколы", "git_история",
+        "ответы_других_критиков", "имя_автора"}
+    assert package["реестры"] == ["решения", "области", "журнал_доказательств"]
+    assert set(package["виды_решений_в_реестре"]) == {"closed_decision", "framing"}
+    assert "времени сборки" in package["канонизация"], (
+        "the reason two builds must hash the same has to stay written down")
+
+
 def test_the_attempt_journal_declares_its_key_states_and_flag():
     # Б1 reads all four out of the table: a private copy inside state.py would
     # be the "two sources" shape again, and this journal is what decides whether

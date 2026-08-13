@@ -79,7 +79,7 @@ TOP_LEVEL = {
     "blocks": {
         "порядок", "вне_порядка", "блоки", "приёмка_БТ", "списки",
         "последовательные_из_за_общих_файлов", "разрешено_начинать_сейчас",
-        "вызовов_критиков_требуют",
+        "вызовов_критиков_требуют", "заморозка_команды",
     },
     "stages": {
         "стадии", "слепой_вопрос", "сигнал_нежизнеспособности",
@@ -224,6 +224,7 @@ class Block:
     state: str | None = None
     files: str | None = None
     acceptance: str | None = None
+    blocker: str | None = None
     declared_counts: dict = field(default_factory=dict)
     outside_mvp: bool = False
 
@@ -231,7 +232,7 @@ class Block:
     def parse(cls, name: str, row: dict) -> "Block":
         _require(
             row, {"что", "зависит"},
-            {"состояние", "файлы", "приёмка", "объявленное_количество", "вне_MVP"},
+            {"состояние", "файлы", "приёмка", "блокер", "объявленное_количество", "вне_MVP"},
             f"blocks.блоки.{name}")
         return cls(
             name=name,
@@ -240,6 +241,7 @@ class Block:
             state=row.get("состояние"),
             files=row.get("файлы"),
             acceptance=row.get("приёмка"),
+            blocker=row.get("блокер"),
             declared_counts=dict(row.get("объявленное_количество") or {}),
             outside_mvp=bool(row.get("вне_MVP", False)),
         )
@@ -589,14 +591,22 @@ def _render_framing(tables: Tables) -> list[str]:
 def _render_blocks(tables: Tables) -> list[str]:
     plan = tables.plan
     rows = []
+    marks = {"сделано": " ✅", "неполный": " 🚧"}
     for position, name in enumerate(plan["порядок"], start=1):
         block = tables.blocks[name]
-        mark = " ✅" if block.state == "сделано" else ""
-        rows.append([str(position), f"**{name}**{mark}", block.what,
+        rows.append([str(position), f"**{name}**{marks.get(block.state, '')}", block.what,
                      _cell(list(block.depends)), _cell(block.files),
                      _cell(block.acceptance)])
     lines = _table(["#", "Блок", "Что", "Зависит от", "Файлы (область записи)",
                     "Приёмка"], rows)
+    blocked = [b for b in tables.blocks.values() if b.blocker]
+    if blocked:
+        lines += ["", "**Чем заблокировано:**"]
+        lines += [f"- 🚧 **{b.name}** — {b.blocker}" for b in blocked]
+    freeze = plan["заморозка_команды"]
+    lines += ["", "**Заморозка команды критика:** "
+              + ("да" if freeze["заморожена"] else f"нет — {freeze['почему']}")
+              + f" (отчёт `{freeze['отчёт']}`)."]
     lines += ["", "**Вне порядка:**"]
     for name, why in plan["вне_порядка"].items():
         lines.append(f"- **{name}** — {tables.blocks[name].what} ({why})")

@@ -627,13 +627,33 @@ def test_precheck_fixtures_declare_their_oracle_and_their_rule():
 
 def test_cleared_work_needs_no_critic_calls_and_no_unbuilt_dependency():
     cleared = BLOCKS["разрешено_начинать_сейчас"]
-    assert cleared == ["Б3а", "Ш1", "БТ"]
+    assert cleared, "the plan must always name what may be picked up next"
     assert BLOCKS["вызовов_критиков_требуют"] == []
     done = {b for b, spec in BLOCKS["блоки"].items() if spec.get("состояние") == "сделано"}
     for block in cleared:
         unmet = set(BLOCKS["блоки"][block]["зависит"]) - done - set(cleared)
         assert not unmet, f"{block} still waits on {unmet}"
     assert BLOCKS["блоки"]["Ш1"]["зависит"] == ["Б3а"]
+
+
+def test_an_unfinished_block_states_what_blocks_it():
+    # A block that is neither done nor blocked is a block nobody is holding:
+    # that is how "waiting on something" quietly becomes "forgotten".
+    for name, spec in BLOCKS["блоки"].items():
+        if spec.get("состояние") == "неполный":
+            assert spec.get("блокер"), f"{name}: не сказано, чем заблокирован"
+
+
+def test_the_command_is_frozen_only_when_the_spike_actually_passed():
+    # The freeze is the promise "this exact command was measured". Writing it
+    # down before Ш1 closes is precisely the unverified guarantee this design
+    # has already produced three times.
+    freeze = BLOCKS["заморозка_команды"]
+    assert set(freeze) == {"заморожена", "почему", "отчёт"}
+    spike_done = BLOCKS["блоки"]["Ш1"].get("состояние") == "сделано"
+    assert freeze["заморожена"] is spike_done
+    assert freeze["почему"], "a freeze state with no reason gets re-litigated"
+    assert freeze["отчёт"].endswith("isolation-report.json")
 
 
 def test_the_loader_refuses_a_duplicated_key():

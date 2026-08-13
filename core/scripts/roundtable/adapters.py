@@ -56,7 +56,12 @@ FORBIDDEN_ARGUMENTS = (
 
 # The environment is a whitelist, not a filtered copy: a copy leaks whatever
 # the parent happens to carry, and the leak is silent.
-ENVIRONMENT_WHITELIST = ("PATH", "TMPDIR", "LANG", "LC_ALL", "TERM")
+#
+# USER is here because Ш1 measured it: without it Claude Code cannot reach the
+# macOS keychain and answers "Not logged in · Please run /login". Bisected one
+# variable at a time (LOGNAME and __CF_USER_TEXT_ENCODING do not help), so it
+# is a requirement, not a guess.
+ENVIRONMENT_WHITELIST = ("PATH", "TMPDIR", "LANG", "LC_ALL", "TERM", "USER")
 
 # Stripped by name as well, so that widening the whitelist above cannot quietly
 # hand a critic a third-party gateway. The base URL would route the call
@@ -129,6 +134,13 @@ def build_codex_command(
     directory is a throwaway one outside every repository (§5.2, axis one), and
     Codex refuses to start outside a git repository without it.
 
+    🚩 `--disable shell_tool --disable unified_exec` is the load-bearing pair,
+    and Ш1 is what found it. `--sandbox read-only` is **not** a read boundary:
+    `codex sandbox -- /bin/cat <absolute path in the real HOME>` succeeds with
+    zero denials. Taking the shell away is the Codex counterpart of Claude's
+    `--tools ""`, and it is the only measured way to close the read axis short
+    of a container.
+
     The trailing `-` is the documented way to say "instructions come from
     stdin" (`codex exec --help`).
     """
@@ -141,6 +153,8 @@ def build_codex_command(
         "--ignore-user-config",
         "--ignore-rules",
         "--sandbox", "read-only",
+        "--disable", "shell_tool",
+        "--disable", "unified_exec",
         "--skip-git-repo-check",
         "--cd", _text("cd", cd),
         "--output-schema", _text("schema_path", schema_path),

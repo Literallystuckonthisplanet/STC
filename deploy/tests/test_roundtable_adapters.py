@@ -91,6 +91,16 @@ def test_codex_command_is_ephemeral_config_free_and_read_only():
     assert "--skip-git-repo-check" in command, "the working directory is not a repo"
 
 
+def test_codex_has_no_execution_tool_at_all():
+    # Ш1 measured that `--sandbox read-only` is not a read boundary: under that
+    # very policy `codex sandbox -- /bin/cat <absolute path>` reads the file with
+    # zero denials. Taking the execution tools away is what closes the axis.
+    command = _codex()
+    disabled = {command[i + 1] for i, arg in enumerate(command) if arg == "--disable"}
+    assert {"shell_tool", "unified_exec"} <= disabled
+    assert "--enable" not in command, "features are only ever narrowed here"
+
+
 def test_codex_command_pins_model_effort_and_answer_paths():
     command = _codex(Path("/tmp/probe"))
     assert command[command.index("--model") + 1] == "gpt-5.6-luna"
@@ -177,6 +187,15 @@ def test_environment_is_a_whitelist_and_not_a_copy_of_the_parent():
     }
     environment = A.build_environment("claude", home="/tmp/clean-home", source=source)
     assert environment == {"PATH": "/usr/bin", "TERM": "xterm", "HOME": "/tmp/clean-home"}
+
+
+def test_the_whitelist_carries_the_one_variable_the_keychain_needs():
+    # Ш1 bisected it: without USER, Claude answers "Not logged in · Please run
+    # /login". LOGNAME and __CF_USER_TEXT_ENCODING do not stand in for it.
+    assert "USER" in A.ENVIRONMENT_WHITELIST
+    environment = A.build_environment("claude", home="/tmp/h",
+                                      source={"PATH": "/usr/bin", "USER": "xtoshin"})
+    assert environment["USER"] == "xtoshin"
 
 
 def test_the_gateway_and_credential_variables_are_stripped_by_name():

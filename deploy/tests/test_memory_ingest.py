@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).parents[2] / "core" / "scripts" / "memory_ingest.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("memory_ingest", SCRIPT)
 MI = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -218,3 +219,64 @@ def test_daily_guard_runs_once_per_local_day(tmp_path):
     assert MI.claim_daily_run(state, "2026-08-03") is False
     assert MI.claim_daily_run(state, "2026-08-04") is True
     assert json.loads(state.read_text(encoding="utf-8"))["last_successful_day"] == "2026-08-04"
+
+
+def test_daily_ingest_rebuilds_transcript_search_index_after_import(tmp_path):
+    home = tmp_path / "home"
+    source = home / ".claude" / "projects" / "p" / "session.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps({
+        "type": "user",
+        "uuid": "event-1",
+        "sessionId": "session-1",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "cwd": "/Work/p",
+        "message": {"role": "user", "content": "daily index event"},
+    }) + "\n", encoding="utf-8")
+    memory_root = tmp_path / "memory"
+    corpus_root = tmp_path / "transcripts"
+
+    result = MI.run_pipeline(
+        memory_root=memory_root,
+        corpus_root=corpus_root,
+        force=True,
+        no_model=True,
+        home=home,
+    )
+
+    assert result["status"] == "ok"
+    assert result["search_index"]["status"] == "ok"
+    assert (corpus_root / "sessions.fts5.sqlite").is_file()
+
+
+def test_skipped_daily_ingest_repairs_a_missing_search_index(tmp_path):
+    import transcript_corpus as TC
+
+    source = tmp_path / "source.jsonl"
+    source.write_text(json.dumps({
+        "type": "user",
+        "uuid": "event-1",
+        "sessionId": "session-1",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "cwd": "/Work/p",
+        "message": {"role": "user", "content": "repair me"},
+    }) + "\n", encoding="utf-8")
+    corpus_root = tmp_path / "transcripts"
+    TC.import_sources([TC.Source("claude", source)], corpus_root)
+    memory_root = tmp_path / "memory"
+    state_path = memory_root / "offline-ingest" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(json.dumps({
+        "last_successful_day": MI.datetime.now().astimezone().strftime("%Y-%m-%d")
+    }), encoding="utf-8")
+
+    result = MI.run_pipeline(
+        memory_root=memory_root,
+        corpus_root=corpus_root,
+        force=False,
+        no_model=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["reason"] == "search-index-rebuilt-after-skipped-ingest"
+    assert result["search_index"]["status"] == "ok"

@@ -324,6 +324,8 @@ python3 deploy/deploy.py apply --target claude    # render + write to ~/.stc/ + 
 python3 core/scripts/harness_applicability.py --target claude,codex  # static applicability bundle
 python3 core/scripts/harness_applicability.py --target claude,codex --live  # + real live canaries
 python3 core/scripts/memory_ingest.py run --config stc.yaml  # offline transcript ingest + monthly report
+python3 core/scripts/transcript_corpus.py --root ~/Work/transcripts index-status  # FTS5 freshness/fallback status
+python3 core/scripts/transcript_corpus.py --root ~/Work/transcripts search "payment" --project Work  # ranked JSON search
 python3 deploy/launchd_install.py --apply          # install/update independent macOS jobs
 python3 core/scripts/schedule_calendar.py --output ~/Work/memory/stc-scheduled-tasks.ics
 python3 deploy/deploy.py restore <backup-id>      # roll back JSON from a backup snapshot

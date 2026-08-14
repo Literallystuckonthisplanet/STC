@@ -11,6 +11,23 @@ release notes.
 
 ## [Unreleased]
 
+### Added — copied-text FTS5 search for the transcript archive
+- **`core/scripts/transcript_corpus.py`:** builds `sessions.fts5.sqlite` as a
+  separate copied-text FTS5/BM25 sidecar with source fingerprint and
+  source/index watermarks; publication is atomic and the source database is
+  opened read-only during the build.
+- **Freshness and fallback:** missing, corrupt, stale, or lagging sidecars are
+  reported in the JSON contract and never serve results; the existing SQLite
+  `LIKE` search remains the authoritative fallback. Rebuild failures and
+  temporary-file cleanup are recorded in `sessions.fts5.state.json`.
+- **Query safety/parity:** ordinary Russian/English alphanumeric terms use a
+  quoted FTS prefix query; punctuation, empty, and literal-operator queries
+  deliberately use the old literal `LIKE` semantics. Project filters use
+  escaped path-component boundaries, and result limits are bounded to 1–100.
+- **Daily ingest:** `memory_ingest.py` rebuilds the sidecar after a successful
+  import and repairs a non-fresh sidecar on a skipped daily run. The primary
+  corpus remains unchanged by sidecar work.
+
 ### Changed — the lens retires its noisiest rule, and its corpus stops shrinking
 - **OPEN_VERB removed from `lens_rules.py` (H22).** Over 42 days of live traffic
   it fired 78 times — 45% of all lens flags — and not one firing was followed by

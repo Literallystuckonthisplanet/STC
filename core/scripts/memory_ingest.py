@@ -601,12 +601,46 @@ def run_pipeline(
     day = now.strftime("%Y-%m-%d")
     state_path = memory_root / "offline-ingest" / "state.json"
     if not force and daily_run_exists(state_path, day):
-        return {"status": "skipped", "reason": "already-ran-today", "day": day}
+        from transcript_corpus import rebuild_search_index, search_index_status
 
-    from transcript_corpus import discover_sources, import_sources
+        current_index = search_index_status(corpus_root)
+        if current_index.get("index_status") == "fresh":
+            return {"status": "skipped", "reason": "already-ran-today", "day": day}
+        try:
+            refreshed_index = rebuild_search_index(corpus_root)
+            return {
+                "status": "ok",
+                "reason": "search-index-rebuilt-after-skipped-ingest",
+                "day": day,
+                "search_index": refreshed_index,
+            }
+        except Exception as error:
+            failed_index = search_index_status(corpus_root)
+            failed_index.update({"status": "failed", "error_type": type(error).__name__})
+            return {
+                "status": "skipped",
+                "reason": "search-index-rebuild-failed-after-skipped-ingest",
+                "day": day,
+                "search_index": failed_index,
+            }
+
+    from transcript_corpus import (
+        discover_sources,
+        import_sources,
+        rebuild_search_index,
+        search_index_status,
+    )
 
     sources = discover_sources(home)
     imported = import_sources(sources, corpus_root)
+    try:
+        search_index = rebuild_search_index(corpus_root)
+    except Exception as error:
+        search_index = search_index_status(corpus_root)
+        search_index.update({
+            "status": "failed",
+            "error_type": type(error).__name__,
+        })
     all_events = iter_db_events(corpus_root)
     explicit = extract_marked_claims(all_events)
     explicit_candidates = [
@@ -646,6 +680,7 @@ def run_pipeline(
         "imported": imported,
         "explicit_markers": len(explicit_candidates),
         "stored": stored,
+        "search_index": search_index,
         "local_model": model_info,
         "corpus_root": str(corpus_root),
     }

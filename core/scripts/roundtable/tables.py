@@ -33,6 +33,7 @@ The same entry points work as `python3 -m roundtable.tables …` when
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
@@ -44,7 +45,14 @@ HERE = Path(__file__).resolve()
 TABLES_DIR = HERE.parent / "tables"
 DOCUMENT = HERE.parents[3] / "docs" / "roundtable.md"
 
-CONTRACT_VERSION = 1
+# Версия формы КАЖДОЙ таблицы отдельно. Одна глобальная константа не давала
+# поднять версию одной таблицы: отвергалась бы либо она, либо все остальные.
+SCOPE_ALGORITHM = "scope/1"
+
+CONTRACT_VERSIONS = {
+    "vocabulary": 1, "run": 1, "issues": 1, "framing": 1,
+    "precheck": 1, "blocks": 2, "stages": 1,
+}
 
 TABLE_NAMES = ("vocabulary", "run", "issues", "framing", "precheck", "blocks", "stages")
 
@@ -58,6 +66,9 @@ TOP_LEVEL = {
         "решения_по_issue", "решения_по_возражению", "статусы_возражения",
         "вердикты", "стадии", "типы_доказательства", "отпечаток",
         "создатели_доказательства", "пакет", "попытка",
+        "состояния_блока", "внешние_действия",
+        "оценка_критерия", "состояния_кандидата", "выбор_кандидата_sentinel",
+        "отношение_механизмов", "повтор_невалидного_ответа",
         "операции", "операции_без_бюджета",
         "коды_условий", "коды_действий", "коды_отказа",
         "схемы_контрактов", "схемы_вне_контрактов",
@@ -78,9 +89,9 @@ TOP_LEVEL = {
         "почему", "классы_файлов", "фикстуры", "общий_резолвер",
     },
     "blocks": {
-        "порядок", "вне_порядка", "блоки", "приёмка_БТ", "списки",
-        "последовательные_из_за_общих_файлов", "разрешено_ревью",
-        "разрешено_Антоном", "вызовов_критиков_требуют", "заморозка_команды",
+        "порядок", "вне_порядка", "блоки", "списки",
+        "заключения_ревью", "разрешения_исполнения", "шлюзы",
+        "отпечаток_изоляции", "проверки_источников",
     },
     "stages": {
         "стадии", "слепой_вопрос", "сигнал_нежизнеспособности",
@@ -130,10 +141,11 @@ def load_table(name: str, directory: Path = TABLES_DIR) -> dict:
     if not isinstance(data, dict):
         raise ContractError(f"{path}: a table must be a mapping")
 
+    expected = CONTRACT_VERSIONS[name]
     version = data.get("версия_контракта")
-    if version != CONTRACT_VERSION:
+    if version != expected:
         raise ContractError(
-            f"{path}: contract version {version!r}, this engine speaks {CONTRACT_VERSION}")
+            f"{path}: contract version {version!r}, this engine speaks {expected}")
 
     unknown = set(data) - TOP_LEVEL[name] - {"версия_контракта"}
     if unknown:
@@ -216,36 +228,92 @@ class PrecheckCode:
 
 
 @dataclass(frozen=True)
+class AcceptanceItem:
+    """One acceptance criterion, addressable by a stable id.
+
+    A plain string could not be compared as a set when one block absorbs
+    another, and its text could be rewritten under the same meaning without
+    anything noticing. Both are now structural.
+    """
+
+    id: str
+    condition: str
+
+
+@dataclass(frozen=True)
 class Block:
     """One block of the work plan."""
 
     name: str
     what: str
     depends: tuple[str, ...]
+    reads: tuple[str, ...] = ()
+    writes: tuple[str, ...] = ()
+    external: tuple[str, ...] = ()
+    acceptance: tuple[AcceptanceItem, ...] = ()
     state: str | None = None
-    files: str | None = None
-    acceptance: str | None = None
     blocker: str | None = None
+    absorbed_by: str | None = None
+    absorbs: tuple[str, ...] = ()
     declared_counts: dict = field(default_factory=dict)
     outside_mvp: bool = False
 
     @classmethod
     def parse(cls, name: str, row: dict) -> "Block":
         _require(
-            row, {"что", "зависит"},
-            {"состояние", "файлы", "приёмка", "блокер", "объявленное_количество", "вне_MVP"},
+            row, {"что", "зависит", "читает", "пишет", "внешние_действия", "приёмка"},
+            {"состояние", "блокер", "объединён_с", "поглощает",
+             "объявленное_количество", "вне_MVP"},
             f"blocks.блоки.{name}")
+        items = []
+        seen = set()
+        for entry in row["приёмка"]:
+            _require(entry, {"id", "условие"}, set(), f"blocks.блоки.{name}.приёмка")
+            if entry["id"] in seen:
+                raise ContractError(f"{name}: duplicate acceptance id {entry['id']!r}")
+            seen.add(entry["id"])
+            items.append(AcceptanceItem(entry["id"], entry["условие"]))
         return cls(
             name=name,
             what=row["что"],
             depends=tuple(row["зависит"]),
+            reads=tuple(row["читает"]),
+            writes=tuple(row["пишет"]),
+            external=tuple(row["внешние_действия"]),
+            acceptance=tuple(items),
             state=row.get("состояние"),
-            files=row.get("файлы"),
-            acceptance=row.get("приёмка"),
             blocker=row.get("блокер"),
+            absorbed_by=row.get("объединён_с"),
+            absorbs=tuple(row.get("поглощает") or ()),
             declared_counts=dict(row.get("объявленное_количество") or {}),
             outside_mvp=bool(row.get("вне_MVP", False)),
         )
+
+    @property
+    def scope(self) -> dict:
+        """The canonical record a permission is granted for.
+
+        Not the block's name: a name can be kept while the work behind it grows,
+        and the old permission would silently cover the new scope. Acceptance
+        goes in with its text, not only its ids, for the same reason.
+        """
+        return {
+            "алгоритм": SCOPE_ALGORITHM,
+            "блок": self.name,
+            "что": self.what,
+            "зависит": sorted(self.depends),
+            "читает": sorted(self.reads),
+            "пишет": sorted(self.writes),
+            "внешние_действия": sorted(self.external),
+            "приёмка": [{"id": i.id, "условие": i.condition} for i in self.acceptance],
+            "поглощает": sorted(self.absorbs),
+        }
+
+    @property
+    def scope_sha256(self) -> str:
+        payload = json.dumps(self.scope, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class _Missing:
@@ -291,6 +359,25 @@ class Tables:
     verdict: tuple[VerdictRow, ...]
     precheck_codes: tuple[PrecheckCode, ...]
     blocks: dict
+
+    @classmethod
+    def from_raw(cls, raw: dict) -> "Tables":
+        """Type an already-loaded set of tables.
+
+        Split out of `load` so a test can mutate a copy in memory and watch an
+        invariant fire, without writing to the real YAML.
+        """
+        return cls(
+            raw=raw,
+            transitions=tuple(Transition.parse(row) for row in raw["run"]["переходы"]),
+            issue_transitions=tuple(
+                IssueTransition.parse(row) for row in raw["issues"]["переходы"]),
+            verdict=tuple(VerdictRow.parse(row) for row in raw["issues"]["вердикт"]),
+            precheck_codes=tuple(
+                PrecheckCode.parse(row) for row in raw["precheck"]["коды"]),
+            blocks={name: Block.parse(name, row)
+                    for name, row in raw["blocks"]["блоки"].items()},
+        )
 
     # -- convenience views ---------------------------------------------------
     @property
@@ -428,7 +515,192 @@ class Tables:
             if not forward:
                 raise ContractError(f"{state}: the only way out is cancellation")
         checked.append(f"{len(working)} рабочих состояний: у каждого есть продолжение")
+        checked.extend(self._check_plan())
         return checked
+
+    # -- the work plan -------------------------------------------------------
+    # Six review rounds on the prose of the plan found six classes of
+    # contradiction. Every one of them is a set comparison, so it belongs here,
+    # where a test catches the seventh for free.
+
+    ОСНОВАНИЕ_ПОЛЯ = {
+        "план_артефакт": {"путь", "sha256"},
+        "событие_транскрипта": {"сессия", "цитата"},
+    }
+
+    def closed(self, name: str) -> bool:
+        """A block counts as closed for its dependants.
+
+        An absorbed block is closed only once its absorber is done — otherwise
+        `БИ depends on БТ2` and `БТ2 closes with БИ` would be a deadlock that
+        runs through two different kinds of edge and no cycle check would see it.
+        """
+        block = self.blocks[name]
+        if block.state == "сделано":
+            return True
+        if block.state == "объединён_с" and block.absorbed_by:
+            return self.blocks[block.absorbed_by].state == "сделано"
+        return False
+
+    def permitted(self, name: str) -> dict | None:
+        """The permission that covers this block at its current scope, if any."""
+        wanted = self.blocks[name].scope_sha256
+        for grant in self.plan["разрешения_исполнения"]:
+            if name not in grant["блоки"]:
+                continue
+            recorded = (grant.get("scope_sha256") or {}).get(name)
+            if recorded is None or recorded == wanted:
+                return grant
+        return None
+
+    def hold_reasons(self, name: str) -> list[str]:
+        """Every reason this block is not runnable — all of them, in order.
+
+        Not the first one: a block can be unpermitted *and* waiting on a
+        dependency *and* held by a gate, and printing only one of the three
+        sends the reader to fix the wrong thing.
+        """
+        block = self.blocks[name]
+        reasons = []
+        grant = self.permitted(name)
+        if grant is None:
+            covered = any(name in g["блоки"] for g in self.plan["разрешения_исполнения"])
+            reasons.append("объём изменился после разрешения" if covered
+                           else "нет разрешения")
+        unmet = [d for d in block.depends if not self.closed(d)]
+        if unmet:
+            reasons.append(f"ждёт зависимость {', '.join(sorted(unmet))}")
+        for gate, spec in self.plan["шлюзы"].items():
+            if name in spec["блокирует"] and not all(
+                    self.closed(b) for b in spec["до_закрытия"]):
+                reasons.append(f"удерживается шлюзом {gate}")
+        if block.blocker:
+            reasons.append(f"заблокирован: {block.blocker}")
+        return reasons
+
+    def next_runnable(self) -> str | None:
+        for name in self.plan["порядок"]:
+            if self.closed(name):
+                continue
+            if not self.hold_reasons(name):
+                return name
+        return None
+
+    def _check_plan(self) -> list[str]:
+        checked = []
+        plan = self.plan
+        names = set(self.blocks)
+        listed = set(plan["порядок"]) | set(plan["вне_порядка"])
+        if listed != names:
+            raise ContractError(f"blocks: план и перечень блоков разошлись: "
+                                f"{sorted(names ^ listed)}")
+        for name, block in self.blocks.items():
+            unknown = set(block.depends) - names
+            if unknown:
+                raise ContractError(f"{name}: зависит от несуществующего {sorted(unknown)}")
+        self._check_no_cycles()
+        checked.append(f"{len(self.blocks)} блоков: зависимости известны и без циклов")
+
+        # gate: nothing downstream may be started while the repair is open
+        for gate, spec in plan["шлюзы"].items():
+            open_ones = [b for b in spec["до_закрытия"] if not self.closed(b)]
+            if not open_ones:
+                continue
+            started = [b for b in spec["блокирует"]
+                       if self.blocks[b].state in ("сделано", "неполный")]
+            if started:
+                raise ContractError(
+                    f"шлюз {gate}: начаты {sorted(started)}, а не закрыты {sorted(open_ones)}")
+        checked.append(f"{len(plan['шлюзы'])} шлюзов: удерживаемое не начато")
+
+        # authority: a permission must point somewhere resolvable
+        for registry in ("заключения_ревью", "разрешения_исполнения"):
+            for entry in plan[registry]:
+                unknown = set(entry["блоки"]) - names
+                if unknown:
+                    raise ContractError(f"{registry}: неизвестные блоки {sorted(unknown)}")
+                basis = entry.get("основание")
+                if not isinstance(basis, dict) or "вид" not in basis:
+                    raise ContractError(f"{registry}: основание без вида — {entry['блоки']}")
+                required = self.ОСНОВАНИЕ_ПОЛЯ.get(basis["вид"])
+                if required is None:
+                    raise ContractError(f"{registry}: неизвестный вид основания {basis['вид']!r}")
+                missing = required - set(basis)
+                if missing:
+                    raise ContractError(
+                        f"{registry}: основание вида {basis['вид']} без {sorted(missing)}")
+        checked.append("полномочия: у каждой записи разрешимое основание")
+
+        # nothing may be started that no permission covers
+        for name, block in self.blocks.items():
+            if block.state in ("сделано", "неполный", "идёт", "переоткрыт") \
+                    and name != "Б0а" and self.permitted(name) is None:
+                covered = any(name in g["блоки"]
+                              for g in plan["разрешения_исполнения"])
+                raise ContractError(
+                    f"{name}: начат {'при изменившемся объёме' if covered else 'без разрешения'}")
+        checked.append("начатые блоки: каждый покрыт разрешением на свой объём")
+
+        self._check_absorption()
+        checked.append("поглощение: формулы объединения соблюдены")
+
+        sources = {
+            "схемы_контрактов": self.vocabulary["схемы_контрактов"],
+            "операции": self.vocabulary["операции"],
+            "коды_предпроверки": self.precheck["коды"],
+            **plan["списки"],
+        }
+        for name, block in self.blocks.items():
+            for key, declared in block.declared_counts.items():
+                if key not in sources:
+                    raise ContractError(f"{name}: нечем сверить {key}")
+                actual = len(sources[key])
+                if actual != declared:
+                    raise ContractError(
+                        f"{name}: объявлено {declared} {key}, в списке {actual}")
+        checked.append("объявленные количества сходятся с длиной списков")
+        return checked
+
+    def _check_no_cycles(self) -> None:
+        colour = {}
+
+        def walk(name):
+            state = colour.get(name)
+            if state == "grey":
+                raise ContractError(f"цикл зависимостей через {name}")
+            if state == "black":
+                return
+            colour[name] = "grey"
+            for dependency in self.blocks[name].depends:
+                walk(dependency)
+            colour[name] = "black"
+
+        for name in self.blocks:
+            walk(name)
+
+    def _check_absorption(self) -> None:
+        for name, block in self.blocks.items():
+            if block.state != "объединён_с":
+                continue
+            if not block.absorbed_by:
+                raise ContractError(f"{name}: объединён_с без поглотителя")
+            absorber = self.blocks[block.absorbed_by]
+            if name not in absorber.absorbs:
+                raise ContractError(f"{absorber.name}: не объявил поглощение {name}")
+            if name in absorber.depends:
+                raise ContractError(
+                    f"{absorber.name} зависит от поглощённого {name}: тупик")
+            if not set(block.depends) <= set(absorber.depends):
+                raise ContractError(
+                    f"{absorber.name}: зависимости {name} потеряны при поглощении")
+            ours = {i.id for i in absorber.acceptance}
+            theirs = {i.id for i in block.acceptance}
+            if not theirs <= ours:
+                raise ContractError(
+                    f"{absorber.name}: приёмка {name} потеряна: {sorted(theirs - ours)}")
+            if not set(block.writes) <= set(absorber.writes):
+                raise ContractError(
+                    f"{absorber.name}: область записи {name} не покрыта")
 
     def _combinations(self, state, event):
         """Every combination of the condition codes this pair reads."""
@@ -446,15 +718,7 @@ class Tables:
 def load(directory: Path = TABLES_DIR) -> Tables:
     """Load, type and cross-check every table in `directory`."""
     raw = {name: load_table(name, directory) for name in TABLE_NAMES}
-    return Tables(
-        raw=raw,
-        transitions=tuple(Transition.parse(row) for row in raw["run"]["переходы"]),
-        issue_transitions=tuple(
-            IssueTransition.parse(row) for row in raw["issues"]["переходы"]),
-        verdict=tuple(VerdictRow.parse(row) for row in raw["issues"]["вердикт"]),
-        precheck_codes=tuple(PrecheckCode.parse(row) for row in raw["precheck"]["коды"]),
-        blocks={name: Block.parse(name, row) for name, row in raw["blocks"]["блоки"].items()},
-    )
+    return Tables.from_raw(raw)
 
 
 # --------------------------------------------------------------------------
@@ -589,46 +853,84 @@ def _render_framing(tables: Tables) -> list[str]:
     return lines
 
 
+def _render_status(tables: Tables) -> list[str]:
+    """The header line of the document, computed instead of typed.
+
+    It said "next block — Б1" for as long as someone remembered to edit it.
+    """
+    done = [n for n in tables.plan["порядок"] if tables.closed(n)]
+    lines = [f"Закрыто: {_cell(done)}." if done else "Закрытых блоков нет."]
+    runnable = tables.next_runnable()
+    if runnable:
+        lines.append(f"Следующий исполнимый блок — **{runnable}**.")
+    elif all(tables.closed(n) for n in tables.plan["порядок"]):
+        lines.append("**MVP завершён.**")
+    else:
+        first = next(n for n in tables.plan["порядок"] if not tables.closed(n))
+        reasons = "; ".join(tables.hold_reasons(first))
+        lines.append(f"**Остановлено** на **{first}** — {reasons}.")
+    gates = [g for g, spec in tables.plan["шлюзы"].items()
+             if not all(tables.closed(b) for b in spec["до_закрытия"])]
+    if gates:
+        lines.append(f"Закрытые шлюзы: {_cell(gates)}.")
+    return lines
+
+
 def _render_blocks(tables: Tables) -> list[str]:
     plan = tables.plan
     rows = []
-    marks = {"сделано": " ✅", "неполный": " 🚧"}
+    marks = {"сделано": " ✅", "неполный": " 🚧", "идёт": " 🚧",
+             "переоткрыт": " 🔁", "объединён_с": " 🔗"}
     for position, name in enumerate(plan["порядок"], start=1):
         block = tables.blocks[name]
-        rows.append([str(position), f"**{name}**{marks.get(block.state, '')}", block.what,
-                     _cell(list(block.depends)), _cell(block.files),
-                     _cell(block.acceptance)])
-    lines = _table(["#", "Блок", "Что", "Зависит от", "Файлы (область записи)",
-                    "Приёмка"], rows)
-    blocked = [b for b in tables.blocks.values() if b.blocker]
-    if blocked:
-        lines += ["", "**Чем заблокировано:**"]
-        lines += [f"- 🚧 **{b.name}** — {b.blocker}" for b in blocked]
-    freeze = plan["заморозка_команды"]
-    lines += ["", "**Заморозка команды критика:** "
-              + ("да" if freeze["заморожена"] else f"нет — {freeze['почему']}")
-              + f" (отчёт `{freeze['отчёт']}`)."]
+        rows.append([
+            str(position), f"**{name}**{marks.get(block.state, '')}", block.what,
+            _cell(list(block.depends)), _cell(list(block.writes)),
+            _cell([i.id for i in block.acceptance]),
+        ])
+    lines = _table(["#", "Блок", "Что", "Зависит от", "Область записи",
+                    "Критерии приёмки"], rows)
+
+    lines += ["", "**Чем удерживается каждый незакрытый блок** — все причины, "
+              "а не первая: блок бывает и неразрешён, и без зависимости, и под "
+              "шлюзом разом."]
+    for name in plan["порядок"]:
+        if tables.closed(name):
+            continue
+        reasons = tables.hold_reasons(name)
+        lines.append(f"- **{name}** — {'; '.join(reasons) if reasons else 'исполним'}")
+
+    lines += ["", "**Шлюзы.**"]
+    for gate, spec in plan["шлюзы"].items():
+        open_ones = [b for b in spec["до_закрытия"] if not tables.closed(b)]
+        state = f"закрыт, ждёт {_cell(open_ones)}" if open_ones else "открыт"
+        lines.append(f"- `{gate}` — {state}; держит {_cell(spec['блокирует'])}. "
+                     f"{spec['почему']}")
+
+    lines += ["", "**Полномочия.** Заключение критиков и право исполнять — разные "
+              "вещи и разные реестры. Разрешение выдаётся на **объём работ**, а не "
+              "на имя блока: изменился объём — разрешение аннулировано."]
+    for entry in plan["заключения_ревью"]:
+        lines.append(f"- заключение ревью #{entry['круг']}: {_cell(entry['блоки'])} "
+                     f"({entry['дата']})")
+    for grant in plan["разрешения_исполнения"]:
+        basis = grant["основание"]
+        cite = basis.get("цитата", "")
+        lines.append(f"- разрешил {grant['кем']}: {_cell(grant['блоки'])} "
+                     f"({grant['дата']}) — «{cite}»")
+
+    lines += ["", "**Отпечаток изоляции.** Шлюз живых вызовов смотрит не на строку "
+              "версии, а на: " + _cell(plan["отпечаток_изоляции"]["входит_в_отпечаток"])
+              + f". Отчёт `{plan['отпечаток_изоляции']['отчёт']}`."]
+
     lines += ["", "**Вне порядка:**"]
     for name, why in plan["вне_порядка"].items():
         lines.append(f"- **{name}** — {tables.blocks[name].what} ({why})")
-    lines += ["", "**Кем разрешено брать в работу.** Список ревью — факт о том, что "
-              "согласовано, а не указатель на следующий шаг: он двигается только "
-              "новым кругом."]
-    lines += ["", f"- ревью #11, без нового круга: {_cell(plan['разрешено_ревью'])}"]
-    lines += [f"- Антоном лично: {_cell(sorted(plan['разрешено_Антоном']))} — "
-              + "; ".join(f"{name} ({why})"
-                          for name, why in sorted(plan["разрешено_Антоном"].items()))]
-    lines += [f"- никем ещё не разрешено, нужен круг или слово Антона: "
-              f"{_cell(plan['вызовов_критиков_требуют'])}"]
-    lines += ["", "**Делят файлы — при делегировании строго последовательно:** "
-              + "; ".join(_cell(group) for group in plan["последовательные_из_за_общих_файлов"])
-              + "."]
-    lines += ["", "**Приёмка БТ:**"]
-    lines += [f"- {item}" for item in plan["приёмка_БТ"]]
     return lines
 
 
 SECTIONS = {
+    "status": _render_status,
     "verdict": _render_verdict,
     "issue-transitions": _render_issue_transitions,
     "run-transitions": _render_run_transitions,

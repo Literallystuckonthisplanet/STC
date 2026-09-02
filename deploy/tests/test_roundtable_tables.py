@@ -13,9 +13,13 @@ ones the engine will read.
 
 import importlib.util
 import itertools
+import copy
+import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
 import yaml
 
 TABLES = Path(__file__).resolve().parents[2] / "core" / "scripts" / "roundtable" / "tables"
@@ -93,9 +97,26 @@ def _reachable(edges, start):
 # basics
 # --------------------------------------------------------------------------
 
-def test_every_table_declares_a_contract_version():
+def test_every_table_declares_the_version_the_engine_speaks():
+    # One global constant made it impossible to move a single table forward:
+    # either it was refused, or the six that had not changed were. The map is
+    # the point — each table's shape versions on its own.
+    module = import_tables_module()
     for name, table in ALL_TABLES.items():
-        assert table.get("версия_контракта") == 1, name
+        assert table.get("версия_контракта") == module.CONTRACT_VERSIONS[name], name
+
+
+def test_a_table_of_a_foreign_version_is_refused(tmp_path):
+    module = import_tables_module()
+    for name in module.TABLE_NAMES:
+        shutil.copy(TABLES / f"{name}.yaml", tmp_path / f"{name}.yaml")
+    victim = tmp_path / "blocks.yaml"
+    victim.write_text(
+        victim.read_text(encoding="utf-8").replace("версия_контракта: 2",
+                                                   "версия_контракта: 99", 1),
+        encoding="utf-8")
+    with pytest.raises(module.ContractError):
+        module.load(tmp_path)
 
 
 # --------------------------------------------------------------------------
@@ -490,8 +511,7 @@ def test_declared_counts_match_the_lists_they_describe():
         "схемы_контрактов": VOCAB["схемы_контрактов"],
         "операции": VOCAB["операции"],
         "коды_предпроверки": PRECHECK["коды"],
-        "таблицы": BLOCKS["списки"]["таблицы"],
-        "фикстуры_репетиции": BLOCKS["списки"]["фикстуры_репетиции"],
+        **BLOCKS["списки"],
     }
     checked = 0
     for block, spec in BLOCKS["блоки"].items():
@@ -661,51 +681,130 @@ def test_precheck_fixtures_declare_their_oracle_and_their_rule():
     assert "на чистом документе" in PRECHECK["фикстуры"]["правило"]
 
 
-def test_the_reviewed_clearance_is_a_fact_and_not_a_progress_pointer():
-    # 2026-08-13: this list was rewritten four times as "what I am doing next"
-    # — [Ш1] → [Б1] → [Б2] → [Б15] — and the assertion that pinned it was
-    # weakened in the same series of commits. That turned "what the critics
-    # cleared" into "what I intend to do", which is a permission granted to
-    # oneself. The pin is back, and it is exact: this list moves only when a
-    # review round moves it.
-    assert BLOCKS["разрешено_ревью"] == ["Б3а", "Ш1", "БТ"]
+def test_a_review_conclusion_is_not_a_permission_to_execute():
+    # Six rounds in a row these two were welded together under the word
+    # "разрешение", and every time the weld leaked a permission granted to
+    # oneself. A critic says "ready"; Anton says "go". Two registries.
+    conclusions = {b for e in BLOCKS["заключения_ревью"] for b in e["блоки"]}
+    grants = {b for g in BLOCKS["разрешения_исполнения"] for b in g["блоки"]}
+    assert conclusions, "заключения ревью пропали из таблицы"
+    assert grants, "разрешения исполнения пропали из таблицы"
+    for entry in BLOCKS["заключения_ревью"]:
+        assert "круг" in entry, "заключение без круга — не заключение"
+    for grant in BLOCKS["разрешения_исполнения"]:
+        assert grant.get("кем"), "разрешение без того, кто его дал"
 
 
-def test_nothing_was_started_that_nobody_cleared():
-    # The guard that was missing. A block may be under way only if a review
-    # cleared it, or Anton did so personally and the reason is written down.
-    cleared = set(BLOCKS["разрешено_ревью"])
-    by_anton = BLOCKS["разрешено_Антоном"]
-    assert not cleared & set(by_anton), "одно разрешение из двух источников — выбери"
-    for block, why in by_anton.items():
-        assert block in BLOCKS["блоки"], block
-        assert why and "13.08" in why or why, "разрешение без основания не разрешение"
-
-    started = {b for b, spec in BLOCKS["блоки"].items()
-               if spec.get("состояние") in ("сделано", "неполный")}
-    unauthorised = started - cleared - set(by_anton) - {"Б0а"}
-    assert not unauthorised, f"начаты без разрешения: {sorted(unauthorised)}"
+def test_a_permission_must_point_at_something_resolvable():
+    # "Строка непустая" is what let through a citation I could not confirm.
+    for grant in BLOCKS["разрешения_исполнения"]:
+        basis = grant["основание"]
+        assert basis["вид"] in ("событие_транскрипта", "план_артефакт"), basis["вид"]
+        if basis["вид"] == "событие_транскрипта":
+            assert basis["сессия"] and basis["цитата"]
+        else:
+            assert basis["путь"] and len(basis["sha256"]) == 64
 
 
-def test_everything_not_cleared_is_listed_as_needing_a_round():
-    # The three sets must together cover the plan: a block that is in none of
-    # them is a block whose permission nobody ever stated.
-    done = {b for b, spec in BLOCKS["блоки"].items() if spec.get("состояние") == "сделано"}
-    accounted = (done | set(BLOCKS["разрешено_ревью"]) | set(BLOCKS["разрешено_Антоном"])
-                 | set(BLOCKS["вызовов_критиков_требуют"]))
-    assert set(BLOCKS["порядок"]) <= accounted, (
-        f"не сказано, кем разрешены: {sorted(set(BLOCKS['порядок']) - accounted)}")
-    assert not set(BLOCKS["вызовов_критиков_требуют"]) & done, (
-        "нельзя одновременно требовать круг и быть сделанным")
+def test_a_permission_is_granted_for_a_scope_and_not_for_a_name():
+    # A block can keep its name while the work behind it grows, and the old
+    # permission would silently cover the new scope. The hash is over the whole
+    # record — including the *text* of every acceptance criterion, because the
+    # text can be rewritten under an unchanged id.
+    module = import_tables_module()
+    tables = module.load()
+    block = tables.blocks["Б1"]
+    before = block.scope_sha256
+
+    widened = replace(block, writes=block.writes + ("core/scripts/roundtable/cli.py",))
+    assert widened.scope_sha256 != before, "расширение области записи не заметили"
+
+    first = block.acceptance[0]
+    rewritten = replace(block, acceptance=(replace(first, condition="что угодно"),)
+                        + block.acceptance[1:])
+    assert rewritten.scope_sha256 != before, "подмена текста критерия под тем же ID не заметна"
+
+    renamed = replace(block, name="Б1-бис")
+    assert renamed.scope_sha256 != before
 
 
-def test_cleared_work_has_no_unbuilt_dependency():
-    done = {b for b, spec in BLOCKS["блоки"].items() if spec.get("состояние") == "сделано"}
-    cleared = set(BLOCKS["разрешено_ревью"])
-    for block in cleared:
-        unmet = set(BLOCKS["блоки"][block]["зависит"]) - done - cleared
-        assert not unmet, f"{block} still waits on {unmet}"
-    assert BLOCKS["блоки"]["Ш1"]["зависит"] == ["Б3а"]
+def test_nothing_is_started_that_no_permission_covers():
+    module = import_tables_module()
+    tables = module.load()
+    covered = {b for g in BLOCKS["разрешения_исполнения"] for b in g["блоки"]}
+    for name, block in tables.blocks.items():
+        if name == "Б0а" or block.state is None:
+            continue
+        assert name in covered, f"{name}: начат, а разрешения нет"
+
+
+def test_a_gate_holds_everything_downstream_until_the_repair_is_closed():
+    module = import_tables_module()
+    tables = module.load()
+    for gate, spec in BLOCKS["шлюзы"].items():
+        assert not set(spec["блокирует"]) & set(spec["до_закрытия"]), (
+            f"{gate}: блок не может одновременно держать шлюз и держаться им")
+        if all(tables.closed(b) for b in spec["до_закрытия"]):
+            continue
+        for held in spec["блокирует"]:
+            assert f"удерживается шлюзом {gate}" in tables.hold_reasons(held)
+
+
+def test_the_gate_actually_refuses_a_block_started_too_early():
+    # The invariant is only worth its line if it fires. Round 14 caught me
+    # weakening exactly this kind of assertion in the same commit as the data.
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    raw["blocks"]["блоки"]["Б15"]["состояние"] = "сделано"
+    with pytest.raises(module.ContractError, match="шлюз"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_every_hold_reason_is_reported_not_just_the_first():
+    # A block can be unpermitted *and* waiting on a dependency *and* under a
+    # gate. Printing one of the three sends the reader to fix the wrong thing.
+    tables = import_tables_module().load()
+    reasons = tables.hold_reasons("Б15")
+    assert len(reasons) >= 3, reasons
+    assert any("нет разрешения" in r for r in reasons)
+    assert any("ждёт зависимость" in r for r in reasons)
+    assert any("шлюзом" in r for r in reasons)
+
+
+def test_an_absorbed_block_closes_only_with_its_absorber():
+    # БИ waited on БТ2 while БТ2 closed with БИ: a deadlock running through two
+    # different kinds of edge, which no cycle check would have seen.
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    blocks = raw["blocks"]["блоки"]
+    blocks["БТ2"]["состояние"] = "объединён_с"
+    blocks["БТ2"]["объединён_с"] = "БИ"
+    blocks["БИ"]["поглощает"] = ["БТ2"]
+    with pytest.raises(module.ContractError, match="тупик"):
+        module.Tables.from_raw(raw).check()
+
+    blocks["БИ"]["зависит"] = ["Б2", "БТ"]      # БТ2 ждало БТ — предусловие обязано уцелеть
+    with pytest.raises(module.ContractError, match="приёмка"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_isolation_fingerprint_is_more_than_a_version_string():
+    # Change adapters.py without touching the CLI versions and the old gate
+    # stayed green on a proof that no longer described the command.
+    fingerprint = BLOCKS["отпечаток_изоляции"]
+    assert fingerprint["отчёт"].endswith("isolation-report.json")
+    parts = set(fingerprint["входит_в_отпечаток"])
+    for part in ("версии_CLI", "хеш_нормализованных_argv", "хеш_adapters_py",
+                 "хеш_схемы_ответа", "версия_probe"):
+        assert part in parts, part
+
+
+def test_a_negative_claim_about_an_event_needs_the_raw_source():
+    # Cost a whole round: a filtered search dropped a message that existed, and
+    # I reported "не нашёл" as "не существует".
+    rule = BLOCKS["проверки_источников"]["отрицательное_утверждение_о_событии"]
+    assert rule["источник"] == "сырой_JSONL"
+    assert "отфильтрованный_корпус" in rule["запрещено"]
 
 
 def test_an_unfinished_block_states_what_blocks_it():
@@ -714,18 +813,6 @@ def test_an_unfinished_block_states_what_blocks_it():
     for name, spec in BLOCKS["блоки"].items():
         if spec.get("состояние") == "неполный":
             assert spec.get("блокер"), f"{name}: не сказано, чем заблокирован"
-
-
-def test_the_command_is_frozen_only_when_the_spike_actually_passed():
-    # The freeze is the promise "this exact command was measured". Writing it
-    # down before Ш1 closes is precisely the unverified guarantee this design
-    # has already produced three times.
-    freeze = BLOCKS["заморозка_команды"]
-    assert set(freeze) == {"заморожена", "почему", "отчёт"}
-    spike_done = BLOCKS["блоки"]["Ш1"].get("состояние") == "сделано"
-    assert freeze["заморожена"] is spike_done
-    assert freeze["почему"], "a freeze state with no reason gets re-litigated"
-    assert freeze["отчёт"].endswith("isolation-report.json")
 
 
 def test_the_loader_refuses_a_duplicated_key():
@@ -830,7 +917,7 @@ def test_every_stage_rule_carries_its_reason():
 def test_the_foundation_block_states_what_it_must_deliver():
     # БТ is the block that makes the tables executable rather than decorative;
     # dropping any of its criteria quietly turns it back into a formality.
-    criteria = " | ".join(BLOCKS["приёмка_БТ"])
+    criteria = " | ".join(i["условие"] for i in BLOCKS["блоки"]["БТ"]["приёмка"])
     for requirement in (
         "загрузчик", "дубликаты", "закрытые коды", "ровно один исход",
         "не только отмена", "без правки Python", "генерируются", "мутации",

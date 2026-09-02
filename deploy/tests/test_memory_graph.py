@@ -84,3 +84,16 @@ def test_strict_mode_fails_when_there_are_findings(vault):
     _note(vault, "specs/lonely.md", "Спека без критериев и без связей")
     args = type("A", (), {"limit": 8, "strict": True})()
     assert memory_graph.cmd_check(args) == 1
+
+
+def test_a_recorded_miss_stays_fixed(vault):
+    """Регрессионный: «круглый стол» должен доставать заметку с вендорским Roundtable.
+
+    Промах зафиксирован 2026-08-13: разбор пяти кругов ревью — прямой ответ на
+    вопрос, с которого начался разговор о забывчивости, — не находился, потому
+    что назван латиницей. Пара добавлена; тест держит её на месте.
+    """
+    _note(vault, "notes/research/review-loop-patterns.md",
+          "Разбор пяти кругов кросс-вендорного ревью плана Roundtable: почему цикл не сходился")
+    docs = memory_graph.load()
+    assert memory_graph.terms("круглый стол забывает решения") & docs[0]["terms"]

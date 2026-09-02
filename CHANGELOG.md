@@ -11,6 +11,37 @@ release notes.
 
 ## [Unreleased]
 
+### Added — the plan is met by what was already decided on its topic (H19)
+- **`core/hooks/plan-recall.sh` + `core/scripts/memory_graph.py`.** On leaving
+  plan mode the hook searches the distilled layer — research notes, specs,
+  ADRs, tasks — and serves what it finds. It does not remind anyone to look:
+  a reminder is exactly the advisory that `reference_defect_ledger.md` records
+  as recidivist. Not a block either — a plan may have no past, and an empty
+  answer is legitimate. H21 keeps the plan-quality gate; the marker is keyed by
+  the plan's text hash, so re-exiting after an H21 block does not repeat the
+  hint while a different plan gets its own.
+- **Why now, measured rather than assumed.** Across the whole corpus the search
+  over past conversations was invoked **15 times**, against 121 reads of
+  generated snapshots, and no rule anywhere asked for it. So this was never
+  forgetting — it was a missing step. The case that started it: the note on
+  five rounds of Roundtable review (11–12.08), whose finding was that 11 of 11
+  late-round items were author regressions, sat unreferenced for a month while
+  the same ground was covered again.
+- **Searching raw transcripts was tried and dropped:** on four topics dug up by
+  hand it produced one useful hit — transcript wording is incidental, a note's
+  description is already distilled.
+- **What the search needed, each fix found by running it:** stemming (Russian
+  word forms are distinct strings, so «памяти» missed «память»); ru↔en pairs
+  (57 of 66 nodes carry Latin filenames under Russian descriptions); dropping
+  plan boilerplate («задача», «решение», «проверить» sit in every plan and
+  dragged in unrelated notes), filtered by stem rather than by surface form;
+  and a single threshold — two matched salient words, or a share above the
+  floor — after two attempts at mode-switching both went silent on live input.
+- **`memory_graph.py check`** applies the `infra_graph.py --check` idea to
+  project artefacts. On the current layer: 6 specs with no AC at all, 10 nodes
+  with no outgoing links, 8 that nothing links to.
+
+
 ### Added — copied-text FTS5 search for the transcript archive
 - **`core/scripts/transcript_corpus.py`:** builds `sessions.fts5.sqlite` as a
   separate copied-text FTS5/BM25 sidecar with source fingerprint and

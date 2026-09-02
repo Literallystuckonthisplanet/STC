@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,7 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve()
+ROOT = HERE.parents[3]
 TABLES_DIR = HERE.parent / "tables"
 DOCUMENT = HERE.parents[3] / "docs" / "roundtable.md"
 
@@ -90,8 +92,8 @@ TOP_LEVEL = {
     },
     "blocks": {
         "порядок", "вне_порядка", "блоки", "списки",
-        "заключения_ревью", "разрешения_исполнения", "шлюзы",
-        "отпечаток_изоляции", "проверки_источников",
+        "заключения_ревью", "разрешения_исполнения", "история_разрешений", "шлюзы",
+        "отпечаток_изоляции", "проверки_источников", "проверка_памяти",
     },
     "stages": {
         "стадии", "слепой_вопрос", "сигнал_нежизнеспособности",
@@ -259,16 +261,42 @@ class Block:
     outside_mvp: bool = False
 
     @classmethod
-    def parse(cls, name: str, row: dict) -> "Block":
+    def parse(cls, name: str, row: dict, vocabulary: dict | None = None) -> "Block":
         _require(
             row, {"что", "зависит", "читает", "пишет", "внешние_действия", "приёмка"},
             {"состояние", "блокер", "объединён_с", "поглощает",
              "объявленное_количество", "вне_MVP"},
             f"blocks.блоки.{name}")
+        where = f"blocks.блоки.{name}"
+        for field_name in ("зависит", "читает", "пишет", "внешние_действия"):
+            _string_list(row[field_name], f"{where}.{field_name}")
+        _string_list(row.get("поглощает") or [], f"{where}.поглощает")
+        _nonempty_string(row["что"], f"{where}.что")
+        if "вне_MVP" in row and not isinstance(row["вне_MVP"], bool):
+            raise ContractError(f"{where}.вне_MVP: ожидался boolean")
+        counts = row.get("объявленное_количество") or {}
+        if not isinstance(counts, dict):
+            raise ContractError(f"{where}.объявленное_количество: ожидался словарь")
+        for key, value in counts.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ContractError(f"{where}.объявленное_количество.{key}: "
+                                    f"ожидалось положительное целое")
+        if vocabulary is not None:
+            states = (set(vocabulary["состояния_блока"]["рабочие"])
+                      | set(vocabulary["состояния_блока"]["терминальные"]))
+            if row.get("состояние") is not None and row["состояние"] not in states:
+                raise ContractError(
+                    f"{where}.состояние: {row['состояние']!r} нет в словаре")
+            allowed = set(vocabulary["внешние_действия"])
+            unknown = set(row["внешние_действия"]) - allowed
+            if unknown:
+                raise ContractError(f"{where}.внешние_действия: {sorted(unknown)} нет в словаре")
         items = []
         seen = set()
         for entry in row["приёмка"]:
-            _require(entry, {"id", "условие"}, set(), f"blocks.блоки.{name}.приёмка")
+            _require(entry, {"id", "условие"}, set(), f"{where}.приёмка")
+            _nonempty_string(entry["id"], f"{where}.приёмка.id")
+            _nonempty_string(entry["условие"], f"{where}.приёмка.условие")
             if entry["id"] in seen:
                 raise ContractError(f"{name}: duplicate acceptance id {entry['id']!r}")
             seen.add(entry["id"])
@@ -285,19 +313,27 @@ class Block:
             blocker=row.get("блокер"),
             absorbed_by=row.get("объединён_с"),
             absorbs=tuple(row.get("поглощает") or ()),
-            declared_counts=dict(row.get("объявленное_количество") or {}),
+            declared_counts=dict(counts),
             outside_mvp=bool(row.get("вне_MVP", False)),
         )
 
-    @property
-    def scope(self) -> dict:
+    def scope(self, plan: dict | None = None) -> dict:
         """The canonical record a permission is granted for.
 
-        Not the block's name: a name can be kept while the work behind it grows,
-        and the old permission would silently cover the new scope. Acceptance
-        goes in with its text, not only its ids, for the same reason.
+        Not the block's name: a name can be kept while the work behind it
+        grows, and the old permission would silently cover the new scope.
+        Acceptance goes in with its *text*, not only its ids, because the text
+        can be rewritten under an unchanged id.
+
+        `plan` adds what is not stored on the block but is nonetheless part of
+        what was permitted — most importantly which gates hold it. Dropping a
+        block out of a gate removes a precondition without touching its row,
+        and the permission would have stayed valid.
+
+        `состояние` is deliberately out: it changes as the work proceeds, and
+        a scope that moved with progress would invalidate itself constantly.
         """
-        return {
+        record = {
             "алгоритм": SCOPE_ALGORITHM,
             "блок": self.name,
             "что": self.what,
@@ -307,11 +343,19 @@ class Block:
             "внешние_действия": sorted(self.external),
             "приёмка": [{"id": i.id, "условие": i.condition} for i in self.acceptance],
             "поглощает": sorted(self.absorbs),
+            "объединён_с": self.absorbed_by,
+            "объявленное_количество": dict(sorted(self.declared_counts.items())),
+            "вне_MVP": self.outside_mvp,
         }
+        if plan is not None:
+            record["в_порядке"] = self.name in plan["порядок"]
+            record["шлюзы"] = sorted(
+                gate for gate, spec in plan["шлюзы"].items()
+                if self.name in spec["блокирует"] or self.name in spec["до_закрытия"])
+        return record
 
-    @property
-    def scope_sha256(self) -> str:
-        payload = json.dumps(self.scope, ensure_ascii=False, sort_keys=True,
+    def scope_sha256(self, plan: dict | None = None) -> str:
+        payload = json.dumps(self.scope(plan), ensure_ascii=False, sort_keys=True,
                              separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -322,6 +366,23 @@ class _Missing:
 
 
 _MISSING = _Missing()
+
+
+def _string_list(value, where: str) -> None:
+    """A list of strings, and not a bare string.
+
+    `пишет: "core/x.py"` used to become a tuple of characters, silently.
+    """
+    if not isinstance(value, list):
+        raise ContractError(f"{where}: ожидался список, получено {type(value).__name__}")
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ContractError(f"{where}: элемент {item!r} — не непустая строка")
+
+
+def _nonempty_string(value, where: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"{where}: ожидалась непустая строка")
 
 
 def _require(row: dict, mandatory: set, optional: set, where: str) -> None:
@@ -375,7 +436,7 @@ class Tables:
             verdict=tuple(VerdictRow.parse(row) for row in raw["issues"]["вердикт"]),
             precheck_codes=tuple(
                 PrecheckCode.parse(row) for row in raw["precheck"]["коды"]),
-            blocks={name: Block.parse(name, row)
+            blocks={name: Block.parse(name, row, raw["vocabulary"])
                     for name, row in raw["blocks"]["блоки"].items()},
         )
 
@@ -525,7 +586,7 @@ class Tables:
 
     ОСНОВАНИЕ_ПОЛЯ = {
         "план_артефакт": {"путь", "sha256"},
-        "событие_транскрипта": {"сессия", "цитата"},
+        "событие_транскрипта": {"сессия", "native_uuid", "цитата"},
     }
 
     def closed(self, name: str) -> bool:
@@ -536,6 +597,9 @@ class Tables:
         runs through two different kinds of edge and no cycle check would see it.
         """
         block = self.blocks[name]
+        if name == self.plan["отпечаток_изоляции"]["проверяет_блок"] \
+                and not self.isolation_ok():
+            return False
         if block.state == "сделано":
             return True
         if block.state == "объединён_с" and block.absorbed_by:
@@ -543,13 +607,18 @@ class Tables:
         return False
 
     def permitted(self, name: str) -> dict | None:
-        """The permission that covers this block at its current scope, if any."""
-        wanted = self.blocks[name].scope_sha256
+        """The permission that covers this block at its *current* scope.
+
+        A missing hash used to act as a wildcard, which quietly turned every
+        permission back into a permission by name — the exact defect this
+        registry exists to remove. A grant with no recorded hash for the block
+        is history, not authority.
+        """
+        wanted = self.blocks[name].scope_sha256(self.plan)
         for grant in self.plan["разрешения_исполнения"]:
             if name not in grant["блоки"]:
                 continue
-            recorded = (grant.get("scope_sha256") or {}).get(name)
-            if recorded is None or recorded == wanted:
+            if grant.get("scope_sha256", {}).get(name) == wanted:
                 return grant
         return None
 
@@ -614,7 +683,8 @@ class Tables:
         checked.append(f"{len(plan['шлюзы'])} шлюзов: удерживаемое не начато")
 
         # authority: a permission must point somewhere resolvable
-        for registry in ("заключения_ревью", "разрешения_исполнения"):
+        for registry in ("заключения_ревью", "разрешения_исполнения",
+                         "история_разрешений"):
             for entry in plan[registry]:
                 unknown = set(entry["блоки"]) - names
                 if unknown:
@@ -629,17 +699,57 @@ class Tables:
                 if missing:
                     raise ContractError(
                         f"{registry}: основание вида {basis['вид']} без {sorted(missing)}")
-        checked.append("полномочия: у каждой записи разрешимое основание")
-
-        # nothing may be started that no permission covers
-        for name, block in self.blocks.items():
-            if block.state in ("сделано", "неполный", "идёт", "переоткрыт") \
-                    and name != "Б0а" and self.permitted(name) is None:
-                covered = any(name in g["блоки"]
-                              for g in plan["разрешения_исполнения"])
+                if basis["вид"] == "план_артефакт" and not _is_sha256(basis["sha256"]):
+                    raise ContractError(f"{registry}: sha256 не похож на sha256")
+                if basis["вид"] == "событие_транскрипта" \
+                        and not _is_uuid(basis["native_uuid"]):
+                    raise ContractError(f"{registry}: native_uuid не похож на uuid")
+        for grant in plan["разрешения_исполнения"]:
+            recorded = grant.get("scope_sha256")
+            if not isinstance(recorded, dict):
                 raise ContractError(
-                    f"{name}: начат {'при изменившемся объёме' if covered else 'без разрешения'}")
-        checked.append("начатые блоки: каждый покрыт разрешением на свой объём")
+                    f"разрешения_исполнения: {grant['блоки']} без карты scope_sha256")
+            if set(recorded) != set(grant["блоки"]):
+                raise ContractError(
+                    f"разрешения_исполнения: карта scope_sha256 не совпадает с блоками "
+                    f"{sorted(set(recorded) ^ set(grant['блоки']))}")
+            for value in recorded.values():
+                if not _is_sha256(value):
+                    raise ContractError("разрешения_исполнения: scope не похож на sha256")
+        checked.append("полномочия: основание структурно разрешимо, scope записан на каждый блок")
+
+        # A block being worked on needs a live permission for its current
+        # scope. A finished one needs only to have had one: history explains
+        # why closed work was closed, it does not authorise anything now.
+        working = set(self.vocabulary["состояния_блока"]["рабочие"])
+        historic = {b for g in plan["история_разрешений"] for b in g["блоки"]}
+        for name, block in self.blocks.items():
+            if name == "Б0а" or block.state is None:
+                continue
+            if block.state in working and self.permitted(name) is None:
+                named = any(name in g["блоки"] for g in plan["разрешения_исполнения"])
+                raise ContractError(
+                    f"{name}: в работе, а разрешение "
+                    f"{'на другой объём' if named else 'отсутствует'}")
+            if block.state == "сделано" and self.permitted(name) is None \
+                    and name not in historic:
+                raise ContractError(f"{name}: закрыт, но разрешения на него нет нигде")
+        checked.append("в работе — только под действующим разрешением на текущий объём")
+
+        # An absorbed block's ids legitimately appear twice: in it and in its
+        # absorber. Everywhere else a shared id means two blocks claim one
+        # criterion, and neither owns it.
+        everywhere = {}
+        for name, block in self.blocks.items():
+            if block.state == "объединён_с":
+                continue
+            for item in block.acceptance:
+                if item.id in everywhere and everywhere[item.id] != name:
+                    raise ContractError(
+                        f"ID приёмки {item.id!r} у двух блоков: "
+                        f"{everywhere[item.id]} и {name}")
+                everywhere[item.id] = name
+        checked.append(f"{len(everywhere)} критериев приёмки: ID уникальны глобально")
 
         self._check_absorption()
         checked.append("поглощение: формулы объединения соблюдены")
@@ -679,11 +789,23 @@ class Tables:
             walk(name)
 
     def _check_absorption(self) -> None:
+        merged = {n: b.absorbed_by for n, b in self.blocks.items()
+                  if b.state == "объединён_с" and b.absorbed_by}
+        for start in merged:
+            seen, cursor = [], start
+            while cursor in merged:
+                if cursor in seen:
+                    raise ContractError(f"цикл поглощения: {' → '.join(seen + [cursor])}")
+                seen.append(cursor)
+                cursor = merged[cursor]
+
         for name, block in self.blocks.items():
             if block.state != "объединён_с":
                 continue
             if not block.absorbed_by:
                 raise ContractError(f"{name}: объединён_с без поглотителя")
+            if block.absorbed_by not in self.blocks:
+                raise ContractError(f"{name}: поглотитель {block.absorbed_by} не существует")
             absorber = self.blocks[block.absorbed_by]
             if name not in absorber.absorbs:
                 raise ContractError(f"{absorber.name}: не объявил поглощение {name}")
@@ -693,14 +815,21 @@ class Tables:
             if not set(block.depends) <= set(absorber.depends):
                 raise ContractError(
                     f"{absorber.name}: зависимости {name} потеряны при поглощении")
-            ours = {i.id for i in absorber.acceptance}
-            theirs = {i.id for i in block.acceptance}
+            # by (id, condition): keeping the id and rewriting the text is how
+            # an acceptance criterion disappears while the set comparison passes
+            ours = {(i.id, i.condition) for i in absorber.acceptance}
+            theirs = {(i.id, i.condition) for i in block.acceptance}
             if not theirs <= ours:
                 raise ContractError(
-                    f"{absorber.name}: приёмка {name} потеряна: {sorted(theirs - ours)}")
-            if not set(block.writes) <= set(absorber.writes):
-                raise ContractError(
-                    f"{absorber.name}: область записи {name} не покрыта")
+                    f"{absorber.name}: приёмка {name} потеряна или подменена: "
+                    f"{sorted(i for i, _ in theirs - ours)}")
+            for field_name, ours_set, theirs_set in (
+                    ("пишет", set(absorber.writes), set(block.writes)),
+                    ("читает", set(absorber.reads), set(block.reads)),
+                    ("внешние_действия", set(absorber.external), set(block.external))):
+                if not theirs_set <= ours_set:
+                    raise ContractError(
+                        f"{absorber.name}: {field_name} блока {name} не покрыто")
 
     def _combinations(self, state, event):
         """Every combination of the condition codes this pair reads."""
@@ -713,6 +842,130 @@ class Tables:
             combinations = [dict(base, **{key: value})
                             for base in combinations for value in codes[key]]
         return combinations
+
+    # -- isolation ----------------------------------------------------------
+    def isolation_ok(self, observed_versions: dict | None = None) -> bool:
+        """Whether the isolation proof still describes the current command.
+
+        The gate used to read `closed("Ш1")` and nothing else, so the proof was
+        eternal: change `adapters.py` without touching a CLI version and it
+        stayed green on evidence that no longer described what runs.
+        """
+        return not self.isolation_drift(observed_versions)
+
+    def isolation_drift(self, observed_versions: dict | None = None) -> list[str]:
+        """Every field of the fingerprint that no longer matches. Fails closed."""
+        spec = self.plan["отпечаток_изоляции"]
+        report_path = ROOT / spec["отчёт"]
+        if not report_path.exists():
+            return ["отчёта нет"]
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return ["отчёт нечитаем"]
+        recorded = report.get("отпечаток") or {}
+        drift = []
+        for field_name, digest in self.isolation_fingerprint().items():
+            if recorded.get(field_name) != digest:
+                drift.append(field_name)
+        if observed_versions is not None:
+            if report.get("versions") != observed_versions:
+                drift.append("версии_CLI")
+        return drift
+
+    def isolation_fingerprint(self) -> dict:
+        """Digests of everything the proof depends on, computed from the tree."""
+        spec = self.plan["отпечаток_изоляции"]
+        out = {}
+        for field_name, relative in spec["артефакты"].items():
+            path = ROOT / relative
+            out[field_name] = (hashlib.sha256(path.read_bytes()).hexdigest()
+                               if path.exists() else "")
+        return out
+
+
+def _is_sha256(value) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value))
+
+
+def _is_uuid(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    parts = value.split("-")
+    return ([len(p) for p in parts] == [8, 4, 4, 4, 12]
+            and all(c in "0123456789abcdef-" for c in value))
+
+
+def memory_receipt(plan: dict, home: Path | None = None) -> list[str]:
+    """Проверка второго шага БК: память обязана ссылаться на коммит канона.
+
+    Память живёт вне git, поэтому «обновим тем же коммитом» невыполнимо. Вместо
+    обещания — квитанция: каждый named файл памяти называет коммит, который
+    действительно трогал канон.
+    """
+    import subprocess
+    home = Path(home) if home else Path.home()
+    problems = []
+    for relative in plan["проверка_памяти"]["файлы"]:
+        path = Path(str(relative).replace("~", str(home), 1))
+        if not path.is_file():
+            problems.append(f"нет файла памяти: {path}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        shas = set(re.findall(r"\b[0-9a-f]{7,40}\b", text))
+        if not any(_commit_touches_canon(sha, plan) for sha in shas):
+            problems.append(f"{path.name}: не ссылается на коммит канона")
+    return problems
+
+
+def _commit_touches_canon(sha: str, plan: dict) -> bool:
+    import subprocess
+    try:
+        files = subprocess.run(
+            ["git", "-C", str(ROOT), "show", "--name-only", "--format=", sha],
+            capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if files.returncode != 0:
+        return False
+    touched = set(files.stdout.split())
+    return bool(touched & set(plan["проверка_памяти"]["канон"]))
+
+
+def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
+    """Actually open what the permission points at. Returns the failure, or None.
+
+    Structure checks proved a string was non-empty. That is what let a citation
+    through that I could not confirm afterwards.
+    """
+    home = Path(home) if home else Path.home()
+    if basis["вид"] == "план_артефакт":
+        path = Path(str(basis["путь"]).replace("~", str(home), 1))
+        if not path.is_file():
+            return f"артефакта нет: {path}"
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != basis["sha256"]:
+            return f"sha256 не совпал: {digest[:12]}… против {basis['sha256'][:12]}…"
+        return None
+
+    session = basis["сессия"]
+    candidates = list(home.glob(f".claude/projects/*/{session}.jsonl"))
+    if not candidates:
+        return f"сессии нет: {session}"
+    wanted, quote = basis["native_uuid"], basis["цитата"]
+    for line in candidates[0].open(encoding="utf-8"):
+        if wanted not in line:
+            continue
+        record = json.loads(line)
+        if record.get("uuid") != wanted:
+            continue
+        if record.get("type") != "user":
+            return f"{wanted}: не реплика пользователя"
+        content = record.get("message", {}).get("content")
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        return None if quote in text else f"{wanted}: цитата не найдена в реплике"
+    return f"{wanted}: события нет в сессии"
 
 
 def load(directory: Path = TABLES_DIR) -> Tables:
@@ -915,13 +1168,21 @@ def _render_blocks(tables: Tables) -> list[str]:
                      f"({entry['дата']})")
     for grant in plan["разрешения_исполнения"]:
         basis = grant["основание"]
-        cite = basis.get("цитата", "")
-        lines.append(f"- разрешил {grant['кем']}: {_cell(grant['блоки'])} "
-                     f"({grant['дата']}) — «{cite}»")
+        lines.append(f"- **действует** — {grant['кем']}: {_cell(grant['блоки'])} "
+                     f"({grant['дата']}) — «{basis.get('цитата', '')}»")
+    for grant in plan["история_разрешений"]:
+        basis = grant["основание"]
+        lines.append(f"- история, права не даёт — {grant['кем']}: "
+                     f"{_cell(grant['блоки'])} ({grant['дата']}) — "
+                     f"«{basis.get('цитата', '')}»")
 
+    drift = tables.isolation_drift()
     lines += ["", "**Отпечаток изоляции.** Шлюз живых вызовов смотрит не на строку "
               "версии, а на: " + _cell(plan["отпечаток_изоляции"]["входит_в_отпечаток"])
-              + f". Отчёт `{plan['отпечаток_изоляции']['отчёт']}`."]
+              + f". Отчёт `{plan['отпечаток_изоляции']['отчёт']}`. "
+              + ("Сейчас **совпадает**." if not drift
+                 else f"Сейчас **расходится** по {_cell(drift)} — "
+                      f"{plan['отпечаток_изоляции']['проверяет_блок']} считается незакрытым.")]
 
     lines += ["", "**Вне порядка:**"]
     for name, why in plan["вне_порядка"].items():
@@ -995,6 +1256,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("check", help="load every table and verify the engine's invariants")
+    sub.add_parser("authority", help="resolve every permission against the real world")
 
     render = sub.add_parser("render", help="regenerate the normative sections of the document")
     render.add_argument("--document", default=str(DOCUMENT))
@@ -1015,6 +1277,33 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"✓ {line}")
             print("✓ contract valid")
             return 0
+        if args.command == "authority":
+            # `check` stays pure: table invariants only. Everything that has to
+            # open a transcript, a plan file or git history lives here, because
+            # a permission that cannot be resolved is not a permission.
+            plan = tables.plan
+            problems = []
+            for registry in ("заключения_ревью", "разрешения_исполнения",
+                             "история_разрешений"):
+                for entry in plan[registry]:
+                    problem = resolve_basis(entry["основание"])
+                    label = f"{registry} {entry['блоки']}"
+                    if problem:
+                        problems.append(f"{label}: {problem}")
+                    else:
+                        print(f"✓ {label}")
+            for problem in memory_receipt(plan):
+                problems.append(f"память: {problem}")
+            else:
+                if not any(p.startswith("память") for p in problems):
+                    print("✓ память ссылается на коммит канона")
+            drift = tables.isolation_drift()
+            print(f"{'✗' if drift else '✓'} отпечаток изоляции"
+                  + (f": расходится по {drift}" if drift else ""))
+            for problem in problems:
+                print(f"✗ {problem}")
+            return 1 if problems else 0
+
         if args.command == "render":
             changed = render_document(Path(args.document), tables, write=not args.check)
             if args.check and changed:

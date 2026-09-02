@@ -14,6 +14,8 @@ ones the engine will read.
 import importlib.util
 import itertools
 import copy
+import json
+import hashlib
 import shutil
 import sys
 from dataclasses import replace
@@ -706,36 +708,196 @@ def test_a_permission_must_point_at_something_resolvable():
             assert basis["путь"] and len(basis["sha256"]) == 64
 
 
+def _mutated(module, **_):
+    return copy.deepcopy(module.load().raw)
+
+
 def test_a_permission_is_granted_for_a_scope_and_not_for_a_name():
     # A block can keep its name while the work behind it grows, and the old
     # permission would silently cover the new scope. The hash is over the whole
-    # record — including the *text* of every acceptance criterion, because the
-    # text can be rewritten under an unchanged id.
+    # effective record — acceptance *text*, declared counts, MVP membership,
+    # absorption and gate membership included.
     module = import_tables_module()
     tables = module.load()
+    plan = tables.plan
     block = tables.blocks["Б1"]
-    before = block.scope_sha256
+    before = block.scope_sha256(plan)
 
     widened = replace(block, writes=block.writes + ("core/scripts/roundtable/cli.py",))
-    assert widened.scope_sha256 != before, "расширение области записи не заметили"
+    assert widened.scope_sha256(plan) != before, "расширение области записи не заметили"
 
     first = block.acceptance[0]
     rewritten = replace(block, acceptance=(replace(first, condition="что угодно"),)
                         + block.acceptance[1:])
-    assert rewritten.scope_sha256 != before, "подмена текста критерия под тем же ID не заметна"
+    assert rewritten.scope_sha256(plan) != before, "подмена текста критерия под тем же ID"
 
-    renamed = replace(block, name="Б1-бис")
-    assert renamed.scope_sha256 != before
+    assert replace(block, declared_counts={"таблицы": 7}).scope_sha256(plan) != before
+    assert replace(block, outside_mvp=True).scope_sha256(plan) != before
+    assert replace(block, absorbed_by="БИ").scope_sha256(plan) != before
+    assert replace(block, name="Б1-бис").scope_sha256(plan) != before
+
+    # dropping a block out of a gate removes a precondition without touching
+    # its own row — the permission must not survive that either
+    thinner = copy.deepcopy(plan)
+    thinner["шлюзы"]["ремонт_после_ревью_12"]["до_закрытия"].remove("Б1")
+    assert block.scope_sha256(thinner) != before, "членство в шлюзе вне отпечатка"
 
 
-def test_nothing_is_started_that_no_permission_covers():
+def test_a_missing_scope_hash_is_not_a_wildcard():
+    # `recorded is None` used to mean "covers anything", which turned every
+    # permission back into a permission by name.
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    grant = raw["blocks"]["разрешения_исполнения"][0]
+
+    without = copy.deepcopy(raw)
+    del without["blocks"]["разрешения_исполнения"][0]["scope_sha256"]
+    with pytest.raises(module.ContractError, match="scope_sha256"):
+        module.Tables.from_raw(without).check()
+
+    short = copy.deepcopy(raw)
+    short["blocks"]["разрешения_исполнения"][0]["scope_sha256"].pop("Б1")
+    with pytest.raises(module.ContractError, match="не совпадает с блоками"):
+        module.Tables.from_raw(short).check()
+
+    extra = copy.deepcopy(raw)
+    extra["blocks"]["разрешения_исполнения"][0]["scope_sha256"]["Б9"] = "f" * 64
+    with pytest.raises(module.ContractError, match="не совпадает с блоками"):
+        module.Tables.from_raw(extra).check()
+
+    wrong = copy.deepcopy(raw)
+    wrong["blocks"]["разрешения_исполнения"][0]["scope_sha256"]["Б1"] = "a" * 64
+    with pytest.raises(module.ContractError, match="Б1"):
+        module.Tables.from_raw(wrong).check()
+    assert grant  # the untouched original is still the one that passes
+
+
+def test_a_basis_is_resolved_against_the_real_source(tmp_path):
+    # "Строка непустая" is what let through a citation I could not confirm.
+    module = import_tables_module()
+    home = tmp_path
+    plan_file = home / "plan.md"
+    plan_file.write_text("замысел", encoding="utf-8")
+    digest = hashlib.sha256(plan_file.read_bytes()).hexdigest()
+
+    good = {"вид": "план_артефакт", "путь": str(plan_file), "sha256": digest}
+    assert module.resolve_basis(good, home) is None
+    assert "sha256" in module.resolve_basis({**good, "sha256": "0" * 64}, home)
+    assert "артефакта нет" in module.resolve_basis({**good, "путь": str(home / "нет.md")}, home)
+
+    session = "11111111-2222-3333-4444-555555555555"
+    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    directory = home / ".claude" / "projects" / "proj"
+    directory.mkdir(parents=True)
+    (directory / f"{session}.jsonl").write_text("\n".join([
+        json.dumps({"uuid": uuid, "type": "user",
+                    "message": {"content": "<system-reminder>шум</system-reminder>\n\nделай дальше"}}),
+        json.dumps({"uuid": "ffffffff-0000-0000-0000-000000000000", "type": "assistant",
+                    "message": {"content": "делай дальше"}}),
+    ]), encoding="utf-8")
+
+    event = {"вид": "событие_транскрипта", "сессия": session,
+             "native_uuid": uuid, "цитата": "делай дальше"}
+    # the wrapper is exactly what a filtered search dropped last time
+    assert module.resolve_basis(event, home) is None
+    assert "цитата не найдена" in module.resolve_basis({**event, "цитата": "не говорил"}, home)
+    assert "события нет" in module.resolve_basis(
+        {**event, "native_uuid": "99999999-0000-0000-0000-000000000000"}, home)
+    assert "не реплика пользователя" in module.resolve_basis(
+        {**event, "native_uuid": "ffffffff-0000-0000-0000-000000000000"}, home)
+    assert "сессии нет" in module.resolve_basis({**event, "сессия": uuid}, home)
+
+
+def test_every_real_permission_actually_resolves():
+    # The registry is only worth its lines if the things it points at exist.
+    module = import_tables_module()
+    plan = module.load().plan
+    if not (Path.home() / ".claude" / "projects").exists():
+        pytest.skip("транскрипты недоступны в этой среде")
+    for registry in ("заключения_ревью", "разрешения_исполнения", "история_разрешений"):
+        for entry in plan[registry]:
+            problem = module.resolve_basis(entry["основание"])
+            assert problem is None, f"{registry} {entry['блоки']}: {problem}"
+
+
+def test_the_isolation_gate_is_computed_and_not_declared(tmp_path, monkeypatch):
+    # The gate used to read `closed("Ш1")` and nothing else, so the proof was
+    # eternal: change adapters.py without touching a CLI version and it stayed
+    # green on evidence that no longer described what runs.
     module = import_tables_module()
     tables = module.load()
-    covered = {b for g in BLOCKS["разрешения_исполнения"] for b in g["блоки"]}
+    spec = tables.plan["отпечаток_изоляции"]
+
+    for relative in spec["артефакты"].values():
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((module.ROOT / relative).read_bytes())
+    report = tmp_path / spec["отчёт"]
+    report.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+
+    matching = {"отпечаток": tables.isolation_fingerprint()}
+    report.write_text(json.dumps(matching), encoding="utf-8")
+    assert tables.isolation_ok(), "совпадающий отпечаток должен открывать шлюз"
+    assert tables.closed("Ш1")
+
+    adapters = tmp_path / spec["артефакты"]["хеш_adapters_py"]
+    original = adapters.read_bytes()
+    adapters.write_bytes(original + "\n# правка\n".encode("utf-8"))
+    assert "хеш_adapters_py" in tables.isolation_drift()
+    assert not tables.closed("Ш1"), "изменённая команда обязана закрыть шлюз"
+    assert any("изоляция_подтверждена" in r for r in tables.hold_reasons("Б3б"))
+
+    adapters.write_bytes(original)
+    report.write_text(json.dumps({"отпечаток": tables.isolation_fingerprint(),
+                                  "versions": {"claude": "2.1.227"}}), encoding="utf-8")
+    assert tables.isolation_drift({"claude": "2.1.999"}) == ["версии_CLI"]
+
+    report.unlink()
+    assert tables.isolation_drift() == ["отчёта нет"], "нет отчёта — шлюз закрыт"
+
+
+def test_the_block_table_is_typed_and_closed():
+    # Three mutations used to pass straight through Tables.check().
+    module = import_tables_module()
+    for mutation, pattern in (
+        ({"состояние": "сделанно"}, "нет в словаре"),
+        ({"внешние_действия": ["удалить_всё"]}, "нет в словаре"),
+        ({"пишет": "core/x.py"}, "ожидался список"),
+        ({"вне_MVP": "да"}, "boolean"),
+        ({"объявленное_количество": {"таблицы": 0}}, "положительное целое"),
+        ({"что": "  "}, "непустая строка"),
+    ):
+        raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["блоки"]["Б9"].update(mutation)
+        with pytest.raises(module.ContractError, match=pattern):
+            module.Tables.from_raw(raw)
+
+
+def test_nothing_is_worked_on_without_a_live_permission():
+    # In-flight work needs a permission for its *current* scope. Finished work
+    # needs only to have had one: history explains why closed blocks were
+    # closed, it does not authorise anything now.
+    module = import_tables_module()
+    tables = module.load()
+    working = set(VOCAB["состояния_блока"]["рабочие"])
+    historic = {b for g in BLOCKS["история_разрешений"] for b in g["блоки"]}
     for name, block in tables.blocks.items():
         if name == "Б0а" or block.state is None:
             continue
-        assert name in covered, f"{name}: начат, а разрешения нет"
+        if block.state in working:
+            assert tables.permitted(name) is not None, f"{name}: в работе без разрешения"
+        else:
+            assert tables.permitted(name) or name in historic, f"{name}: разрешения нет нигде"
+
+
+def test_a_block_cannot_be_worked_on_under_a_stale_permission():
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    raw["blocks"]["блоки"]["Б1"]["приёмка"].append(
+        {"id": "Б1-99", "условие": "дописал себе работы после разрешения"})
+    with pytest.raises(module.ContractError, match="Б1: в работе"):
+        module.Tables.from_raw(raw).check()
 
 
 def test_a_gate_holds_everything_downstream_until_the_repair_is_closed():
@@ -771,6 +933,29 @@ def test_every_hold_reason_is_reported_not_just_the_first():
     assert any("шлюзом" in r for r in reasons)
 
 
+def test_the_header_reports_completion_and_stoppage_not_just_progress():
+    # "Следующий блок — Б1" was typed by hand and went stale. The two branches
+    # nobody exercises are the interesting ones: everything done, and nothing
+    # runnable.
+    module = import_tables_module()
+
+    finished = copy.deepcopy(module.load().raw)
+    for name in finished["blocks"]["порядок"]:
+        finished["blocks"]["блоки"][name]["состояние"] = "сделано"
+    tables = module.Tables.from_raw(finished)
+    # Ш1 is derived: with the fingerprint adrift it is not closed, and the
+    # header must not claim completion. That branch is the point of the gate.
+    assert "Остановлено" in "\n".join(module.SECTIONS["status"](tables))
+    object.__setattr__(tables, "isolation_drift", lambda observed=None: [])
+    assert "MVP завершён" in "\n".join(module.SECTIONS["status"](tables))
+
+    stuck = copy.deepcopy(module.load().raw)
+    stuck["blocks"]["разрешения_исполнения"] = []
+    tables = module.Tables.from_raw(stuck)
+    text = "\n".join(module.SECTIONS["status"](tables))
+    assert "Остановлено" in text and "нет разрешения" in text
+
+
 def test_an_absorbed_block_closes_only_with_its_absorber():
     # БИ waited on БТ2 while БТ2 closed with БИ: a deadlock running through two
     # different kinds of edge, which no cycle check would have seen.
@@ -783,8 +968,47 @@ def test_an_absorbed_block_closes_only_with_its_absorber():
     with pytest.raises(module.ContractError, match="тупик"):
         module.Tables.from_raw(raw).check()
 
-    blocks["БИ"]["зависит"] = ["Б2", "БТ"]      # БТ2 ждало БТ — предусловие обязано уцелеть
+    blocks["БИ"]["зависит"] = ["Б2", "БТ"]
     with pytest.raises(module.ContractError, match="приёмка"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_absorption_cannot_be_circular():
+    module = import_tables_module()
+    for chain in (["БТ2", "БИ"], ["БТ2", "БИ", "Б9"]):
+        raw = copy.deepcopy(module.load().raw)
+        blocks = raw["blocks"]["блоки"]
+        for name, nxt in zip(chain, chain[1:] + chain[:1]):
+            blocks[name]["состояние"] = "объединён_с"
+            blocks[name]["объединён_с"] = nxt
+            blocks[nxt]["поглощает"] = [name]
+        with pytest.raises(module.ContractError, match="цикл поглощения"):
+            module.Tables.from_raw(raw).check()
+
+
+def test_absorbed_acceptance_is_compared_with_its_text():
+    # Keeping every id and replacing every condition used to pass: the set
+    # comparison saw nothing, and the criteria were gone.
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    blocks = raw["blocks"]["блоки"]
+    blocks["БТ2"]["состояние"] = "объединён_с"
+    blocks["БТ2"]["объединён_с"] = "БИ"
+    blocks["БИ"]["поглощает"] = ["БТ2"]
+    blocks["БИ"]["зависит"] = ["Б2", "БТ"]
+    blocks["БИ"]["пишет"] = sorted(set(blocks["БИ"]["пишет"]) | set(blocks["БТ2"]["пишет"]))
+    blocks["БИ"]["читает"] = sorted(set(blocks["БИ"]["читает"]) | set(blocks["БТ2"]["читает"]))
+    blocks["БИ"]["приёмка"] = blocks["БИ"]["приёмка"] + [
+        {"id": item["id"], "условие": "ПОДМЕНЕНО"} for item in blocks["БТ2"]["приёмка"]]
+    with pytest.raises(module.ContractError, match="потеряна или подменена"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_acceptance_ids_are_unique_across_the_whole_plan():
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    raw["blocks"]["блоки"]["Б9"]["приёмка"] = [{"id": "Б1-1", "условие": "чужой ID"}]
+    with pytest.raises(module.ContractError, match="у двух блоков"):
         module.Tables.from_raw(raw).check()
 
 
@@ -795,8 +1019,12 @@ def test_the_isolation_fingerprint_is_more_than_a_version_string():
     assert fingerprint["отчёт"].endswith("isolation-report.json")
     parts = set(fingerprint["входит_в_отпечаток"])
     for part in ("версии_CLI", "хеш_нормализованных_argv", "хеш_adapters_py",
-                 "хеш_схемы_ответа", "версия_probe"):
+                 "хеш_схемы_ответа", "хеш_probe"):
         assert part in parts, part
+    # every named artefact must actually be hashable from the tree
+    module = import_tables_module()
+    for relative in fingerprint["артефакты"].values():
+        assert (module.ROOT / relative).is_file(), relative
 
 
 def test_a_negative_claim_about_an_event_needs_the_raw_source():

@@ -255,6 +255,7 @@ class Block:
     acceptance: tuple[AcceptanceItem, ...] = ()
     state: str | None = None
     blocker: str | None = None
+    reopened_because: str | None = None
     absorbed_by: str | None = None
     absorbs: tuple[str, ...] = ()
     declared_counts: dict = field(default_factory=dict)
@@ -264,7 +265,7 @@ class Block:
     def parse(cls, name: str, row: dict, vocabulary: dict | None = None) -> "Block":
         _require(
             row, {"что", "зависит", "читает", "пишет", "внешние_действия", "приёмка"},
-            {"состояние", "блокер", "объединён_с", "поглощает",
+            {"состояние", "блокер", "переоткрыт_из_за", "объединён_с", "поглощает",
              "объявленное_количество", "вне_MVP"},
             f"blocks.блоки.{name}")
         where = f"blocks.блоки.{name}"
@@ -311,6 +312,7 @@ class Block:
             acceptance=tuple(items),
             state=row.get("состояние"),
             blocker=row.get("блокер"),
+            reopened_because=row.get("переоткрыт_из_за"),
             absorbed_by=row.get("объединён_с"),
             absorbs=tuple(row.get("поглощает") or ()),
             declared_counts=dict(counts),
@@ -751,6 +753,12 @@ class Tables:
                 everywhere[item.id] = name
         checked.append(f"{len(everywhere)} критериев приёмки: ID уникальны глобально")
 
+        for name, block in self.blocks.items():
+            if block.state == "переоткрыт" and not block.reopened_because:
+                raise ContractError(f"{name}: переоткрыт, но не сказано почему")
+            if block.state == "неполный" and not block.blocker:
+                raise ContractError(f"{name}: неполный, но не сказано, чем заблокирован")
+
         self._check_absorption()
         checked.append("поглощение: формулы объединения соблюдены")
 
@@ -1150,8 +1158,11 @@ def _render_blocks(tables: Tables) -> list[str]:
     for name in plan["порядок"]:
         if tables.closed(name):
             continue
+        block = tables.blocks[name]
         reasons = tables.hold_reasons(name)
-        lines.append(f"- **{name}** — {'; '.join(reasons) if reasons else 'исполним'}")
+        note = f" (переоткрыт: {block.reopened_because})" if block.reopened_because else ""
+        lines.append(
+            f"- **{name}** — {'; '.join(reasons) if reasons else 'исполним'}{note}")
 
     lines += ["", "**Шлюзы.**"]
     for gate, spec in plan["шлюзы"].items():

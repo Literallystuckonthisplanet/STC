@@ -152,6 +152,7 @@ hooks:
     # reports only a protected pattern, never the command or its output.
     H17_secret_read_guard:     { supported: true, matcher: ["Read","Glob","Grep","Bash","exec","unified_exec","unifiedExec"], binding: { file: block-secret-read.sh } }   # load-bearing — Codex has no permissions.deny engine
     H18_graphify_first:        { supported: true, matcher: ["Grep","Bash","Read","Glob"],               binding: { file: graphify-first.sh } }
+    H19_plan_recall:           { supported: false, reason: "нет отдельного события предъявления плана; H21 привязан к apply_patch в plan-режиме, но вешать туда ещё и подачу — значит менять поведение записи файлов ради подсказки. Включить после обкатки на claude" }
     H21_exit_plan_grill:       { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: exit-plan-grill.sh }, note: "Codex-native apply_patch + permission_mode gate; never falls back to Claude plan files" }
     H22_prompt_lens:           { supported: true, matcher: ["*"], event: "UserPromptSubmit",             binding: { file: prompt-lens.sh } }   # FR-30 prompt lens: additive hint (NOT a rewrite) — degree word/dangling ref/multi-task/nick → flag for echo-reformulation; deterministic, no model; rules counted against the transcript corpus (candidate ≠ bug)
 

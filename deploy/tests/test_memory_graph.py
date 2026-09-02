@@ -75,7 +75,7 @@ def test_empty_result_is_an_answer_not_a_failure(vault, capsys):
     """«Не разбирали» — валидный ответ: значит решение принимается впервые."""
     _note(vault, "notes/research/unrelated.md", "Совершенно другая тема про доставку")
     args = type("A", (), {"query": "квантовая криптография", "limit": 5,
-                          "min_score": 0.3, "json": False})()
+                          "min_score": 0.3, "json": False, "format": "human"})()
     assert memory_graph.cmd_search(args) == 0
     assert "Ничего" in capsys.readouterr().out
 
@@ -97,3 +97,38 @@ def test_a_recorded_miss_stays_fixed(vault):
           "Разбор пяти кругов кросс-вендорного ревью плана Roundtable: почему цикл не сходился")
     docs = memory_graph.load()
     assert memory_graph.terms("круглый стол забывает решения") & docs[0]["terms"]
+
+
+def test_a_whole_plan_as_query_still_finds_its_topic(vault, capsys):
+    """План целиком — это полсотни слов, и доля совпавших тонет ниже порога.
+
+    Живой прогон это и показал: план про graphify возвращал «ничего», хотя
+    заметка про graphify лежит в слое. Значимые слова отбираются, и порог для
+    них считается штуками совпадений, а не долей.
+    """
+    _note(vault, "notes/research/engines.md",
+          "Ресёрч: движки памяти и аудит graphify/llm-wiki в STC")
+    for i in range(12):
+        _note(vault, f"notes/research/noise-{i}.md", f"Совершенно другая тема номер {i}")
+    plan = ("Задача: починить цикл обучения graphify, добавить подачу прошлых "
+            "решений на выходе из плана, проверить связи артефактов и покрытие AC")
+    args = type("A", (), {"query": plan, "limit": 3, "min_score": 0.3,
+                          "json": False, "format": "human"})()
+    memory_graph.cmd_search(args)
+    # Проверяется результат, а не служебная строка про отбор: первая версия
+    # теста ждала её в выводе и падала на коротком слое, где отбор не нужен.
+    assert "engines.md" in capsys.readouterr().out
+
+
+def test_one_incidental_word_is_not_enough_to_surface_a_note(vault, capsys):
+    """Порог в два совпадения: подсказка, срабатывающая на случайном слове,
+    приучает смотреть мимо неё."""
+    _note(vault, "notes/research/delivery.md", "Разбор сроков доставки транспортной компанией")
+    for i in range(12):
+        _note(vault, f"notes/research/noise-{i}.md", f"Другая тема номер {i}")
+    plan = ("Задача: переписать модуль оплаты, обновить схему базы, добавить "
+            "доставки в отчёт, проверить связи артефактов и покрытие критериев")
+    args = type("A", (), {"query": plan, "limit": 3, "min_score": 0.3,
+                          "json": False, "format": "human"})()
+    memory_graph.cmd_search(args)
+    assert "delivery.md" not in capsys.readouterr().out

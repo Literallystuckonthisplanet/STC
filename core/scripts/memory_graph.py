@@ -34,16 +34,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
-ROOT = Path.home() / "Work" / "memory"
+# Корень отжатого слоя. Переопределяется переменной окружения, иначе тест
+# хука пришлось бы гонять по живому хранилищу — и он менялся бы вместе с ним.
+ROOT = Path(os.environ.get("STC_MEMORY_ROOT") or Path.home() / "Work" / "memory")
 AREAS = ("notes/research", "specs", "notes", "tasks")
 
 STOP = set("""и в во не что на я с со как а то все так но да ты к у же вы за по для из о от при
 над про это эти этот там где его её они мы вам нам был была было были есть быть или либо если
 чтобы когда уже ещё еще только тоже также без под над между""".split())
+
+# Служебная лексика плана. Эти слова стоят в КАЖДОМ плане и потому не говорят
+# о теме ничего, но в отбор значимых попадают и тянут за собой чужие заметки:
+# на пробном плане про graphify первым вылезал разбор выбора LLM — по слову
+# «решение». Отсекается здесь, а не порогом: порог по частоте их не берёт,
+# потому что в самих заметках они редки.
+PLAN_BOILERPLATE = set("""задача задачи решение решения решить план плана планы шаг шаги
+этап этапы проверить проверка сделать добавить обновить починить исправить нужно надо
+работа работы вариант варианты подход итог цель цели готово результат
+решений решениях решениями задач задачам шагов этапов проверки
+task tasks decision decisions plan plans step steps check fix add update goal result""".split())
+STOP |= PLAN_BOILERPLATE
 
 # Пары ru↔en доменных терминов. Короткий по умыслу: слово попадает сюда после
 # зафиксированного промаха поиска, а не «на всякий случай».
@@ -68,6 +83,9 @@ SUFFIXES = ("ениями", "ениям", "ования", "ование", "ен�
 
 WORD = re.compile(r"[а-яa-zё][а-яa-z0-9ё-]{2,}", re.I)
 
+# Заполняется после объявления stem(): фильтр работает по основам.
+STOP_STEMS: set[str] = set()
+
 
 def stem(word: str) -> str:
     w = word.lower()
@@ -77,9 +95,17 @@ def stem(word: str) -> str:
     return w
 
 
+STOP_STEMS = {stem(w) for w in STOP}
+
+
 def terms(text: str) -> set[str]:
-    """Слова → основы → плюс их пара на другом языке."""
-    base = {stem(w) for w in WORD.findall(text) if w.lower() not in STOP}
+    """Слова → основы → плюс их пара на другом языке.
+
+    Отсев служебных слов идёт ПО ОСНОВАМ, а не по словоформам: «решений»
+    не равно «решение», и фильтр по формам его пропускал — после чего оно
+    стеммилось и тянуло в выдачу чужие заметки со словом «решение».
+    """
+    base = {stem(w) for w in WORD.findall(text)} - STOP_STEMS
     out = set(base)
     for t in base:
         for key, twin in PAIRS.items():
@@ -116,26 +142,78 @@ def load() -> list[dict]:
     return docs
 
 
+def salient(query: set[str], docs: list[dict], top: int = 12,
+            max_df: float = 0.4) -> set[str]:
+    """Оставить в запросе только различающие слова.
+
+    Целый план как запрос даёт полсотни слов, оценка считается долей от их
+    числа, и совпадение трёх тонет ниже порога: живой прогон на плане про
+    graphify вернул «ничего». Поэтому слова, встречающиеся почти в каждом узле,
+    отбрасываются, а из остальных берутся самые редкие — они и несут тему.
+    """
+    if len(query) <= top:
+        return query
+    n = len(docs) or 1
+    df = {t: sum(1 for d in docs if t in d["terms"]) for t in query}
+    # df == 0 отбрасывается первым делом: слово, которого нет ни в одном узле,
+    # не может дать совпадение, а по сортировке «самых редких» оно шло впереди
+    # всех и вытесняло различающие. На синтетическом слое так терялось само
+    # слово graphify — то единственное, ради которого запрос и делался.
+    kept = [t for t in query if 0 < df[t] / n <= max_df]
+    kept.sort(key=lambda t: (df[t], -len(t)))
+    return set(kept[:top]) or query
+
+
 def cmd_search(args) -> int:
     docs = load()
     q = terms(args.query)
     if not q:
         print("пустой запрос", file=sys.stderr)
         return 2
+    full = q
+    q = salient(q, docs)
+    # Одно правило вместо двух режимов: узел показывается, если совпало не
+    # меньше двух значимых слов ЛИБО доля совпавших дотягивает до порога.
+    #
+    # Две половины нужны обе. Доля обслуживает короткий вопрос («движки
+    # памяти» — два слова, одно совпадение уже ответ). Пара совпадений
+    # обслуживает длинный текст, где доля обманывает: план про graphify после
+    # отсева служебной лексики даёт семь слов, два из них совпадают с нужной
+    # заметкой, и никакая доля этого не берёт. Разводить это по режимам я
+    # пробовал — режим цеплялся то за обрезку списка, то за длину текста, и
+    # оба раза молчал на живом примере.
+    #
+    # Порог именно в два слова, а не в одно: подсказка, срабатывающая на
+    # случайном совпадении, приучает смотреть мимо себя.
     scored = []
     for d in docs:
         hit = q & d["terms"]
-        if hit:
-            scored.append((len(hit) / len(q), d, hit))
-    scored.sort(key=lambda x: -x[0])
-    scored = [s for s in scored if s[0] >= args.min_score][: args.limit]
+        if not hit:
+            continue
+        if len(hit) < 2 and len(hit) / len(q) < args.min_score:
+            continue
+        scored.append((len(hit) / len(q), d, hit))
+    scored.sort(key=lambda x: -len(x[2]))
+    scored = scored[: args.limit]
 
+    if getattr(args, "format", None) == "hook":
+        # Одна строка для additionalContext: пути и суть, без шапки и советов.
+        # Пусто печатать нельзя — хук по пустому выводу молча выходит.
+        parts = [f"{d['path'].relative_to(ROOT)} — {(d['desc'] or d['title'])[:90]}"
+                 for _, d, _ in scored]
+        if parts:
+            print(" · ".join(parts))
+        return 0
     if args.json:
         print(json.dumps([{"score": round(s, 2), "path": str(d["path"]),
                            "desc": d["desc"]} for s, d, _ in scored],
                          ensure_ascii=False, indent=2))
         return 0
-    print(f"узлов в отжатом слое: {len(docs)}; запрос: «{args.query}»\n")
+    head = args.query if len(args.query) <= 90 else args.query[:90] + "…"
+    print(f"узлов в отжатом слое: {len(docs)}; запрос: «{head}»")
+    if q is not full:
+        print(f"искал по значимым словам: {', '.join(sorted(q))}")
+    print()
     if not scored:
         print("  Ничего — тему в отжатом слое не разбирали.")
         print("  Это ответ, а не сбой: значит решение принимается впервые.")
@@ -188,6 +266,17 @@ def cmd_check(args) -> int:
     return 1 if (args.strict and total) else 0
 
 
+def _from_stdin(args):
+    """Текст запроса со stdin.
+
+    План передаётся целиком, а в нём кавычки, переводы строк и что угодно ещё;
+    через аргумент командной строки это ломается на экранировании и упирается в
+    предел длины. Читать поток проще и безопаснее.
+    """
+    args.query = sys.stdin.read()
+    return args
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -197,7 +286,15 @@ def main() -> int:
     s.add_argument("--limit", type=int, default=5)
     s.add_argument("--min-score", type=float, default=0.3)
     s.add_argument("--json", action="store_true")
+    s.add_argument("--format", choices=["human", "hook"], default="human")
     s.set_defaults(func=cmd_search)
+    si = sub.add_parser("search-stdin",
+                        help="то же, но текст запроса читается со stdin")
+    si.add_argument("--limit", type=int, default=5)
+    si.add_argument("--min-score", type=float, default=0.3)
+    si.add_argument("--json", action="store_true")
+    si.add_argument("--format", choices=["human", "hook"], default="human")
+    si.set_defaults(func=lambda a: cmd_search(_from_stdin(a)))
     c = sub.add_parser("check", help="дыры в связях артефактов")
     c.add_argument("--limit", type=int, default=8)
     c.add_argument("--strict", action="store_true", help="ненулевой код при замечаниях")

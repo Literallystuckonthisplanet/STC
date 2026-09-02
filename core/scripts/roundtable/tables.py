@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -44,12 +45,19 @@ import yaml
 
 HERE = Path(__file__).resolve()
 ROOT = HERE.parents[3]
-TABLES_DIR = HERE.parent / "tables"
+# The mutation ratchet points this at a scratch copy. It used to write the
+# canonical YAML in place and restore it in `finally`: a `kill -9` mid-run left
+# the repository holding a corrupted table.
+TABLES_DIR = Path(os.environ.get("ROUNDTABLE_TABLES_DIR") or (HERE.parent / "tables"))
 DOCUMENT = HERE.parents[3] / "docs" / "roundtable.md"
 
 # Версия формы КАЖДОЙ таблицы отдельно. Одна глобальная константа не давала
 # поднять версию одной таблицы: отвергалась бы либо она, либо все остальные.
-SCOPE_ALGORITHM = "scope/1"
+# Bumped when the *shape* of the scope record changes, so a moved hash is
+# explainable: scope/2 added the exact position in the order and the full
+# executable content of every gate touching the block — both could be changed
+# before without disturbing the fingerprint.
+SCOPE_ALGORITHM = "scope/2"
 
 CONTRACT_VERSIONS = {
     "vocabulary": 1, "run": 1, "issues": 1, "framing": 1,
@@ -94,6 +102,7 @@ TOP_LEVEL = {
         "порядок", "вне_порядка", "блоки", "списки",
         "заключения_ревью", "разрешения_исполнения", "история_разрешений", "шлюзы",
         "отпечаток_изоляции", "проверки_источников", "проверка_памяти",
+        "порядок_критики",
     },
     "stages": {
         "стадии", "слепой_вопрос", "сигнал_нежизнеспособности",
@@ -350,10 +359,26 @@ class Block:
             "вне_MVP": self.outside_mvp,
         }
         if plan is not None:
-            record["в_порядке"] = self.name in plan["порядок"]
-            record["шлюзы"] = sorted(
-                gate for gate, spec in plan["шлюзы"].items()
-                if self.name in spec["блокирует"] or self.name in spec["до_закрытия"])
+            order = plan["порядок"]
+            # position, not membership: moving БТ2 ahead of Б1 changes what runs
+            # next without touching a single field of either block
+            record["место_в_порядке"] = (order.index(self.name)
+                                         if self.name in order else None)
+            # the whole executable side of every gate that touches this block:
+            # swapping Ш1 for an already-closed block inside `до_закрытия`
+            # removes the safety boundary while every block row stays identical
+            gates = {}
+            for gate, spec in plan["шлюзы"].items():
+                sides = {}
+                if self.name in spec["блокирует"]:
+                    sides["сторона"] = "блокирует"
+                if self.name in spec["до_закрытия"]:
+                    sides["сторона"] = sides.get("сторона", "") + "|до_закрытия"
+                if sides:
+                    sides["блокирует"] = sorted(spec["блокирует"])
+                    sides["до_закрытия"] = sorted(spec["до_закрытия"])
+                    gates[gate] = sides
+            record["шлюзы"] = dict(sorted(gates.items()))
         return record
 
     def scope_sha256(self, plan: dict | None = None) -> str:
@@ -912,8 +937,10 @@ def memory_receipt(plan: dict, home: Path | None = None) -> list[str]:
     обещания — квитанция: каждый named файл памяти называет коммит, который
     действительно трогал канон.
     """
-    import subprocess
     home = Path(home) if home else Path.home()
+    expected = canon_commit(plan)
+    if expected is None:
+        return ["не удалось спросить git, какой коммит трогал канон последним"]
     problems = []
     for relative in plan["проверка_памяти"]["файлы"]:
         path = Path(str(relative).replace("~", str(home), 1))
@@ -921,24 +948,25 @@ def memory_receipt(plan: dict, home: Path | None = None) -> list[str]:
             problems.append(f"нет файла памяти: {path}")
             continue
         text = path.read_text(encoding="utf-8")
-        shas = set(re.findall(r"\b[0-9a-f]{7,40}\b", text))
-        if not any(_commit_touches_canon(sha, plan) for sha in shas):
-            problems.append(f"{path.name}: не ссылается на коммит канона")
+        # any *historic* canon commit used to pass, so memory could name a
+        # long-superseded state and look fresh. It must name the current one.
+        if not any(expected.startswith(sha)
+                   for sha in re.findall(r"\b[0-9a-f]{7,40}\b", text)):
+            problems.append(f"{path.name}: не называет текущий канон {expected[:7]}")
     return problems
 
 
-def _commit_touches_canon(sha: str, plan: dict) -> bool:
+def canon_commit(plan: dict) -> str | None:
+    """The last commit that touched the canon. What memory has to point at."""
     import subprocess
     try:
-        files = subprocess.run(
-            ["git", "-C", str(ROOT), "show", "--name-only", "--format=", sha],
+        done = subprocess.run(
+            ["git", "-C", str(ROOT), "log", "-1", "--format=%H", "--"]
+            + list(plan["проверка_памяти"]["канон"]),
             capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
-        return False
-    if files.returncode != 0:
-        return False
-    touched = set(files.stdout.split())
-    return bool(touched & set(plan["проверка_памяти"]["канон"]))
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
 
 
 def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
@@ -1268,6 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("check", help="load every table and verify the engine's invariants")
     sub.add_parser("authority", help="resolve every permission against the real world")
+    sub.add_parser("isolation", help="whether the isolation proof still describes the command")
 
     render = sub.add_parser("render", help="regenerate the normative sections of the document")
     render.add_argument("--document", default=str(DOCUMENT))
@@ -1308,12 +1337,22 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 if not any(p.startswith("память") for p in problems):
                     print("✓ память ссылается на коммит канона")
-            drift = tables.isolation_drift()
-            print(f"{'✗' if drift else '✓'} отпечаток изоляции"
-                  + (f": расходится по {drift}" if drift else ""))
             for problem in problems:
                 print(f"✗ {problem}")
             return 1 if problems else 0
+
+        if args.command == "isolation":
+            # Separate command, separate exit code. Isolation being stale must
+            # not block the offline blocks, and `authority` returning 0 while
+            # printing ✗ let a red result through an `&&` chain.
+            drift = tables.isolation_drift()
+            if drift:
+                print(f"✗ отпечаток изоляции расходится по {drift}: "
+                      f"{tables.plan['отпечаток_изоляции']['проверяет_блок']} "
+                      f"считается незакрытым, живые вызовы удержаны")
+                return 1
+            print("✓ отпечаток изоляции совпадает с отчётом")
+            return 0
 
         if args.command == "render":
             changed = render_document(Path(args.document), tables, write=not args.check)

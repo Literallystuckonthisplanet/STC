@@ -515,3 +515,76 @@ def test_codex_h17_blocks_secret_reads_from_read_and_exec_tools_without_leaks(tm
         HARNESS_NAME="codex",
     )
     assert allowed.returncode == 0
+
+
+def _slice_layer(tmp_path, desc):
+    """Крошечный отжатый слой: одна заметка, по которой хук должен сработать."""
+    research = tmp_path / "mem" / "notes" / "research"
+    research.mkdir(parents=True)
+    (research / "prior-work.md").write_text(
+        f'---\ndescription: "{desc}"\n---\n\n# {desc[:40]}\n', encoding="utf-8")
+    return tmp_path / "mem"
+
+
+def test_h19_serves_prior_work_when_a_plan_leaves_plan_mode(tmp_path):
+    """Хук не напоминает искать, а подаёт найденное.
+
+    Напоминание — это ровно тот advisory, который по defect_ledger
+    рецидивирует: поиск по прошлым разговорам вызывался 15 раз за весь корпус.
+    """
+    mem = _slice_layer(tmp_path, "Ресёрч: движки памяти для агентов и аудит graphify")
+    payload = {
+        "tool_name": "ExitPlanMode",
+        "session_id": "behavior-recall",
+        "tool_input": {"plan": "Чиню цикл обучения graphify и подачу памяти агентам"},
+    }
+    res = _run("plan-recall.sh", payload, tmp_path,
+               STC_CORE=str(REPO / "core"), STC_MEMORY_ROOT=str(mem), USER_LANG="ru")
+    marker_glob = list(Path("/tmp").glob("stc-plan-recall-behavior-recall-*"))
+    try:
+        assert res.returncode == 0, res.stderr
+        assert "plan-recall" in res.stdout
+        assert "prior-work.md" in res.stdout
+        body = json.loads(res.stdout)
+        assert body["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    finally:
+        for m in marker_glob:
+            m.unlink(missing_ok=True)
+
+
+def test_h19_stays_silent_when_the_topic_is_new(tmp_path):
+    """Пустой результат — законный ответ, а не повод шуметь."""
+    mem = _slice_layer(tmp_path, "Совершенно посторонняя тема про сроки доставки")
+    res = _run("plan-recall.sh",
+               {"tool_name": "ExitPlanMode", "session_id": "behavior-new",
+                "tool_input": {"plan": "Внедряю квантовую криптографию в платёжный шлюз"}},
+               tmp_path, STC_CORE=str(REPO / "core"), STC_MEMORY_ROOT=str(mem))
+    for m in Path("/tmp").glob("stc-plan-recall-behavior-new-*"):
+        m.unlink(missing_ok=True)
+    assert res.returncode == 0
+    assert res.stdout.strip() == ""
+
+
+def test_h19_does_not_repeat_itself_for_the_same_plan(tmp_path):
+    mem = _slice_layer(tmp_path, "Ресёрч: движки памяти для агентов и аудит graphify")
+    payload = {"tool_name": "ExitPlanMode", "session_id": "behavior-twice",
+               "tool_input": {"plan": "Чиню цикл обучения graphify и подачу памяти агентам"}}
+    env = {"STC_CORE": str(REPO / "core"), "STC_MEMORY_ROOT": str(mem)}
+    first = _run("plan-recall.sh", payload, tmp_path, **env)
+    second = _run("plan-recall.sh", payload, tmp_path, **env)
+    for m in Path("/tmp").glob("stc-plan-recall-behavior-twice-*"):
+        m.unlink(missing_ok=True)
+    assert first.stdout.strip() != ""
+    assert second.stdout.strip() == ""
+
+
+def test_h19_ignores_subagents(tmp_path):
+    """План предъявляет main, а не исполнитель."""
+    mem = _slice_layer(tmp_path, "Ресёрч: движки памяти для агентов и аудит graphify")
+    res = _run("plan-recall.sh",
+               {"tool_name": "ExitPlanMode", "session_id": "behavior-sub",
+                "agent_id": "builder-1",
+                "tool_input": {"plan": "Чиню цикл обучения graphify"}},
+               tmp_path, STC_CORE=str(REPO / "core"), STC_MEMORY_ROOT=str(mem))
+    assert res.returncode == 0
+    assert res.stdout.strip() == ""

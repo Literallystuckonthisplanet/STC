@@ -14,9 +14,11 @@ ones the engine will read.
 import importlib.util
 import itertools
 import copy
+import os
 import json
 import hashlib
 import shutil
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -24,14 +26,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-TABLES = Path(__file__).resolve().parents[2] / "core" / "scripts" / "roundtable" / "tables"
+_CANON = Path(__file__).resolve().parents[2] / "core" / "scripts" / "roundtable" / "tables"
+# The ratchet runs the suite against a scratch copy; everything else against
+# the canon. One variable, honoured by both the suite and the engine.
+TABLES = Path(os.environ.get("ROUNDTABLE_TABLES_DIR") or _CANON)
 
 # One loader for the suite and for the engine (БТ, acceptance criterion 1).
 # The strict loader was prototyped here and now lives in the module: a private
 # copy is exactly the "two sources" shape this design keeps failing on. The
 # module is registered under a fixed name so that both roundtable test files
 # get the *same* module object — two copies would defeat the point.
-SCRIPTS = TABLES.parents[1]
+SCRIPTS = _CANON.parents[1]
 MODULE_NAME = "roundtable.tables"
 
 
@@ -71,18 +76,36 @@ ALL_TABLES = {
     "stages": STAGES,
 }
 
-RUN_STATES = set(VOCAB["состояния_прогона"]["рабочие"]) | set(VOCAB["состояния_прогона"]["терминальные"])
-RUN_TERMINAL = set(VOCAB["состояния_прогона"]["терминальные"])
-ISSUE_STATUSES = set(itertools.chain.from_iterable(VOCAB["статусы_issue"].values()))
-ISSUE_TERMINAL = set(VOCAB["статусы_issue"]["терминальные"])
-FRAMING_STATUSES = set(itertools.chain.from_iterable(VOCAB["статусы_возражения"].values()))
-FRAMING_TERMINAL = set(VOCAB["статусы_возражения"]["терминальные"])
+def _at(table, *path):
+    """Read a nested value, or nothing if the row is gone.
+
+    These constants are built at import. When the mutation ratchet deletes the
+    row they read, a KeyError here turned into a *collection error* — the whole
+    module failed to load, every test "failed", and the mutant was scored as
+    caught for entirely the wrong reason. A missing row must break the tests
+    that check it, not the file that holds them.
+    """
+    for key in path:
+        if not isinstance(table, dict) or key not in table:
+            return {}
+        table = table[key]
+    return table
+
+
+RUN_STATES = set(_at(VOCAB, "состояния_прогона", "рабочие")) | set(
+    _at(VOCAB, "состояния_прогона", "терминальные"))
+RUN_TERMINAL = set(_at(VOCAB, "состояния_прогона", "терминальные"))
+ISSUE_STATUSES = set(itertools.chain.from_iterable(_at(VOCAB, "статусы_issue").values()))
+ISSUE_TERMINAL = set(_at(VOCAB, "статусы_issue", "терминальные"))
+FRAMING_STATUSES = set(itertools.chain.from_iterable(
+    _at(VOCAB, "статусы_возражения").values()))
+FRAMING_TERMINAL = set(_at(VOCAB, "статусы_возражения", "терминальные"))
 
 # Decisions that belong to exactly one channel. The round-8 blocker was
 # `подтвердить_постановку` sitting in contract E, which routes through the
 # author — a framing objection must never reach the author.
-FRAMING_ONLY = set(VOCAB["решения_по_возражению"]) - set(VOCAB["решения_по_issue"])
-ISSUE_ONLY = set(VOCAB["решения_по_issue"]) - set(VOCAB["решения_по_возражению"])
+FRAMING_ONLY = set(_at(VOCAB, "решения_по_возражению")) - set(_at(VOCAB, "решения_по_issue"))
+ISSUE_ONLY = set(_at(VOCAB, "решения_по_issue")) - set(_at(VOCAB, "решения_по_возражению"))
 
 
 def _reachable(edges, start):
@@ -742,6 +765,21 @@ def test_a_permission_is_granted_for_a_scope_and_not_for_a_name():
     thinner["шлюзы"]["ремонт_после_ревью_12"]["до_закрытия"].remove("Б1")
     assert block.scope_sha256(thinner) != before, "членство в шлюзе вне отпечатка"
 
+    # moving a block earlier changes what runs next while every field of every
+    # block stays identical
+    reordered = copy.deepcopy(plan)
+    reordered["порядок"].remove("БТ2")
+    reordered["порядок"].insert(reordered["порядок"].index("Б1"), "БТ2")
+    assert tables.blocks["БТ2"].scope_sha256(reordered) \
+        != tables.blocks["БТ2"].scope_sha256(plan), "место в порядке вне отпечатка"
+
+    # weakening a gate by swapping its precondition for an already-closed block
+    # removes the safety boundary without touching the guarded block's row
+    weakened = copy.deepcopy(plan)
+    weakened["шлюзы"]["изоляция_подтверждена"]["до_закрытия"] = ["Б0а"]
+    assert tables.blocks["Б3б"].scope_sha256(weakened) \
+        != tables.blocks["Б3б"].scope_sha256(plan), "содержимое шлюза вне отпечатка"
+
 
 def test_a_missing_scope_hash_is_not_a_wildcard():
     # `recorded is None` used to mean "covers anything", which turned every
@@ -818,6 +856,82 @@ def test_every_real_permission_actually_resolves():
         for entry in plan[registry]:
             problem = module.resolve_basis(entry["основание"])
             assert problem is None, f"{registry} {entry['блоки']}: {problem}"
+
+
+def test_the_review_protocol_is_written_down_not_remembered():
+    # Шесть кругов чтения прозы стоили больше, чем весь блок БК. Порядок
+    # критики — такое же правило, как остальные, и живёт в таблице.
+    protocol = BLOCKS["порядок_критики"]
+    assert "зелёной контрольной базе" in protocol["правило"], (
+        "без зелёной базы мёртвый мутант ничего не значит — это и был дефект 02.09")
+    assert "временной копии" in protocol["правило"]
+    assert len(protocol["классы_мутаций"]) >= 7
+    assert protocol["чего_не_найдёт"] == "отсутствующее_правило", (
+        "метод обязан называть свою границу, иначе им начнут закрывать всё")
+    assert protocol["почему"]
+
+
+def test_the_retry_budget_is_pinned_and_not_left_to_the_implementer():
+    # Found by the honest ratchet: every row of this rule could be deleted and
+    # nothing noticed. "Попытка повторяется" with no budget is exactly the shape
+    # that makes an implementer invent a spending policy for Anton's weekly
+    # limit on its own.
+    budget = VOCAB["повтор_невалидного_ответа"]
+    assert budget["максимум_на_ответ"] == 1
+    assert budget["область"] == "на_критика"
+    assert budget["тратит_бюджет"] is True, "бесплатный повтор = бесконечный повтор"
+    assert budget["порядок"], "недетерминированный порядок копит перекос вендора"
+    assert budget["оба_невалидны"], "случай «оба сразу» обязан иметь исход"
+    assert budget["сохранённый_валидный_ответ_не_повторять"] is True
+    assert budget["после_исчерпания"] in VOCAB["вердикты"]
+    # the counter has to survive a crash, so it lives where the journal is
+    assert budget["счётчик_живёт_в"] == "журнал_попыток"
+    assert set(VOCAB["попытка"]["ключ"]) >= {"критик", "попытка"}
+
+
+def test_the_cli_fails_when_it_prints_a_failure():
+    # `authority` printed «✗ отпечаток изоляции …» and returned 0, so a red
+    # result sailed straight through an `&&` chain. Isolation is now its own
+    # command with its own exit code — a stale proof must not block the
+    # offline blocks, but it must not be silent either.
+    module = import_tables_module()
+    script = Path(module.__file__)
+    # The invariant is environment-independent: whatever the state of the
+    # transcripts, the memory or the CLI versions, a printed ✗ must be a
+    # non-zero exit. `check` additionally has to be green everywhere, because
+    # it reads nothing but the tables.
+    for command in ("check", "authority", "isolation"):
+        done = subprocess.run([sys.executable, str(script), command],
+                              capture_output=True, text=True)
+        assert (done.returncode == 0) == ("✗" not in done.stdout), (
+            f"{command}: печатает отказ и возвращает успех\n{done.stdout}")
+        if command == "check":
+            assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_the_memory_receipt_names_the_current_canon_and_not_any_old_one(tmp_path, monkeypatch):
+    # Any historic canon commit used to pass, so memory could name a long
+    # superseded state and still look fresh.
+    module = import_tables_module()
+    plan = copy.deepcopy(module.load().plan)
+    current = module.canon_commit(plan)
+    if current is None:
+        pytest.skip("git недоступен")
+
+    home = tmp_path
+    note = home / "memory" / "project.md"
+    note.parent.mkdir(parents=True)
+    plan["проверка_памяти"] = {"файлы": [str(note)],
+                               "канон": plan["проверка_памяти"]["канон"]}
+
+    note.write_text(f"канон на коммите `{current[:7]}`", encoding="utf-8")
+    assert module.memory_receipt(plan, home) == []
+
+    note.write_text("канон на коммите `bb8ead7`", encoding="utf-8")
+    assert module.memory_receipt(plan, home), "устаревший коммит принят как свежий"
+
+    note.write_text("никаких ссылок", encoding="utf-8")
+    assert module.memory_receipt(plan, home)
 
 
 def test_the_isolation_gate_is_computed_and_not_declared(tmp_path, monkeypatch):

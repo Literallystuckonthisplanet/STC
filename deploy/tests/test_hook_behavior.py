@@ -588,3 +588,65 @@ def test_h19_ignores_subagents(tmp_path):
                tmp_path, STC_CORE=str(REPO / "core"), STC_MEMORY_ROOT=str(mem))
     assert res.returncode == 0
     assert res.stdout.strip() == ""
+
+
+def test_h01_blocks_sweeping_add_but_allows_explicit_paths(tmp_path):
+    """Сгребающая команда уносит чужое: индекс git общий на репозиторий.
+
+    Так 2026-09-02 хук H19 с тестами уехал внутрь чужого коммита про
+    Roundtable — историю чинить было уже нельзя, вторая сессия в ней писала.
+    """
+    sweep = _run("block-dangerous-git.sh",
+                 {"session_id": "behavior-sweep", "tool_input": {"command": "git add -A"}},
+                 tmp_path, USER_LANG="en")
+    explicit = _run("block-dangerous-git.sh",
+                    {"session_id": "behavior-sweep-2",
+                     "tool_input": {"command": "git add core/hooks/one.sh core/hooks/two.sh"}},
+                    tmp_path, USER_LANG="en")
+    try:
+        assert sweep.returncode == 2
+        assert "sweeps the WHOLE tree" in sweep.stderr
+        assert "worktree" in sweep.stderr
+        assert explicit.returncode == 0
+    finally:
+        for s in ("behavior-sweep", "behavior-sweep-2"):
+            Path(f"/tmp/stc-gitsweep-{s}").unlink(missing_ok=True)
+
+
+def test_h01_sweeping_commit_flags_are_caught_too(tmp_path):
+    """`commit -a` сгребает так же, как `add -A`, только в один шаг."""
+    for command in ("git commit -a -m wip", "git commit -am wip"):
+        session = f"behavior-{abs(hash(command))}"
+        res = _run("block-dangerous-git.sh",
+                   {"session_id": session, "tool_input": {"command": command}},
+                   tmp_path, USER_LANG="en")
+        Path(f"/tmp/stc-gitsweep-{session}").unlink(missing_ok=True)
+        assert res.returncode == 2, command
+        assert "sweeps the WHOLE tree" in res.stderr
+
+
+def test_h01_sweep_block_is_acknowledge_once(tmp_path):
+    """Первый коммит репозитория — законный случай; осознанный повтор проходит."""
+    payload = {"session_id": "behavior-sweep-ack", "tool_input": {"command": "git add --all"}}
+    first = _run("block-dangerous-git.sh", payload, tmp_path, USER_LANG="en")
+    second = _run("block-dangerous-git.sh", payload, tmp_path, USER_LANG="en")
+    Path("/tmp/stc-gitsweep-behavior-sweep-ack").unlink(missing_ok=True)
+    assert first.returncode == 2
+    assert second.returncode == 0
+
+
+def test_h07_directs_to_a_worktree_instead_of_asking_whose_wip_it_is(tmp_path):
+    """Сессия не может отличить свой WIP от чужого — значит и спрашивать нечего."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "someone-elses.txt").write_text("wip", encoding="utf-8")
+    res = _run("dirty-tree-guard.sh",
+               {"session_id": "behavior-worktree",
+                "tool_input": {"file_path": str(repo / "mine.txt")}},
+               tmp_path, USER_LANG="en", HARNESS_DIR=str(tmp_path / "nonexistent"))
+    for m in Path("/tmp").glob("stc-dirty-check-behavior-worktree-*"):
+        m.unlink(missing_ok=True)
+    assert res.returncode == 2
+    assert "git worktree add" in res.stderr
+    assert "add -A" in res.stderr

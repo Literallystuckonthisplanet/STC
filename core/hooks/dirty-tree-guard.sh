@@ -3,8 +3,11 @@
 #
 # On the FIRST edit in a given project repo during a session
 # (acknowledge-once, marker until exit):
-#   - 🔒 I09 dirty-tree: a dirty tree → block once (uncommitted work may be a
-#       parallel session's WIP — resolve/commit/unscramble BEFORE starting).
+#   - 🔒 I09/I07 dirty-tree: a dirty tree → block once. The uncommitted work may
+#       belong to a parallel session, and a session cannot tell whose it is —
+#       so the block does not ask, it directs: take a worktree of your own.
+#       Answering the old "is this yours?" question by eye produced a mixed
+#       commit on 2026-09-02 (hook H19 swallowed by a Roundtable commit).
 #   - 💉 I07 worktree (FR-23): >1 git-worktree → nudge `git worktree list`
 #       (same repo in flight at a parallel session; a worktree of the same
 #       area → merge BEFORE starting).
@@ -52,11 +55,11 @@ WT_NOTE=""
 if [ -n "$STATUS" ]; then
   case "$USER_LANG" in
     ru)
-      echo "BLOCKED (один раз): грязное дерево в '$ROOT' перед первой правкой (I09). Незакоммиченное ниже — это ТВОЙ WIP или чужой (параллельная сессия)? Реши/закоммить/разгреби до старта, иначе смешаешь изменения.${WT_NOTE} Повтори правку после проверки." >&2
+      echo "BLOCKED (один раз): грязное дерево в '$ROOT' перед первой правкой (I09/I07). Спрашивать «твой это WIP или чужой» бесполезно — из сессии это неразличимо, а 02.09 такой ответ на глаз стоил смешанного коммита. Решение принято: параллельные работы разводятся по worktree. Если незакоммиченное ниже не твоё — не разгребай его, а уйди в свой: 'git worktree add ../$(basename "$ROOT")-<задача> -b <ветка>' и работай там (скилл worktree). Если твоё — доведи и закоммить ЯВНЫМИ путями, без add -A.${WT_NOTE} Повтори правку после решения." >&2
       echo "--- git status --porcelain ---" >&2
       ;;
     *)
-      echo "BLOCKED (once): dirty tree in '$ROOT' before the first edit (I09). The uncommitted work below — is it YOUR WIP or someone else's (a parallel session)? Resolve/commit/unscramble before starting, or you'll mix changes.${WT_NOTE} Retry the edit after checking." >&2
+      echo "BLOCKED (once): dirty tree in '$ROOT' before the first edit (I09/I07). Asking whether this is YOUR WIP is useless — a session cannot tell, and answering by eye cost a mixed commit on 2026-09-02. The decision stands: parallel work goes into worktrees. If the uncommitted work below is not yours, do not unscramble it — take your own: 'git worktree add ../$(basename "$ROOT")-<task> -b <branch>' and work there (worktree skill). If it is yours, finish it and commit by EXPLICIT paths, never add -A.${WT_NOTE} Retry the edit once decided." >&2
       echo "--- git status --porcelain ---" >&2
       ;;
   esac

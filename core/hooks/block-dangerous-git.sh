@@ -136,6 +136,30 @@ $(git -C "$GIT_DIR_ARG" diff --no-color 2>/dev/null | grep '^+' | grep -v '^+++'
   fi
 fi
 
+# B1c — сгребающие команды: `git add -A|.|--all`, `git commit -a|-am` (I07).
+#
+# 2026-09-02: параллельная сессия сделала такой add в общем репозитории и
+# унесла в свой коммит чужую работу — хук H19 с тестами уехал под заголовком
+# про Roundtable. Историю в таком случае уже не починить безопасно: она общая,
+# и вторая сессия в ней продолжает писать.
+#
+# Индекс git один на репозиторий, поэтому «мои файлы» и «чужие» в нём не
+# различимы: сгребающая команда по определению берёт и то, и другое. Отсюда
+# требование явных путей — коммит должен называть то, что коммитит.
+# Настоящая изоляция параллельных работ — worktree (I07), это лишь замок.
+if echo "$NORM" | grep -qiE 'git[[:space:]]+add[[:space:]]+(-A|--all|\.)([[:space:]]|$)' || \
+   echo "$NORM" | grep -qiE 'git[[:space:]]+commit[^|;&]*[[:space:]](-a|-am|--all)([[:space:]]|$)'; then
+  SWEEP_ACK="/tmp/stc-gitsweep-${SESSION_ID:-nosession}"
+  if [ ! -f "$SWEEP_ACK" ]; then
+    : > "$SWEEP_ACK"   # ack-once: осознанный повтор пройдёт
+    case "$USER_LANG" in
+      ru) echo "BLOCKED (один раз, I07): '$COMMAND' сгребает ВСЁ дерево. Индекс git общий на репозиторий — если рядом работает вторая сессия, её файлы уедут в твой коммит под твоим заголовком (так 02.09 хук H19 ушёл в чужой коммит про Roundtable, и починить историю было уже нельзя). Назови пути явно: 'git add path1 path2' или 'git commit -F - path1 path2'. Параллельные работы разводи по worktree — это единственная настоящая изоляция. Правда нужно всё дерево (первый коммит репо) — повтори команду." >&2 ;;
+      *)  echo "BLOCKED (once, I07): '$COMMAND' sweeps the WHOLE tree. The git index is shared per repository — if a second session is working alongside, its files land in your commit under your subject line (that is how hook H19 ended up inside a Roundtable commit on 2026-09-02, past safe repair). Name the paths: 'git add path1 path2' or 'git commit -F - path1 path2'. Isolate parallel work in worktrees — that is the only real separation. If you truly need the whole tree (a repo's first commit) — repeat the command." >&2 ;;
+    esac
+    exit 2
+  fi
+fi
+
 # B2 — I17 verify-gate + I09 commit-invariants before commit (JIT-inject, NOT block, FR-5).
 if echo "$NORM" | grep -qiE 'git[[:space:]]+commit'; then
   if echo "$NORM" | grep -qiE '(--no-verify|[[:space:]]-n([[:space:]]|$))'; then

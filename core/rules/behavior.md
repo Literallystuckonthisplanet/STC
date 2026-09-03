@@ -23,8 +23,10 @@ skills.
 <!-- I07 -->
 
 - Before work → inspect existing worktrees and dirty state.
-- Independent files → parallel work is allowed. Shared files, fuzzy scope, or
-  overlapping concerns → isolate in a worktree.
+- A second session on the same repository → a worktree, always. Disjoint files
+  do not make it safe: the git index is shared, so one sweeping `add` carries
+  the other session's work into your commit.
+- Commit by explicit paths; `git add -A` / `commit -a` are blocked once (H01).
 - Parallel writers must have disjoint write scopes. Overlap or an unexpected
   shared-file change → stop that stream and return a fork to main.
 - Merge one branch at a time and verify after each merge. Detail → playbook

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STC — Standard Template Construct</title>
+<meta name="description" content="One source of truth for AI agent infrastructure. Author your agent's rules, memory, skills, hooks and tools once — deploy them to any harness.">
+<style>
+  :root{
+    --bg:#0c0d10; --bg2:#111318; --panel:#14161c; --line:#23262f;
+    --fg:#e7e9ee; --muted:#9aa0ac; --faint:#6b7280;
+    --accent:#9a6bff; --accent2:#4fd1c5; --code:#0a0b0e;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);
+       line-height:1.6;-webkit-font-smoothing:antialiased;font-size:16px}
+  a{color:inherit}
+  .wrap{max-width:960px;margin:0 auto;padding:0 24px}
+  .mono{font-family:var(--mono)}
+  .accent{color:var(--accent)}
+  .muted{color:var(--muted)}
+
+  /* nav */
+  header.nav{position:sticky;top:0;z-index:10;backdrop-filter:blur(10px);
+    background:rgba(12,13,16,.72);border-bottom:1px solid var(--line)}
+  .nav .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
+  .brand{font-family:var(--mono);font-weight:600;letter-spacing:.02em}
+  .brand .dot{color:var(--accent)}
+  .nav a.ghlink{font-family:var(--mono);font-size:13px;color:var(--muted);
+    text-decoration:none;border:1px solid var(--line);padding:7px 13px;border-radius:7px;transition:.15s}
+  .nav a.ghlink:hover{color:var(--fg);border-color:var(--accent)}
+
+  /* hero */
+  .hero{padding:88px 0 64px;border-bottom:1px solid var(--line);
+    background:radial-gradient(1200px 400px at 50% -10%,rgba(154,107,255,.10),transparent 70%)}
+  .eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent);margin:0 0 18px}
+  h1{font-size:clamp(30px,5.2vw,52px);line-height:1.08;margin:0 0 20px;
+    letter-spacing:-.02em;font-weight:680}
+  .lede{font-size:clamp(17px,2.3vw,20px);color:var(--muted);max-width:640px;margin:0 0 30px}
+  .lede b{color:var(--fg);font-weight:600}
+  .cta{display:flex;gap:12px;flex-wrap:wrap}
+  .btn{font-family:var(--mono);font-size:14px;text-decoration:none;padding:11px 18px;border-radius:8px;
+    border:1px solid var(--line);transition:.15s;display:inline-flex;align-items:center;gap:9px}
+  .btn.primary{background:var(--accent);color:#0c0d10;border-color:var(--accent);font-weight:600}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.ghost:hover{border-color:var(--accent);color:#fff}
+
+  .lore{margin-top:44px;padding:18px 20px;border-left:2px solid var(--line);
+    color:var(--faint);font-size:14.5px;max-width:660px;font-style:italic}
+
+  /* sections */
+  section{padding:64px 0;border-bottom:1px solid var(--line)}
+  .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--faint);margin:0 0 10px}
+  h2{font-size:clamp(23px,3.4vw,32px);margin:0 0 14px;letter-spacing:-.01em;font-weight:660}
+  .section-lede{color:var(--muted);max-width:680px;margin:0 0 36px;font-size:16.5px}
+
+  .grid{display:grid;gap:18px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:760px){.g3,.g2{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
+  .card h3{margin:0 0 10px;font-size:17px;font-weight:620;display:flex;align-items:center;gap:9px}
+  .card .num{font-family:var(--mono);font-size:12px;color:var(--accent);
+    border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+  .card p{margin:0;color:var(--muted);font-size:14.5px}
+  .card p + p{margin-top:10px}
+
+  pre{background:var(--code);border:1px solid var(--line);border-radius:12px;padding:20px;
+    overflow-x:auto;font-family:var(--mono);font-size:13.5px;line-height:1.7;color:#cdd3df;margin:0}
+  pre .c{color:var(--faint)}
+  pre .k{color:var(--accent2)}
+  .flow{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-family:var(--mono);
+    font-size:14px;color:var(--muted);margin-top:26px}
+  .flow .step{border:1px solid var(--line);border-radius:8px;padding:9px 14px;background:var(--panel)}
+  .flow .arrow{color:var(--accent)}
+
+  /* interconnection diagram */
+  .diagram{margin:34px 0 6px;background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:26px 24px 22px}
+  .diagram svg{width:100%;height:auto;display:block;max-width:660px;margin:0 auto}
+  .pillar-note{color:var(--muted);font-size:15px;line-height:1.65;margin:18px auto 0;max-width:660px}
+  .pillar-note b{color:var(--fg);font-weight:600}
+  .card .feeds{margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--accent2)}
+
+  /* services */
+  .svc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;position:relative}
+  .svc .tag{position:absolute;top:15px;right:15px;font-family:var(--mono);font-size:10.5px;color:var(--muted);
+    border:1px solid var(--line);border-radius:20px;padding:3px 9px}
+  .svc .tag.badge-open{color:var(--accent)}
+  .svc h3{margin:0 0 8px;font-size:16px;font-weight:620;padding-right:78px}
+  .svc p{margin:0;color:var(--muted);font-size:14.5px}
+
+  ul.feat{list-style:none;padding:0;margin:0;display:grid;gap:12px}
+  ul.feat li{padding-left:26px;position:relative;color:var(--muted);font-size:15px}
+  ul.feat li::before{content:"▹";position:absolute;left:4px;color:var(--accent)}
+  ul.feat li b{color:var(--fg);font-weight:600}
+
+  .stats{display:flex;gap:14px;flex-wrap:wrap;margin-top:30px}
+  .stat{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;padding:18px 20px}
+  .stat .n{font-family:var(--mono);font-size:26px;font-weight:600;color:var(--fg)}
+  .stat .l{color:var(--faint);font-size:13px;margin-top:4px}
+
+  footer{padding:52px 0 60px}
+  footer .wrap{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:flex-start}
+  footer .fcol h4{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--faint);margin:0 0 12px}
+  footer a{color:var(--muted);text-decoration:none;display:block;font-size:14.5px;margin-bottom:8px;transition:.15s}
+  footer a:hover{color:var(--accent)}
+  footer .lic{color:var(--faint);font-size:13px;max-width:420px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <span class="brand">STC<span class="dot">.</span>core</span>
+    <a class="ghlink" href="https://github.com/Literallystuckonthisplanet/STC" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Standard Template Construct</p>
+    <h1>One source of truth for<br>AI&nbsp;agent&nbsp;infrastructure.</h1>
+    <p class="lede">Your coding agent's <b>rules, memory, skills, hooks, and tools</b> —
+      authored once in a harness-neutral form, then deployed into any concrete harness.
+      Edit in one place; <b>drift becomes impossible by construction.</b></p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/Literallystuckonthisplanet/STC" target="_blank" rel="noopener">View on GitHub</a>
+      <a class="btn ghost" href="#why">Why it exists</a>
+    </div>
+    <p class="lore">In Warhammer&nbsp;40k lore, an STC is a relic that emits complete, reproducible
+      blueprints adapted to the materials at hand. This project borrows the idea for your agent's
+      configuration.</p>
+  </div>
+</div>
+
+<section id="why">
+  <div class="wrap">
+    <p class="kicker">Why</p>
+    <h2>One system, not three features</h2>
+    <p class="section-lede">STC rests on three pillars. Two are engines — a single source of knowledge
+      and an encoded software lifecycle; both cut what the agent has to spend. The third, a lean token
+      economy, is the result they add up to — reinforced by a few dedicated savings of its own.</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 760 332" role="img" aria-label="Knowledge and an encoded lifecycle both feed a leaner token economy, which also has its own direct savings">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" style="fill:var(--accent)"/>
+          </marker>
+        </defs>
+        <!-- two engines converge downward into the result -->
+        <path d="M235 90 Q252 152 340 200" style="fill:none;stroke:var(--accent);stroke-width:1.8;opacity:.7" marker-end="url(#ah)"/>
+        <path d="M525 90 Q508 152 420 200" style="fill:none;stroke:var(--accent);stroke-width:1.8;opacity:.7" marker-end="url(#ah)"/>
+        <text x="380" y="150" text-anchor="middle" style="fill:var(--faint);font-family:var(--mono);font-size:12.5px;letter-spacing:1px">results in</text>
+        <!-- token economy's own direct mechanics, feeding from below -->
+        <path d="M380 306 L380 270" style="fill:none;stroke:var(--accent);stroke-width:1.5;opacity:.5;stroke-dasharray:5 3" marker-end="url(#ah)"/>
+        <text x="380" y="324" text-anchor="middle" style="fill:var(--faint);font-family:var(--mono);font-size:11.5px">+ direct mechanics · output→file · offload · cheapest model</text>
+        <g>
+          <rect x="66" y="26" width="258" height="62" rx="12" style="fill:var(--panel);stroke:var(--line)"/>
+          <text x="195" y="55" text-anchor="middle" style="fill:var(--accent);font-family:var(--sans);font-size:18px;font-weight:600">Single source of knowledge</text>
+          <text x="195" y="76" text-anchor="middle" style="fill:var(--muted);font-family:var(--mono);font-size:13px">memory · wiki-links · ADRs</text>
+        </g>
+        <g>
+          <rect x="436" y="26" width="258" height="62" rx="12" style="fill:var(--panel);stroke:var(--line)"/>
+          <text x="565" y="55" text-anchor="middle" style="fill:var(--accent2);font-family:var(--sans);font-size:18px;font-weight:600">Encoded SDLC</text>
+          <text x="565" y="76" text-anchor="middle" style="fill:var(--muted);font-family:var(--mono);font-size:13px">spec · test · review · docs</text>
+        </g>
+        <g>
+          <rect x="251" y="204" width="258" height="62" rx="12" style="fill:var(--panel);stroke:var(--line)"/>
+          <text x="380" y="233" text-anchor="middle" style="fill:var(--fg);font-family:var(--sans);font-size:18px;font-weight:600">Lean token economy</text>
+          <text x="380" y="254" text-anchor="middle" style="fill:var(--muted);font-family:var(--mono);font-size:13px">the result of both</text>
+        </g>
+      </svg>
+      <p class="pillar-note"><b>Knowledge</b> lets the agent look a fact up instead of re-deriving it —
+        fewer tokens spent searching. <b>The SDLC</b> keeps every change specced, tested and reviewed on
+        the way in, docs in one place — so maintenance and edits never spiral. The <b>token economy</b> is
+        what both add up to — plus a few dedicated mechanics of its own; and as a bonus, the work itself
+        comes out faster and more coherent.</p>
+    </div>
+
+    <div class="grid g3">
+      <div class="card">
+        <h3><span class="num">01</span> Single source of knowledge</h3>
+        <p>Local-first markdown memory with <span class="mono">[[wiki-links]]</span> and link-integrity
+          checking. The agent stops re-deriving hard-won project knowledge every session — and the same
+          knowledge travels across model providers unchanged.</p>
+        <p class="feeds">→ fewer search &amp; derivation tokens</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">02</span> Encoded SDLC · SDD → TDD</h3>
+        <p>A Plan → Do → Verify loop, spec &amp; task generators, a TDD skill, and a fresh-context
+          three-agent review (correctness + security + QA) feeding a self-improving defect ledger.
+          Changes ship small, tested and documented.</p>
+        <p class="feeds">→ less rework, cheaper maintenance</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">03</span> Lean token economy</h3>
+        <p>The result of the first two — plus hygiene mechanics: raw output routed to files, expensive
+          jobs offloaded to sub-agents, web search isolated in one research agent, each task on the
+          cheapest capable model.</p>
+        <p class="feeds">→ less waste, faster sessions</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <p class="kicker">How it works</p>
+    <h2>Author once. Deploy to any harness.</h2>
+    <p class="section-lede">You write capabilities once, in a harness-neutral form, in <span class="mono">core/</span>.
+      Adapters declare how each harness realises them. A Python deploy pipeline renders the result into the
+      concrete harness directory — adapted to its format.</p>
+    <pre><span class="c"># write once, in harness-neutral form</span>
+STC/
+├── <span class="k">core/</span>        <span class="c"># universal blueprints — rules, memory, skills, hooks, commands</span>
+├── <span class="k">user/</span>        <span class="c"># your private config — profile, project notes, secrets</span>
+├── <span class="k">adapters/</span>    <span class="c"># per-harness descriptors — how core/ maps onto a target</span>
+└── <span class="k">deploy/</span>      <span class="c"># the pipeline — render · apply · check · restore</span>
+
+<span class="c"># then reproduce it into the harness you use</span>
+$ python deploy/deploy.py apply --target claude</pre>
+    <div class="flow">
+      <span class="step">edit core/</span>
+      <span class="arrow">→</span>
+      <span class="step">render + adapt</span>
+      <span class="arrow">→</span>
+      <span class="step">~/.claude</span>
+      <span class="step">~/.zcode</span>
+      <span class="step">…any harness</span>
+    </div>
+    <p class="section-lede" style="margin-top:34px">Two axes stay orthogonal: the <b>harness</b> (Claude Code,
+      others) and the <b>provider</b> (the model behind it). The same blueprints deploy behind a Claude model
+      today and a different model tomorrow, with no rewrite. The model is an engine you swap; the know-how is
+      the same.</p>
+  </div>
+</section>
+
+<section id="inside">
+  <div class="wrap">
+    <p class="kicker">What's inside</p>
+    <h2>Built for and around Claude Code</h2>
+    <div class="grid g2">
+      <ul class="feat">
+        <li><b>19 hooks</b> — token-economy, secret-leak guards, git safety, output hygiene, review gates.</li>
+        <li><b>Always-context rules</b> — behavior, task-loop, session rules injected once per session.</li>
+        <li><b>Local-first memory</b> — markdown files, wiki-linked, no external database to lose or migrate.</li>
+      </ul>
+      <ul class="feat">
+        <li><b>Skills, agents, commands</b> — typed sub-agents where the harness supports them; the capability degrades gracefully where it doesn't.</li>
+        <li><b>×3 review pipeline</b> — unbiased fresh-context review with a PASS / NEEDS-FIXES / STOP verdict.</li>
+        <li><b>Idempotent, non-destructive deploy</b> — collision-proof artifacts, namespaced merges, backups before any write.</li>
+      </ul>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="n">1×</div><div class="l">source of truth</div></div>
+      <div class="stat"><div class="n">N</div><div class="l">harness targets</div></div>
+      <div class="stat"><div class="n">19</div><div class="l">hooks</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">runtime daemons</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="who">
+  <div class="wrap">
+    <p class="kicker">Who it's for</p>
+    <h2>Made for people who run agents in production</h2>
+    <div class="grid g3">
+      <div class="card">
+        <h3>Solo devs &amp; small teams</h3>
+        <p>Anyone driving an AI coding agent daily who wants it to stop forgetting, stop burning tokens,
+          and follow a real lifecycle instead of vibes.</p>
+      </div>
+      <div class="card">
+        <h3>Teams standardising agents</h3>
+        <p>One source of truth for rules, memory, skills and hooks across a codebase and across model
+          providers — no per-machine drift, no vendor lock-in.</p>
+      </div>
+      <div class="card">
+        <h3>The engine behind our services</h3>
+        <p>The same pipeline powers our managed Audit and Refactor offerings below — STC is both the
+          open tool and the product engine.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="model">
+  <div class="wrap">
+    <p class="kicker">Open core + services</p>
+    <h2>Self-host the core. Or run it on your repo.</h2>
+    <p class="section-lede">The engine is open source — install it from the public repository and run it
+      yourself. On top of it we're building two managed, Claude-powered services that point the same
+      review-and-refactor pipeline at your codebase.</p>
+    <div class="grid g3">
+      <div class="svc">
+        <span class="tag badge-open">Open source</span>
+        <h3>STC Core</h3>
+        <p>The full engine, AGPL-3.0. Self-install from the public repo and deploy it to your harness.</p>
+      </div>
+      <div class="svc">
+        <span class="tag">In development</span>
+        <h3>Repo Audit</h3>
+        <p>Point STC's fresh-context review pipeline — correctness, security, architecture — at any
+          repository and get a ranked, verified findings report.</p>
+      </div>
+      <div class="svc">
+        <span class="tag">In development</span>
+        <h3>Refactor</h3>
+        <p>Automated, reviewed refactoring: deepen modules, cut coupling, raise testability — every
+          change specced and verified before it lands.</p>
+      </div>
+    </div>
+    <p class="pillar-note" style="margin-top:26px"><b>The flywheel.</b> Every audit enriches a shared
+      library of checks, abuse-cases and defect patterns. The more repositories run through it, the more
+      the pipeline catches — the product gets sharper with use.</p>
+  </div>
+</section>
+
+<section id="principles">
+  <div class="wrap">
+    <p class="kicker">Principles</p>
+    <h2>Guiding constraints</h2>
+    <div class="grid g2">
+      <div class="card"><p><b style="color:var(--fg)">Minimal third-party tools.</b> Maximal use of the
+        harness's own capabilities — native hooks, native imports, native sub-agents. No runtime daemon,
+        no database, no framework.</p></div>
+      <div class="card"><p><b style="color:var(--fg)">One source of truth, many realisations.</b> A
+        capability is written once; each adapter declares how a harness realises it. You never edit the
+        live harness directory by hand.</p></div>
+      <div class="card"><p><b style="color:var(--fg)">Non-destructive by construction.</b> Collision-proof
+        suffixes, namespaced JSON merges that refuse on genuine conflict, a backup before every write.</p></div>
+      <div class="card"><p><b style="color:var(--fg)">Degrade gracefully.</b> A harness that lacks a native
+        form keeps the capability — only the form is absent, never the know-how.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="fcol">
+      <div class="brand" style="font-size:18px;margin-bottom:12px">STC<span class="dot">.</span>core</div>
+      <p class="lic">Open-source infrastructure for AI coding agents.<br>
+        Dual-licensed: <b style="color:var(--muted)">AGPL-3.0</b> for open-source use,
+        commercial license available for closed use.</p>
+    </div>
+    <div class="fcol">
+      <h4>Project</h4>
+      <a href="https://github.com/Literallystuckonthisplanet/STC" target="_blank" rel="noopener">GitHub repository ↗</a>
+      <a href="https://github.com/Literallystuckonthisplanet/STC/blob/main/README.md" target="_blank" rel="noopener">Documentation ↗</a>
+      <a href="https://github.com/Literallystuckonthisplanet/STC/blob/main/LICENSING.md" target="_blank" rel="noopener">Licensing ↗</a>
+    </div>
+    <div class="fcol">
+      <h4>Contact</h4>
+      <a href="mailto:hello@stc-core.com">hello@stc-core.com</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

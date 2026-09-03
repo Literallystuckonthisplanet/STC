@@ -37,6 +37,40 @@ ROOT=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ -z "$ROOT" ] && exit 0
 
 REPOHASH=$(printf '%s' "$ROOT" | shasum | cut -c1-12)
+
+# --- метка активной сессии (I07) --------------------------------------------
+# Замок H01 не даёт УНЕСТИ чужое, но не разводит сессии заранее: проверка
+# грязного дерева молчит, если вторая сессия придёт на чистое. Метка закрывает
+# именно это — репозиторий занят, приходи со своим worktree.
+#
+# Продлевается при каждой правке, а не только при первой: между правками бывают
+# долгие паузы (обсуждение), и метка не должна протухать под работающей
+# сессией. Срок годности — 120 минут: столько живёт самая долгая пауза, что я
+# видел, и настолько же умершая сессия задержит репозиторий. Снять руками
+# сказано в самом сообщении: гадать, жив ли владелец, из хука нельзя.
+#
+# Субагент не считается чужой сессией: у него свой session_id, но работает он
+# от имени основной, и без этой ветки первый же builder блокировал бы себя.
+AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null)
+CLAIM="/tmp/stc-repo-claim-${REPOHASH}"
+if [ -z "$AGENT_ID" ]; then
+  NOW=$(date +%s)
+  if [ -f "$CLAIM" ]; then
+    OWNER=$(head -1 "$CLAIM" 2>/dev/null)
+    STAMP=$(sed -n '2p' "$CLAIM" 2>/dev/null)
+    AGE=$(( NOW - ${STAMP:-0} ))
+    if [ "$OWNER" != "$SESSION" ] && [ "$AGE" -lt 7200 ]; then
+      MINS=$(( AGE / 60 ))
+      case "$USER_LANG" in
+        ru) echo "BLOCKED (I07): в '$ROOT' уже работает другая сессия (отметилась $MINS мин назад). Индекс git общий — две сессии в одном дереве смешивают коммиты (так 02.09 хук H19 уехал в чужой коммит). Возьми свой worktree: 'git worktree add ../$(basename "$ROOT")-<задача> -b <ветка>' и правь там. Та сессия точно мертва — сними метку: 'rm $CLAIM' и повтори." >&2 ;;
+        *)  echo "BLOCKED (I07): another session is already working in '$ROOT' (claimed $MINS min ago). The git index is shared — two sessions in one tree mix commits (that is how hook H19 landed in someone else's commit on 2026-09-02). Take your own worktree: 'git worktree add ../$(basename "$ROOT")-<task> -b <branch>' and edit there. If that session is certainly dead — drop the claim: 'rm $CLAIM' and retry." >&2 ;;
+      esac
+      exit 2
+    fi
+  fi
+  printf '%s\n%s\n' "$SESSION" "$NOW" > "$CLAIM"
+fi
+
 MARKER="/tmp/stc-dirty-check-${SESSION}-${REPOHASH}"
 [ -f "$MARKER" ] && exit 0
 

@@ -650,3 +650,106 @@ def test_h07_directs_to_a_worktree_instead_of_asking_whose_wip_it_is(tmp_path):
     assert res.returncode == 2
     assert "git worktree add" in res.stderr
     assert "add -A" in res.stderr
+
+
+def _repo_claim(repo):
+    """Путь метки: тот же хеш пути, что считает хук."""
+    digest = subprocess.run(["shasum"], input=str(repo), text=True,
+                            capture_output=True).stdout[:12]
+    return Path(f"/tmp/stc-repo-claim-{digest}")
+
+
+def _fresh_repo(tmp_path, name="repo"):
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    return repo
+
+
+def test_h07_claims_the_repo_and_turns_away_a_second_session(tmp_path):
+    """Замок H01 не даёт унести чужое, но не разводит сессии заранее.
+
+    На чистом дереве проверка грязи молчит, и вторая сессия спокойно садится
+    в то же дерево. Метка закрывает именно этот зазор.
+    """
+    repo = _fresh_repo(tmp_path)
+    claim = _repo_claim(repo)
+    claim.unlink(missing_ok=True)
+    env = {"USER_LANG": "en", "HARNESS_DIR": str(tmp_path / "none")}
+    first = _run("dirty-tree-guard.sh",
+                 {"session_id": "session-one",
+                  "tool_input": {"file_path": str(repo / "a.txt")}}, tmp_path, **env)
+    second = _run("dirty-tree-guard.sh",
+                  {"session_id": "session-two",
+                   "tool_input": {"file_path": str(repo / "b.txt")}}, tmp_path, **env)
+    try:
+        assert first.returncode == 0, first.stderr
+        assert claim.exists()
+        assert claim.read_text().splitlines()[0] == "session-one"
+        assert second.returncode == 2
+        assert "another session is already working" in second.stderr
+        assert "git worktree add" in second.stderr
+    finally:
+        claim.unlink(missing_ok=True)
+        for m in Path("/tmp").glob("stc-dirty-check-session-*"):
+            m.unlink(missing_ok=True)
+
+
+def test_h07_claim_does_not_block_its_own_session(tmp_path):
+    repo = _fresh_repo(tmp_path, "own")
+    claim = _repo_claim(repo)
+    claim.unlink(missing_ok=True)
+    env = {"USER_LANG": "en", "HARNESS_DIR": str(tmp_path / "none")}
+    payload = {"session_id": "same-session",
+               "tool_input": {"file_path": str(repo / "a.txt")}}
+    first = _run("dirty-tree-guard.sh", payload, tmp_path, **env)
+    second = _run("dirty-tree-guard.sh", payload, tmp_path, **env)
+    try:
+        assert first.returncode == 0
+        assert second.returncode == 0
+    finally:
+        claim.unlink(missing_ok=True)
+        for m in Path("/tmp").glob("stc-dirty-check-same-session-*"):
+            m.unlink(missing_ok=True)
+
+
+def test_h07_stale_claim_is_taken_over(tmp_path):
+    """Умершая сессия не должна держать репозиторий вечно."""
+    repo = _fresh_repo(tmp_path, "stale")
+    claim = _repo_claim(repo)
+    claim.write_text("long-gone\n1\n", encoding="utf-8")  # отметка 1970 года
+    res = _run("dirty-tree-guard.sh",
+               {"session_id": "newcomer", "tool_input": {"file_path": str(repo / "a.txt")}},
+               tmp_path, USER_LANG="en", HARNESS_DIR=str(tmp_path / "none"))
+    try:
+        assert res.returncode == 0, res.stderr
+        assert claim.read_text().splitlines()[0] == "newcomer"
+    finally:
+        claim.unlink(missing_ok=True)
+        for m in Path("/tmp").glob("stc-dirty-check-newcomer-*"):
+            m.unlink(missing_ok=True)
+
+
+def test_h07_subagent_neither_claims_nor_is_turned_away(tmp_path):
+    """У субагента свой session_id, но работает он от имени основной сессии.
+
+    Без этой ветки первый же builder блокировал бы сам себя меткой родителя.
+    """
+    repo = _fresh_repo(tmp_path, "withsub")
+    claim = _repo_claim(repo)
+    claim.unlink(missing_ok=True)
+    env = {"USER_LANG": "en", "HARNESS_DIR": str(tmp_path / "none")}
+    _run("dirty-tree-guard.sh",
+         {"session_id": "main-session", "tool_input": {"file_path": str(repo / "a.txt")}},
+         tmp_path, **env)
+    sub = _run("dirty-tree-guard.sh",
+               {"session_id": "builder-session", "agent_id": "builder-1",
+                "tool_input": {"file_path": str(repo / "b.txt")}}, tmp_path, **env)
+    try:
+        assert sub.returncode == 0, sub.stderr
+        assert claim.read_text().splitlines()[0] == "main-session"
+    finally:
+        claim.unlink(missing_ok=True)
+        for m in Path("/tmp").glob("stc-dirty-check-*session-*"):
+            m.unlink(missing_ok=True)

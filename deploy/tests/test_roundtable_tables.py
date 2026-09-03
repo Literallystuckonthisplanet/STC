@@ -858,6 +858,46 @@ def test_every_real_permission_actually_resolves():
             assert problem is None, f"{registry} {entry['блоки']}: {problem}"
 
 
+def test_the_idea_stage_vocabularies_are_closed_sets():
+    # Found by the honest ratchet: every row of these three could be deleted
+    # and nothing noticed. They are the contract БИ has to implement, so a
+    # silently shrinking vocabulary would let the implementer invent values.
+    assert VOCAB["оценка_критерия"] == ["pass", "fail", "unknown"], (
+        "третье значение — не украшение: ничья не решается в пользу критика")
+    assert VOCAB["состояния_кандидата"] == ["годен", "непроходной", "неясен"]
+    assert VOCAB["отношение_механизмов"] == ["same", "different", "unknown"], (
+        "«не знаю» обязано быть выразимым, иначе критик вынужден соврать")
+    assert VOCAB["выбор_кандидата_sentinel"] == "нет_проходящего", (
+        "без sentinel честный ответ «все три плохи» невыразим")
+
+
+def test_a_reopened_block_keeps_the_permission_it_was_first_started_under():
+    # The audit trail is the point: Б1 and Б2 were started on Anton's word in
+    # August, then reopened. Dropping those rows would erase why they were ever
+    # begun, and the live grant would look like the only thing that ever was.
+    # Not a loop over reopened blocks: БК was reopened under the grant that is
+    # still live, so it has no superseded permission to preserve. The rows that
+    # matter are the August ones — the word that started Б1 and Б2 before their
+    # scope changed and the grant stopped covering them.
+    started_under = {b: g["основание"]["native_uuid"]
+                     for g in BLOCKS["история_разрешений"] for b in g["блоки"]}
+    assert started_under.get("Б1") == "c25c3feb-8ffd-4efb-ab8b-bbfc12ccac40", (
+        "«ну давай дальше делай Б1» — чем блок начинался, стирать нельзя")
+    assert started_under.get("Б2") == "126e123a-f916-4d35-822d-1019830a5216", (
+        "«делай дальше» — та самая реплика, которую я однажды объявил выдуманной")
+    module = import_tables_module()
+    tables = module.load()
+    for name in ("Б1", "Б2"):
+        assert tables.blocks[name].state == "переоткрыт"
+
+
+def test_a_drifted_fingerprint_closes_the_gate_rather_than_warning():
+    # The field says what a mismatch *does*. "Warn" would make the whole
+    # fingerprint decorative, which is what it already was once.
+    assert BLOCKS["отпечаток_изоляции"]["расхождение"] == "закрывает_шлюз"
+    assert BLOCKS["отпечаток_изоляции"]["проверяет_блок"] in BLOCKS["блоки"]
+
+
 def test_the_review_protocol_is_written_down_not_remembered():
     # Шесть кругов чтения прозы стоили больше, чем весь блок БК. Порядок
     # критики — такое же правило, как остальные, и живёт в таблице.
@@ -866,6 +906,9 @@ def test_the_review_protocol_is_written_down_not_remembered():
         "без зелёной базы мёртвый мутант ничего не значит — это и был дефект 02.09")
     assert "временной копии" in protocol["правило"]
     assert len(protocol["классы_мутаций"]) >= 7
+    steps = [next(iter(step)) for step in protocol["шаги"]]
+    assert steps == ["прогнать_имеющееся", "ломать_на_временной_копии",
+                     "отчёт_таблицей"], "порядок шагов — часть правила, а не список"
     assert protocol["чего_не_найдёт"] == "отсутствующее_правило", (
         "метод обязан называть свою границу, иначе им начнут закрывать всё")
     assert protocol["почему"]

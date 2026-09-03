@@ -4,13 +4,21 @@
 # Never commit real user data / secrets. Templates (the *.example.* files)
 # ARE committed so the repo is usable; the real files they spawn are ignored.
 #
-# Ignoring by exact filename (not the whole user/projects/ dir) so the
-# template user/projects/example.example.md stays tracked.
+# user/ is DENY-BY-DEFAULT, templates are allowed back in by exception.
+#
+# It used to list the personal files by name, and that silently failed open:
+# anything new in user/ was tracked unless someone remembered to add it. On
+# 2026-09-02 two personal drafts (a grant application and a LinkedIn profile
+# rewrite) sat unignored in a repo that has a GitHub remote and publishes its
+# core/ half — one sweeping `git add` away from being public. The same class of
+# leak was already fixed once by hand ("убрать имя пользователя из общей
+# справки по кириллице"), which is the signal that naming files one by one is
+# the wrong shape for this rule.
 stc.yaml
-user/profile.md
-user/glossary.md
-user/secrets.env
-user/.state/
+user/*
+!user/*.example.md
+!user/secrets.env.example
+!user/projects/
 user/projects/*
 !user/projects/example.example.md
 

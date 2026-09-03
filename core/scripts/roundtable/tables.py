@@ -61,10 +61,11 @@ SCOPE_ALGORITHM = "scope/2"
 
 CONTRACT_VERSIONS = {
     "vocabulary": 1, "run": 1, "issues": 1, "framing": 1,
-    "precheck": 1, "blocks": 2, "stages": 1,
+    "precheck": 1, "blocks": 2, "stages": 1, "findings": 1,
 }
 
-TABLE_NAMES = ("vocabulary", "run", "issues", "framing", "precheck", "blocks", "stages")
+TABLE_NAMES = ("vocabulary", "run", "issues", "framing", "precheck", "blocks",
+               "stages", "findings")
 
 # Top-level sections each table may carry. The point is not documentation: an
 # unregistered key is refused, so `переходи:` instead of `переходы:` becomes a
@@ -108,6 +109,7 @@ TOP_LEVEL = {
         "стадии", "слепой_вопрос", "сигнал_нежизнеспособности",
         "метрика_цены_понимания", "приоритет_расхода",
     },
+    "findings": {"находки"},
 }
 
 
@@ -491,6 +493,10 @@ class Tables:
     @property
     def stages(self) -> dict:
         return self.raw["stages"]
+
+    @property
+    def findings(self) -> list:
+        return self.raw["findings"]["находки"]
 
     @property
     def plan(self) -> dict:
@@ -1142,6 +1148,35 @@ def _render_framing(tables: Tables) -> list[str]:
     return lines
 
 
+def _render_findings(tables: Tables) -> list[str]:
+    """Every review finding and what proves its status.
+
+    Nine rounds, ~60 findings, and "все приняты" used to be a claim with no
+    executable basis — the exact shape those rounds kept catching.
+    """
+    from collections import Counter
+    findings = tables.findings
+    counts = Counter(f["статус"] for f in findings)
+    lines = [f"Находок ревью: **{len(findings)}** из {len(set(f['круг'] for f in findings))} "
+             f"кругов. " + "; ".join(f"{status} — {n}" for status, n in counts.most_common())
+             + "."]
+    open_ones = [f for f in findings if f["статус"] == "открыта"]
+    if open_ones:
+        lines += ["", "🔴 **Открытые — принято, исполнителя нет:**"]
+        lines += [f"- `{f['id']}` (#{f['круг']}) {f['что']} — {f['почему']}" for f in open_ones]
+    dismissed = [f for f in findings if f["статус"] == "избыточна"]
+    if dismissed:
+        lines += ["", "**Отклонены с обоснованием:**"]
+        lines += [f"- `{f['id']}` (#{f['круг']}) {f['что']} — {f['почему']}" for f in dismissed]
+    lines += ["", "**Все находки.** «Устранена» обязана назвать существующий тест, "
+              "«назначена блоку» — существующий критерий приёмки; и то и другое "
+              "проверяется контрактом."]
+    rows = [[f"`{f['id']}`", str(f["круг"]), f["что"], f["статус"],
+             f"`{f.get('тест') or f.get('критерий') or '—'}`"] for f in findings]
+    lines += _table(["ID", "Круг", "Находка", "Статус", "Чем подтверждено"], rows)
+    return lines
+
+
 def _render_status(tables: Tables) -> list[str]:
     """The header line of the document, computed instead of typed.
 
@@ -1231,6 +1266,7 @@ def _render_blocks(tables: Tables) -> list[str]:
 
 SECTIONS = {
     "status": _render_status,
+    "findings": _render_findings,
     "verdict": _render_verdict,
     "issue-transitions": _render_issue_transitions,
     "run-transitions": _render_run_transitions,

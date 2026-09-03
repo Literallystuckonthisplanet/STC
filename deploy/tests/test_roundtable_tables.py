@@ -13,6 +13,7 @@ ones the engine will read.
 
 import importlib.util
 import itertools
+import collections
 import copy
 import os
 import json
@@ -896,6 +897,131 @@ def test_a_drifted_fingerprint_closes_the_gate_rather_than_warning():
     # fingerprint decorative, which is what it already was once.
     assert BLOCKS["отпечаток_изоляции"]["расхождение"] == "закрывает_шлюз"
     assert BLOCKS["отпечаток_изоляции"]["проверяет_блок"] in BLOCKS["блоки"]
+
+
+# --------------------------------------------------------------------------
+# the ratchet that measures the tables — it once measured nothing at all
+# --------------------------------------------------------------------------
+
+def _ratchet():
+    import importlib.util
+    path = Path(__file__).with_name("mutate_roundtable_tables.py")
+    spec = importlib.util.spec_from_file_location("rt_ratchet", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_ratchet_never_writes_to_the_canon():
+    # It used to mutate the real YAML and restore it in `finally`: a kill -9
+    # mid-run left the repository holding a corrupt table. A real interrupt
+    # happened on 2026-09-03 and the canon came through untouched.
+    source = Path(__file__).with_name("mutate_roundtable_tables.py").read_text(encoding="utf-8")
+    assert "mkdtemp" in source, "храповик обязан работать на временной копии"
+    assert "CANON" in source and "shutil.copy" in source
+    ratchet = _ratchet()
+    assert ratchet.CANON.is_dir()
+    # nothing in the runner may open a canonical path for writing
+    assert "CANON /" not in source.replace("shutil.copy(path, scratch", "")
+
+
+def test_the_ratchet_demands_a_green_control_base():
+    # The whole `322/322 (100%)` was produced on a RED base: a test needing a
+    # fixture raised TypeError before any table was read, so every mutant was
+    # scored as caught. A dead mutant proves nothing until you know what killed
+    # it — and the threshold is 100, not 90.
+    source = Path(__file__).with_name("mutate_roundtable_tables.py").read_text(encoding="utf-8")
+    assert "контрольная база не зелёная" in source
+    assert "percent == 100" in source, "порог обязан быть 100, а не 90"
+    assert "RatchetDefect" in source
+
+
+def test_the_ratchet_runs_the_real_suite_not_hand_called_functions():
+    # Calling test functions by hand is what made a fixture argument look like
+    # a caught mutation. And it ran a single file, so expectations living in
+    # the other test files were not in the denominator at all.
+    ratchet = _ratchet()
+    source = Path(__file__).with_name("mutate_roundtable_tables.py").read_text(encoding="utf-8")
+    assert "-m\", \"pytest" in source or '"pytest"' in source
+    assert "getattr(module, name)()" not in source, "вызов тестовых функций руками"
+    # an ERROR is a defect of the measurement, never a caught mutation
+    assert "ERRORED" in source and "raise RatchetDefect" in source
+    assert ratchet.SUITE.exists()
+
+
+# --------------------------------------------------------------------------
+# the register of review findings — "is there agreement or not", made checkable
+# --------------------------------------------------------------------------
+
+def _suite_test_names():
+    names = set()
+    for path in Path(__file__).parent.glob("test_roundtable_*.py"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("def test_"):
+                names.add(line[4:].split("(")[0])
+    return names
+
+
+def test_every_review_finding_has_a_status_and_nothing_is_silently_dropped():
+    # Nine rounds produced ~60 findings, and "все приняты" was my word against
+    # nothing. A finding with no status is a finding quietly forgotten.
+    findings = _load("findings")["находки"]
+    ids = [f["id"] for f in findings]
+    assert len(ids) == len(set(ids)), "дублирующийся ID находки"
+    allowed = {"устранена", "назначена_блоку", "избыточна", "открыта"}
+    for finding in findings:
+        assert finding["статус"] in allowed, finding["id"]
+        assert finding["что"].strip(), finding["id"]
+        assert isinstance(finding["круг"], int)
+
+
+def test_no_finding_can_be_quietly_dropped():
+    # Without this the register is a list anyone can shorten: the other tests
+    # iterate over whatever is left and stay green. Counts are pinned per round
+    # so deleting a single row fails.
+    findings = _load("findings")["находки"]
+    per_round = collections.Counter(f["круг"] for f in findings)
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5}, (
+        "находка исчезла или появилась без обновления замка")
+    assert len(findings) == 63
+
+
+def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
+    # Otherwise "устранена" is the same unverified claim as the ones the
+    # rounds kept catching.
+    known = _suite_test_names()
+    for finding in _load("findings")["находки"]:
+        if finding["статус"] != "устранена":
+            continue
+        guard = finding.get("тест")
+        assert guard, f"{finding['id']}: устранена, но сторож не назван"
+        assert guard in known, f"{finding['id']}: теста {guard} в наборе нет"
+
+
+def test_a_finding_assigned_to_a_block_names_a_criterion_that_exists():
+    criteria = {item["id"]
+                for spec in BLOCKS["блоки"].values()
+                for item in spec["приёмка"]}
+    for finding in _load("findings")["находки"]:
+        if finding["статус"] != "назначена_блоку":
+            continue
+        criterion = finding.get("критерий")
+        assert criterion, f"{finding['id']}: назначена, но критерий не назван"
+        assert criterion in criteria, f"{finding['id']}: критерия {criterion} нет"
+
+
+def test_a_dismissed_or_open_finding_carries_its_reason():
+    # "Избыточна" without an argument is just a finding deleted quietly, and
+    # "открыта" without one hides what is still missing.
+    for finding in _load("findings")["находки"]:
+        if finding["статус"] in ("избыточна", "открыта"):
+            assert finding.get("почему", "").strip(), (
+                f"{finding['id']}: {finding['статус']} без обоснования")
+
+
+def test_the_table_list_matches_the_tables_the_engine_loads():
+    module = import_tables_module()
+    assert BLOCKS["списки"]["таблицы"] == list(module.TABLE_NAMES)
 
 
 def test_the_review_protocol_is_written_down_not_remembered():

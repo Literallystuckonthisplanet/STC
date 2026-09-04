@@ -968,7 +968,7 @@ def test_every_review_finding_has_a_status_and_nothing_is_silently_dropped():
     findings = _load("findings")["находки"]
     ids = [f["id"] for f in findings]
     assert len(ids) == len(set(ids)), "дублирующийся ID находки"
-    allowed = {"устранена", "назначена_блоку", "избыточна", "открыта"}
+    allowed = {"устранена", "назначена_блоку", "избыточна", "открыта", "ждёт_Антона"}
     for finding in findings:
         assert finding["статус"] in allowed, finding["id"]
         assert finding["что"].strip(), finding["id"]
@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 71
+    assert len(findings) == 74
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "8348f50443eb113e619e724d266a38745b434da3a6cda7abe7be1b93e6391595", (
+    assert digest == "05a0b9fba633eadc81fa1c1fc0fccc0803d9b5a5d495d556a125229f1b3f5a28", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1040,7 +1040,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
     triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "c6559078c8780d65f0145c9b6343e0489e85bb7abe75dcca1b616fcfa462b8cc", (
+    assert digest == "57f294290ed935bf7782ae7d4ef5dd28e555b2fa5129f6c1fa6659631da25050", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1088,7 +1088,7 @@ def test_a_dismissed_or_open_finding_carries_its_reason():
     # "Избыточна" without an argument is just a finding deleted quietly, and
     # "открыта" without one hides what is still missing.
     for finding in _load("findings")["находки"]:
-        if finding["статус"] in ("избыточна", "открыта"):
+        if finding["статус"] in ("избыточна", "открыта", "ждёт_Антона"):
             assert finding.get("почему", "").strip(), (
                 f"{finding['id']}: {finding['статус']} без обоснования")
 

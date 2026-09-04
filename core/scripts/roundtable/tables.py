@@ -1160,6 +1160,12 @@ def _render_findings(tables: Tables) -> list[str]:
     lines = [f"Находок ревью: **{len(findings)}** из {len(set(f['круг'] for f in findings))} "
              f"кругов. " + "; ".join(f"{status} — {n}" for status, n in counts.most_common())
              + "."]
+    waiting = [f for f in findings if f["статус"] == "ждёт_Антона"]
+    if waiting:
+        lines += ["", "🗳️ **Ждут продуктового решения Антона** — не дефект, а "
+                  "граница продукта:"]
+        lines += [f"- `{f['id']}` (#{f['круг']}) {f['что']} — {f['почему']}"
+                  for f in waiting]
     open_ones = [f for f in findings if f["статус"] == "открыта"]
     if open_ones:
         lines += ["", "🔴 **Открытые — принято, исполнителя нет:**"]

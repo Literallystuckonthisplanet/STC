@@ -83,6 +83,42 @@ def _reopen_without_reason(raw):
     grant["scope_sha256"]["Б9"] = block.scope_sha256(_blocks(raw))
 
 
+def _swap_a_finding_to_a_foreign_break(raw):
+    """Оставить статус «устранена», подменив поломку на чужую существующую.
+
+    Программа не выведет смысловую связь «эта поломка проверяет ИМЕННО этот
+    дефект» — её проверяют один раз при ревью и дальше защищают от подмены.
+    """
+    guards = {case[0]: case[3] for case in CASES}
+    for finding in raw["findings"]["находки"]:
+        if finding["статус"] != "устранена":
+            continue
+        if finding.get("поломка", "вне_таблиц") == "вне_таблиц":
+            continue
+        finding["поломка"] = "П10"          # опечатка в состоянии блока
+        finding["тест"] = guards["П10"]
+        return
+    raise AssertionError("нет находки с исполнимой поломкой")
+
+
+def _reclose_with_a_foreign_break(raw):
+    """Снова объявить R15-8 устранённой, прикрывшись чужой поломкой.
+
+    Настоящий дефект при этом жив: полный проверяльщик по-прежнему запускает
+    один файл тестов.
+    """
+    guards = {case[0]: case[3] for case in CASES}
+    for finding in raw["findings"]["находки"]:
+        if finding["id"] != "R15-8":
+            continue
+        finding.pop("критерий", None)
+        finding["статус"] = "устранена"
+        finding["поломка"] = "П29"
+        finding["тест"] = guards["П29"]
+        return
+    raise AssertionError("R15-8 в реестре нет")
+
+
 def _point_a_finding_at_a_stranger(raw):
     """Подменить сторожа у находки, чью поломку стережёт ИМЕННО тест.
 
@@ -175,13 +211,13 @@ CASES = [
      "test_a_dismissed_or_open_finding_carries_its_reason", "без обоснования"),
     ("П23", "убрать «расхождение закрывает шлюз»",
      lambda r: _blocks(r)["отпечаток_изоляции"].pop("расхождение"),
-     "test_a_drifted_fingerprint_closes_the_gate_rather_than_warning", ""),
+     "test_a_drifted_fingerprint_closes_the_gate_rather_than_warning", "расхождение"),
     ("П24", "удалить закрытый словарь оценки критерия",
      lambda r: r["vocabulary"].pop("оценка_критерия"),
-     "test_the_idea_stage_vocabularies_are_closed_sets", ""),
+     "test_the_idea_stage_vocabularies_are_closed_sets", "оценка_критерия"),
     ("П25", "удалить историю разрешения Б2",
      lambda r: _blocks(r)["история_разрешений"].pop(2),
-     "test_a_reopened_block_keeps_the_permission_it_was_first_started_under", ""),
+     "test_a_reopened_block_keeps_the_permission_it_was_first_started_under", "126e123a"),
     ("П29", "назначить находку критерию УЖЕ ЗАКРЫТОГО блока",
      lambda r: _first(r["findings"]["находки"], "назначена_блоку").__setitem__("критерий", "Б3а-1"),
      "test_a_finding_may_only_be_assigned_to_a_block_still_open", "закрыт"),
@@ -191,6 +227,12 @@ CASES = [
     # ⚠️ Мутация бьёт по находке с ИСПОЛНИМОЙ поломкой. У находок, помеченных
     # `вне_таблиц`, сторожем служит только имя теста, и подмену там поймать
     # нечем — это остаточная слабость, и она посчитана в рендере реестра.
+    ("П32", "подменить поломку находки на чужую, но существующую",
+     _swap_a_finding_to_a_foreign_break,
+     "test_the_binding_between_a_finding_and_its_break_is_pinned", "привязка"),
+    ("П33", "вернуть ложную «устранена», сославшись на чужую поломку и её тест",
+     _reclose_with_a_foreign_break,
+     "test_the_binding_between_a_finding_and_its_break_is_pinned", "привязка"),
     ("П31", "сослать находку на существующий, но посторонний тест",
      _point_a_finding_at_a_stranger,
      "test_a_fixed_finding_names_a_guard_that_actually_guards_it", "не стережёт"),
@@ -234,6 +276,10 @@ def _pytest_one(name, directory):
 @pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
 def test_the_break_list_is_measured_and_not_promised(case, scratch):
     identifier, what, mutate, guard, fragment = case
+    assert fragment, (
+        f"{identifier}: у опыта нет ожидаемой причины. Без неё «упал нужный тест» "
+        f"не отличается от «упал по случайности» — ровно тот разрыв, который "
+        f"ревью #22 нашло у П23, П24 и П25")
     module = _module()
 
     # 1. положительный контроль: на чистой копии сторож молчит
@@ -261,5 +307,5 @@ def test_the_break_list_is_measured_and_not_promised(case, scratch):
     else:
         passed, output = _pytest_one(guard, scratch)
         assert not passed, f"{identifier}: {what} — сторож {guard} не заметил"
-        if fragment:
-            assert fragment in output, f"{identifier}: упал по чужой причине\n{output[-500:]}"
+        assert fragment, f"{identifier}: ожидаемая причина не задана — опыт ничего не различает"
+        assert fragment in output, f"{identifier}: упал по чужой причине\n{output[-500:]}"

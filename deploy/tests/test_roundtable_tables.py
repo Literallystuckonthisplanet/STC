@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 68
+    assert len(findings) == 71
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,8 +1021,27 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "7ce96ca19e7695d5cd7ea3fcadba823fe80afccc16560057c4863ae8426c7c72", (
+    assert digest == "8348f50443eb113e619e724d266a38745b434da3a6cda7abe7be1b93e6391595", (
         "текст находки подменён или список изменён без обновления замка")
+
+
+def test_the_binding_between_a_finding_and_its_break_is_pinned():
+    """Связь «находка ↔ поломка ↔ сторож» закреплена целиком.
+
+    Проверка «поломка существует и её сторож совпадает с тестом» ловила только
+    полбеды: поломку можно было подменить на чужую существующую, а её сторожа
+    переписать следом — и ложная «устранена» возвращалась при зелёных тестах.
+
+    Смысловую связь «эта поломка проверяет ИМЕННО этот дефект» программа не
+    выведет. Её устанавливают один раз при ревью и дальше защищают отпечатком:
+    любая перепривязка меняет хеш.
+    """
+    findings = _load("findings")["находки"]
+    triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—")] for f in findings]
+    digest = hashlib.sha256(
+        json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert digest == "c6559078c8780d65f0145c9b6343e0489e85bb7abe75dcca1b616fcfa462b8cc", (
+        "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
 def test_a_fixed_finding_names_a_guard_that_actually_guards_it():

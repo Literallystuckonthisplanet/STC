@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 63
+    assert len(findings) == 68
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -996,6 +996,61 @@ def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
         guard = finding.get("тест")
         assert guard, f"{finding['id']}: устранена, но сторож не назван"
         assert guard in known, f"{finding['id']}: теста {guard} в наборе нет"
+
+
+def test_a_finding_may_only_be_assigned_to_a_block_still_open():
+    # "Назначена блоку" обещает, что починка ЖДЁТ. Указать на критерий уже
+    # закрытого блока — тихо объявить находку сделанной, ничего не сделав.
+    module = import_tables_module()
+    tables = module.load()
+    owner = {item.id: name
+             for name, block in tables.blocks.items() for item in block.acceptance}
+    for finding in _load("findings")["находки"]:
+        if finding["статус"] != "назначена_блоку":
+            continue
+        block = owner.get(finding["критерий"])
+        assert block, f"{finding['id']}: критерия {finding['критерий']} нет"
+        assert not tables.closed(block), (
+            f"{finding['id']}: назначена критерию {finding['критерий']}, "
+            f"а блок {block} уже закрыт")
+
+
+def test_the_text_of_every_finding_is_pinned():
+    # ID можно сохранить, а текст заменить — тогда находка «есть», но говорит
+    # уже о другом. Отпечаток по парам (id, что) это ловит.
+    findings = _load("findings")["находки"]
+    payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    assert digest == "7ce96ca19e7695d5cd7ea3fcadba823fe80afccc16560057c4863ae8426c7c72", (
+        "текст находки подменён или список изменён без обновления замка")
+
+
+def test_a_fixed_finding_names_a_guard_that_actually_guards_it():
+    # Существующего имени теста недостаточно: можно сослаться на посторонний
+    # проходящий тест. Там, где гарантию выражает табличная поломка, находка
+    # обязана назвать её ID, и сторож поломки обязан совпасть с тестом.
+    import importlib.util
+    path = Path(__file__).with_name("test_roundtable_mutations.py")
+    spec = importlib.util.spec_from_file_location("rt_mutations", path)
+    mutations = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mutations)
+    guards = {case[0]: case[3] for case in mutations.CASES}
+
+    for finding in _load("findings")["находки"]:
+        if finding["статус"] != "устранена":
+            continue
+        break_id = finding.get("поломка")
+        assert break_id, f"{finding['id']}: не сказано, какой поломкой это проверяется"
+        if break_id == "вне_таблиц":
+            assert finding.get("почему_без_поломки", "").strip(), (
+                f"{finding['id']}: заявлено «вне таблиц» без объяснения")
+            continue
+        assert break_id in guards, f"{finding['id']}: поломки {break_id} в наборе нет"
+        expected = guards[break_id]
+        if expected not in ("контракт", "загрузчик"):
+            assert finding["тест"] == expected, (
+                f"{finding['id']}: сторож поломки {break_id} — {expected}, "
+                f"а находка ссылается на {finding['тест']}: тест не стережёт эту находку")
 
 
 def test_a_finding_assigned_to_a_block_names_a_criterion_that_exists():

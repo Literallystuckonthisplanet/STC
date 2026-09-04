@@ -1,0 +1,265 @@
+"""Список поломок из инструкции «ломать таблицу», сделанный исполнимым.
+
+Ручная инструкция сама по себе — обещание: она говорит, что такая-то поломка
+ловится таким-то сторожем, и проверить это можно только руками. Ревью #21
+показало, чем это кончается: три подмены в реестре находок прошли все тесты,
+а одна находка была объявлена устранённой при живом дефекте.
+
+Поэтому каждая строка инструкции живёт здесь и проверяется двумя условиями:
+
+1. **положительный контроль** — до мутации названный сторож ПРОХОДИТ;
+2. **отрицательный** — после мутации падает ИМЕННО он и ИМЕННО с той причиной,
+   которая записана. Падение чего-то другого — не «поймано», а совпадение.
+
+Второе условие поставлено ревью #21 после разбора П18: там проверялось
+отсутствие причины переоткрытия, а падало из-за отсутствующего разрешения —
+нужное правило могло не выполниться вовсе.
+"""
+
+import copy
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+CANON = ROOT / "core" / "scripts" / "roundtable" / "tables"
+SCRIPTS = ROOT / "core" / "scripts"
+SUITE = Path(__file__).with_name("test_roundtable_tables.py")
+
+
+def _module():
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    import roundtable.tables
+    return roundtable.tables
+
+
+def _blocks(raw):
+    return raw["blocks"]
+
+
+def _grant(raw):
+    return raw["blocks"]["разрешения_исполнения"][0]
+
+
+def _absorb(raw, keep_text: bool):
+    b = _blocks(raw)["блоки"]
+    b["БТ2"].update({"состояние": "объединён_с", "объединён_с": "БИ"})
+    b["БИ"]["поглощает"] = ["БТ2"]
+    b["БИ"]["зависит"] = ["Б2", "БТ"]
+    b["БИ"]["пишет"] = sorted(set(b["БИ"]["пишет"]) | set(b["БТ2"]["пишет"]))
+    b["БИ"]["читает"] = sorted(set(b["БИ"]["читает"]) | set(b["БТ2"]["читает"]))
+    b["БИ"]["приёмка"] = b["БИ"]["приёмка"] + [
+        {"id": i["id"], "условие": i["условие"] if keep_text else "ПОДМЕНЕНО"}
+        for i in b["БТ2"]["приёмка"]]
+
+
+def _cycle(raw):
+    b = _blocks(raw)["блоки"]
+    b["БТ2"].update({"состояние": "объединён_с", "объединён_с": "БИ",
+                     "поглощает": ["БИ"]})
+    b["БИ"].update({"состояние": "объединён_с", "объединён_с": "БТ2",
+                    "поглощает": ["БТ2"]})
+
+
+def _reopen_without_reason(raw):
+    """Переоткрыть Б9 и ВЫДАТЬ ему честное разрешение на текущий объём.
+
+    Иначе первым сработает замок полномочий, и мы засчитаем поимку не той
+    мутации — ровно тот дефект, который ревью #21 нашло в ручной инструкции.
+    """
+    module = _module()
+    _blocks(raw)["блоки"]["Б9"]["состояние"] = "переоткрыт"
+    grant = _grant(raw)
+    grant["блоки"].append("Б9")
+    block = module.Block.parse("Б9", _blocks(raw)["блоки"]["Б9"], raw["vocabulary"])
+    grant["scope_sha256"]["Б9"] = block.scope_sha256(_blocks(raw))
+
+
+def _point_a_finding_at_a_stranger(raw):
+    """Подменить сторожа у находки, чью поломку стережёт ИМЕННО тест.
+
+    ⚠️ Бить надо по такой: у находок, помеченных `вне_таблиц`, и у тех, чья
+    поломка ловится загрузчиком или контрактом, имя теста сверять не с чем —
+    это остаточная слабость реестра, и она посчитана в рендере.
+    """
+    guards = {case[0]: case[3] for case in CASES}
+    for finding in raw["findings"]["находки"]:
+        if finding["статус"] != "устранена":
+            continue
+        guard = guards.get(finding.get("поломка", ""))
+        if guard and guard not in ("контракт", "загрузчик"):
+            finding["тест"] = "test_precheck_states_what_it_cannot_do"
+            return
+    raise AssertionError("нет находки, чью поломку стережёт именованный тест")
+
+
+def _first(findings, status):
+    return next(f for f in findings if f["статус"] == status)
+
+
+# (id, что ломаем, мутация, сторож, кусок ожидаемого сообщения)
+#
+# Сторож: "загрузчик" | "контракт" | имя теста из test_roundtable_tables.py.
+CASES = [
+    ("П1", "убрать карту scope_sha256 из разрешения",
+     lambda r: _grant(r).pop("scope_sha256"), "контракт", "без карты scope_sha256"),
+    ("П2", "подменить отпечаток объёма Б1",
+     lambda r: _grant(r)["scope_sha256"].__setitem__("Б1", "a" * 64),
+     "контракт", "Б1: в работе"),
+    ("П3", "дописать Б1 файл в пишет после разрешения",
+     lambda r: _blocks(r)["блоки"]["Б1"]["пишет"].append("core/scripts/roundtable/cli.py"),
+     "контракт", "Б1: в работе"),
+    ("П4", "переписать текст критерия под прежним ID",
+     lambda r: _blocks(r)["блоки"]["Б1"]["приёмка"][0].__setitem__("условие", "что угодно"),
+     "контракт", "Б1: в работе"),
+    ("П5", "перенести БТ2 перед Б1 в порядке",
+     lambda r: (_blocks(r)["порядок"].remove("БТ2"),
+                _blocks(r)["порядок"].insert(_blocks(r)["порядок"].index("Б1"), "БТ2")),
+     "контракт", "в работе"),
+    ("П6", "убрать Б1 из до_закрытия ремонтного шлюза",
+     lambda r: _blocks(r)["шлюзы"]["ремонт_после_ревью_12"]["до_закрытия"].remove("Б1"),
+     "контракт", "в работе"),
+    ("П7", "пометить Б15 сделанным при незакрытом ремонте",
+     lambda r: _blocks(r)["блоки"]["Б15"].__setitem__("состояние", "сделано"),
+     "контракт", "шлюз ремонт_после_ревью_12"),
+    ("П8", "удалить native_uuid из основания",
+     lambda r: _grant(r)["основание"].pop("native_uuid"),
+     "контракт", "без ['native_uuid']"),
+    ("П9", "фальшивый sha256 у заключения ревью",
+     lambda r: _blocks(r)["заключения_ревью"][0]["основание"].__setitem__("sha256", "0" * 64),
+     "test_every_real_permission_actually_resolves", "sha256"),
+    ("П10", "опечатка в состоянии блока",
+     lambda r: _blocks(r)["блоки"]["Б9"].__setitem__("состояние", "сделанно"),
+     "загрузчик", "нет в словаре"),
+    ("П11", "строка вместо списка в области записи",
+     lambda r: _blocks(r)["блоки"]["Б9"].__setitem__("пишет", "core/x.py"),
+     "загрузчик", "ожидался список"),
+    ("П12", "выдуманное внешнее действие",
+     lambda r: _blocks(r)["блоки"]["Б9"].__setitem__("внешние_действия", ["удалить_всё"]),
+     "загрузчик", "нет в словаре"),
+    ("П13", "нецелое объявленное количество",
+     lambda r: _blocks(r)["блоки"]["Б9"].__setitem__("объявленное_количество", {"таблицы": 0}),
+     "загрузчик", "положительное целое"),
+    ("П14", "цикл поглощения БТ2↔БИ", _cycle, "контракт", "цикл поглощения"),
+    ("П15", "поглотить БТ2, сохранив ID приёмки и заменив текст",
+     lambda r: _absorb(r, keep_text=False), "контракт", "потеряна или подменена"),
+    ("П16", "один ID приёмки у двух блоков",
+     lambda r: _blocks(r)["блоки"]["Б9"].__setitem__(
+         "приёмка", [{"id": "Б1-1", "условие": "чужой"}]),
+     "контракт", "у двух блоков"),
+    ("П17", "чужая версия контракта у blocks.yaml",
+     lambda r: _blocks(r).__setitem__("версия_контракта", 99),
+     "загрузчик", "contract version"),
+    ("П18", "переоткрыть блок, не сказав почему",
+     _reopen_without_reason, "контракт", "переоткрыт, но не сказано почему"),
+    ("П19", "удалить находку из реестра",
+     lambda r: r["findings"]["находки"].pop(0),
+     "test_no_finding_can_be_quietly_dropped", "находка"),
+    ("П20", "устранённая находка ссылается на несуществующий тест",
+     lambda r: _first(r["findings"]["находки"], "устранена").__setitem__("тест", "test_нет"),
+     "test_a_finding_marked_fixed_names_a_test_that_actually_exists", "в наборе нет"),
+    ("П21", "находка назначена несуществующему критерию",
+     lambda r: _first(r["findings"]["находки"], "назначена_блоку").__setitem__("критерий", "Б99-1"),
+     "test_a_finding_assigned_to_a_block_names_a_criterion_that_exists", "нет"),
+    ("П22", "избыточна без обоснования",
+     lambda r: (r["findings"]["находки"][0].__setitem__("статус", "избыточна"),
+                r["findings"]["находки"][0].pop("почему", None)),
+     "test_a_dismissed_or_open_finding_carries_its_reason", "без обоснования"),
+    ("П23", "убрать «расхождение закрывает шлюз»",
+     lambda r: _blocks(r)["отпечаток_изоляции"].pop("расхождение"),
+     "test_a_drifted_fingerprint_closes_the_gate_rather_than_warning", ""),
+    ("П24", "удалить закрытый словарь оценки критерия",
+     lambda r: r["vocabulary"].pop("оценка_критерия"),
+     "test_the_idea_stage_vocabularies_are_closed_sets", ""),
+    ("П25", "удалить историю разрешения Б2",
+     lambda r: _blocks(r)["история_разрешений"].pop(2),
+     "test_a_reopened_block_keeps_the_permission_it_was_first_started_under", ""),
+    ("П29", "назначить находку критерию УЖЕ ЗАКРЫТОГО блока",
+     lambda r: _first(r["findings"]["находки"], "назначена_блоку").__setitem__("критерий", "Б3а-1"),
+     "test_a_finding_may_only_be_assigned_to_a_block_still_open", "закрыт"),
+    ("П30", "подменить текст находки, сохранив её ID",
+     lambda r: r["findings"]["находки"][0].__setitem__("что", "ПОДМЕНЕНО"),
+     "test_the_text_of_every_finding_is_pinned", "подменён"),
+    # ⚠️ Мутация бьёт по находке с ИСПОЛНИМОЙ поломкой. У находок, помеченных
+    # `вне_таблиц`, сторожем служит только имя теста, и подмену там поймать
+    # нечем — это остаточная слабость, и она посчитана в рендере реестра.
+    ("П31", "сослать находку на существующий, но посторонний тест",
+     _point_a_finding_at_a_stranger,
+     "test_a_fixed_finding_names_a_guard_that_actually_guards_it", "не стережёт"),
+]
+
+
+@pytest.fixture
+def scratch():
+    """Свежая копия таблиц на КАЖДЫЙ опыт.
+
+    Общий каталог позволял следующему опыту унаследовать поломку предыдущего,
+    и тогда «поймана» относилось бы не к той мутации.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="rt-mutation-"))
+    try:
+        for path in CANON.glob("*.yaml"):
+            shutil.copy(path, directory / path.name)
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _write(raw, directory):
+    for name, table in raw.items():
+        (directory / f"{name}.yaml").write_text(
+            yaml.dump(table, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _pytest_one(name, directory):
+    """Прогнать один тест против мутированных таблиц. True если ПРОШЁЛ."""
+    done = subprocess.run(
+        [sys.executable, "-m", "pytest", f"{SUITE}::{name}", "-q", "--tb=line",
+         "-p", "no:cacheprovider"],
+        cwd=ROOT, env=dict(os.environ, ROUNDTABLE_TABLES_DIR=str(directory)),
+        capture_output=True, text=True)
+    assert done.returncode in (0, 1), (
+        f"{name}: pytest вернул {done.returncode} — тест не выполнялся\n{done.stdout[-400:]}")
+    return done.returncode == 0, done.stdout
+
+
+@pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
+def test_the_break_list_is_measured_and_not_promised(case, scratch):
+    identifier, what, mutate, guard, fragment = case
+    module = _module()
+
+    # 1. положительный контроль: на чистой копии сторож молчит
+    if guard == "загрузчик" or guard == "контракт":
+        module.load(scratch).check()
+    else:
+        passed, output = _pytest_one(guard, scratch)
+        assert passed, f"{identifier}: сторож {guard} падает ДО мутации\n{output[-500:]}"
+
+    # 2. мутация
+    raw = {name: module.load_table(name, scratch) for name in module.TABLE_NAMES}
+    mutate(raw)
+    _write(raw, scratch)
+
+    # 3. отрицательный: падает именно назначенный сторож и по своей причине
+    if guard == "загрузчик":
+        with pytest.raises(module.ContractError) as error:
+            module.load(scratch)
+        assert fragment in str(error.value), f"{identifier}: {what} — чужая причина: {error.value}"
+    elif guard == "контракт":
+        module.load(scratch)          # форма обязана остаться валидной
+        with pytest.raises(module.ContractError) as error:
+            module.load(scratch).check()
+        assert fragment in str(error.value), f"{identifier}: {what} — чужая причина: {error.value}"
+    else:
+        passed, output = _pytest_one(guard, scratch)
+        assert not passed, f"{identifier}: {what} — сторож {guard} не заметил"
+        if fragment:
+            assert fragment in output, f"{identifier}: упал по чужой причине\n{output[-500:]}"

@@ -60,6 +60,13 @@ NOTES = {
 
 FAILED = re.compile(r"^FAILED (\S+)", re.M)
 ERRORED = re.compile(r"^ERROR (\S+)", re.M)
+RAN = re.compile(r"(\d+) (?:passed|failed)")
+
+# pytest: 0 всё прошло, 1 тесты упали. Всё остальное — процесс не сделал того,
+# о чём его просили: 2 прерван, 3 внутренняя ошибка, 4 ошибка параметров,
+# 5 не собрано ни одного теста. Раньше код возврата не читался вовсе, и ошибка
+# запуска выглядела зелёной базой — тот же класс, что и всё «100 %» до этого.
+PYTEST_RAN = {0, 1}
 
 
 class RatchetDefect(RuntimeError):
@@ -75,6 +82,13 @@ def _pytest(tables_dir: Path, stop_early: bool) -> tuple[list[str], list[str]]:
         argv.append("-x")
     done = subprocess.run(argv, cwd=ROOT, env=environment,
                           capture_output=True, text=True)
+    if done.returncode not in PYTEST_RAN:
+        raise RatchetDefect(
+            f"pytest завершился кодом {done.returncode} — он не выполнял тесты. "
+            f"Считать это зелёной базой значит мерить ничто.\n{done.stdout[-400:]}")
+    if not RAN.search(done.stdout):
+        raise RatchetDefect(
+            f"pytest не отчитался ни об одном выполненном тесте:\n{done.stdout[-400:]}")
     return FAILED.findall(done.stdout), ERRORED.findall(done.stdout)
 
 

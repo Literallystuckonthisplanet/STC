@@ -11,6 +11,28 @@ release notes.
 
 ## [Unreleased]
 
+### Changed — STC model routing and verification
+- Codex keeps Luna Max as the routine model and adds Astra as an explicit
+  escalation for complex cross-cutting investigation, consequential
+  architecture choices, and independent review of high-impact decisions.
+  Escalation prompts now state the trigger, scope, continuation, and result.
+- QA can create temporary tests only in an isolated worktree. Builder, QA,
+  security, and review reports have consistent output contracts; the token
+  economy guide no longer asserts obsolete model prices or cache thresholds.
+- Codex's SessionStart hook has enough output budget to deliver all three STC
+  rule files. The live Codex canary now passes the PEV threshold checks.
+
+### Added — Graphify when a code-relationship task needs it
+- `graphify_on_demand.py` returns an existing project graph or builds a missing
+  structural graph once in the primary checkout. Linked worktrees reuse it;
+  exact text lookups do not start extraction. The project-first hook points to
+  this command without blocking a search when no graph exists.
+
+### Changed — Roundtable pipeline
+- Roundtable blocks and findings now carry the clarified two-stage review
+  flow; consent is tied to the current edition and scope. Contract and table
+  checks cover the updated transitions, conditions, and acceptance criteria.
+
 ### Added — the plan is met by what was already decided on its topic (H19)
 - **`core/hooks/plan-recall.sh` + `core/scripts/memory_graph.py`.** On leaving
   plan mode the hook searches the distilled layer — research notes, specs,

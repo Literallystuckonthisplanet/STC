@@ -983,7 +983,12 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
     """
     home = Path(home) if home else Path.home()
     if basis["вид"] == "план_артефакт":
-        path = Path(str(basis["путь"]).replace("~", str(home), 1))
+        raw = str(basis["путь"])
+        # Артефакт под ~/ живёт вне репозитория и может исчезнуть — что и
+        # случилось 16.09 с утверждённым планом. Путь внутри репозитория
+        # резолвится от корня и переживает уборку временных каталогов.
+        path = (Path(raw.replace("~", str(home), 1)) if raw.startswith("~")
+                else Path(raw) if Path(raw).is_absolute() else ROOT / raw)
         if not path.is_file():
             return f"артефакта нет: {path}"
         digest = hashlib.sha256(path.read_bytes()).hexdigest()

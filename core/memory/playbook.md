@@ -314,61 +314,49 @@ defer them to a "resync".
 
 ## Token economy
 
-The main loop = the main model + persistent context (every file is paid for
-every turn + recompressed on compact). Levers are placed where they fire:
-
-**Why an expensive main is fine (FR-28 orchestrator mode):** the cost driver
-is OUTPUT volume × model price. Orchestration output is small — plans,
-dispatches, decisions, acceptance; the voluminous output (code, diffs, test
-runs) is produced by the builder/cleanup tiers on sonnet/haiku. Main on the
-expensive model buys exactly what's worth paying for: architecture, fork
-decisions, verification judgment. Enforcement: H14 (orchestrator gate), H21
-(exit-plan-gate), H04 (agent contract).
+The Codex default is Luna Max. Choose a specialist model for a bounded
+uncertainty or risk, then return the result to the main thread. Judge economy
+by the whole request tree: input and output tokens, tool calls, elapsed time,
+retries, and correction work. Do not assume that an extra agent or a more
+expensive main session is cheaper without a comparable task measurement.
+H14 (orchestrator gate), H21 (exit-plan-gate), and H04 (agent contract) enforce
+dispatch structure, not a price claim.
 
 **Fire by anchors in always-context (PEV):**
-- **Offload reading (lever #1):** heavy reading/search/analysis → an
-  ephemeral agent (mechanics: cheaper model + caveman, judgment: main model),
-  in main — only the summary. **Return contract:** the finding + `file:line`,
-  NOT file contents and NOT raw search results.
+- **Offload bounded reading:** independent reading/search/analysis → an agent
+  when its result can be checked separately. Use caveman only for the allowed
+  read-only roles. **Return contract:** the finding + `file:line`, not file
+  contents or raw search results. Do not create a second agent merely to
+  compress a small output.
   - **Enforcement (hook H15, exec-offload-guard):** hard-blocks expensive
     Bash in main — (a) a noisy data-script (import/seed/publish/scrape/
     sync/backfill) and (b) an `audit` run without `--json` → offload it to an
-    ephemeral cheap-model agent (runs it, returns the result/errors/counters,
+    bounded agent (runs it, returns the result/errors/counters,
     not the raw stdout). A deliberate run in main → the marker `# in-main` on
     the command. Most output-triage into the window is already held by the
     output-hygiene hook (H11 — collapses raw output yourself or via an
     agent); H15 closes the residual case of "the command itself prints a
     wall of text."
-- **Cheap session:** a task cannot go to an agent (needs dialogue) but a
-  cheaper model can handle it → write the brief (what/why/files/AC/steps)
-  into the project's `project_<name>.md` OPEN section (I26 — the next
-  session reads STATE/OPEN on start) + a prompt; the user opens a session
-  on the cheaper model. Pays off for medium+ tasks with low judgment risk.
-- **Compact by context fill, NOT at every task boundary** (see pev §3).
-  Mechanics: every turn resends the whole context; the stable prefix is
-  cached (~10% of the price, TTL ~5 min while you keep working). Compacting
-  BREAKS the cache + re-reads everything for the summary + reloads all rules
-  uncached (~8.7k tokens) — there is a prepayment cost. A new session = a
-  cold cache + the same reload. Hence the thresholds (`/context`):
-  - **<~40% (≈<80k):** don't compact. Small tasks accumulate in the cached
-    prefix at ~10% — cheap; compacting here loses money.
-  - **~40–75%:** compact only if the next task is UNrelated to the current
-    context (drop the ballast); related → keep going.
-  - **>~75% (≈>150k):** compact according to the harness flow — don't wait
-    for a blind auto-compact to catch you.
-  A new session instead of compacting — only when the work is fully
-  independent AND otherwise you'd drag along a large irrelevant context.
+- **Move independent dialogue work to another session** only when the user
+  wants a separate task and the handoff has a clear brief. Preserve the
+  decision and acceptance criteria in the project notes when continuity is
+  needed. Compare the full handoff cost with continuing in the current thread.
+- **Compact when the harness needs it or context has become irrelevant.**
+  Do not use fixed token or cache-price thresholds across models and hosts.
+  Record the active model, context usage, and observed cost before introducing
+  a numeric rule.
 
 **Self-enforcing (no need to remember — built in):**
-- **Model tier** — in the agent's frontmatter (docs/security-deps = haiku;
-  reviewers = sonnet). When spawning, do not pass `model` → the frontmatter
-  applies.
+- **Model tier** — the registry and provider mapping set routine defaults.
+  Codex maps routine tiers to Luna; Terra/Sol/Astra require an explicit
+  escalation prompt and the H04 contract. Another harness may map tiers
+  differently.
 - **caveman** — only read-only exploration/research/docs/status agents.
   Builders, reviewers, QA, security, E2E, and architects use structured prose.
 - **Snapshot over screenshot** — §Playwright MCP.
 
 **Habits (best-effort, discipline, not hard rules):**
-- Do not edit always-files mid-session (kills prompt-cache) → batch, sync once.
+- Batch always-context edits when practical; avoid unnecessary repeated renders.
 - Read in ranges (`Read offset/limit`), refer as `path:line`, do not paste walls.
 - Do not dump bash output >~50 lines into the window without a filter: `wc -l`
   first, then `tail`/`grep`/`grep -A/-B`; 50 lines isn't enough → grep ~50 more

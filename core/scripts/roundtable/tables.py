@@ -361,6 +361,15 @@ class Block:
             "вне_MVP": self.outside_mvp,
         }
         if plan is not None:
+            # Правило, на которое ссылается критерий блока, — часть его объёма.
+            # Иначе раздел `согласия` можно переписать целиком, а отпечатки
+            # блоков, живущих по нему, не шелохнутся (ревью #26).
+            referenced = sorted(
+                name for name in ("согласия",)
+                if any(f"`{name}`" in item.condition for item in self.acceptance))
+            if referenced:
+                record["правила_по_ссылке"] = {
+                    name: plan[name] for name in referenced if name in plan}
             order = plan["порядок"]
             # position, not membership: moving БТ2 ahead of Б1 changes what runs
             # next without touching a single field of either block

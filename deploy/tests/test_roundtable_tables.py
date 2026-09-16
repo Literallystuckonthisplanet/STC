@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 87
+    assert len(findings) == 93
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "9ca46634a40ab8722c431087886fb7f401603c0d4ca5ef7849b976c58126e22b", (
+    assert digest == "e0826c6ec087e7db9043e6249f038837a7302a370f3fea5b652454d3f58683e3", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1040,7 +1040,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
     triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "c3f1cafc2920ced37abb0cbdd23f64990341389a660414153195b225c24f1d04", (
+    assert digest == "3c2bc679a908b66e6a0cbf001d1de06d4e506d855bee6c8ecaab3923ff97ebac", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1129,8 +1129,71 @@ def test_the_conveyor_rules_survive_as_acceptance_criteria():
     assert all(condition != "—" for _, condition in pairs), "критерий конвейера пропал"
     digest = hashlib.sha256(
         json.dumps(pairs, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "ca60bb6658888aa685eaacca1d3eef62b461cc305bbcedacf887c44f4dcf7c7c", (
+    assert digest == "95437b17498d3db0e1d089ebe60eed8d44f8afbaecd6495ae7cabe1133f592f4", (
         "правило конвейера удалено или выхолощено под прежним ID")
+
+
+def test_the_consent_rule_is_mandatory_and_pinned():
+    """Раздел `согласия` обязателен, и его содержание закреплено.
+
+    Ревью #26 удалило раздел целиком из копии: `check()` прошёл, 114 тестов
+    прошли, отпечатки объёма не шелохнулись. Загрузчик лишь РАЗРЕШАЛ такое имя
+    поля. Критерии БУ-9 и БА-8 ссылаются на правило — значит исполнитель мог
+    получить другое правило при тех же критериях и зелёных проверках.
+    """
+    consent = BLOCKS.get("согласия")
+    assert consent, "раздел согласий пропал — критерии ссылаются в пустоту"
+    assert consent["сколько"] == 2, "решение Антона 16.09: два этапа — два ОК"
+    assert len(consent["цепочка"]) == 2
+    assert "передачу" in consent["цепочка"][1]["разрешает"]
+    assert consent["передача"], "должно быть сказано, что передача своего ОК не требует"
+    digest = hashlib.sha256(
+        json.dumps(consent, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    assert digest == "887cd71a252a8dc65caa429622cb12332d94a29f9009d2b613037e0348fa8590", "правило согласий изменено без обновления замка"
+
+
+def test_a_rule_a_criterion_points_at_is_part_of_the_scope():
+    # Иначе правило переписывается целиком, а разрешение на блок остаётся
+    # действующим: блок живёт по другому правилу с прежним отпечатком.
+    module = import_tables_module()
+    tables = module.load()
+    plan = tables.plan
+    for name in ("БУ", "БА"):
+        block = tables.blocks[name]
+        assert "`согласия`" in " ".join(i.condition for i in block.acceptance), name
+        assert block.scope(plan)["правила_по_ссылке"]["согласия"] == plan["согласия"]
+    thinner = copy.deepcopy(plan)
+    thinner["согласия"]["сколько"] = 99
+    assert tables.blocks["БУ"].scope_sha256(thinner) != tables.blocks["БУ"].scope_sha256(plan)
+
+
+def test_a_block_calling_models_must_depend_on_the_launcher():
+    """Объявил вызов вендора — обязан зависеть от блока, который умеет звать.
+
+    Ревью #26 сняло ребро БА→Б3б: `check()` и 114 тестов прошли, а в модели
+    будущего состояния архитектура переставала удерживаться, хотя запускать
+    вызовы ещё нечем. Зависимость «по смыслу» механизм не видит.
+    """
+    module = import_tables_module()
+    tables = module.load()
+    launcher = BLOCKS["отпечаток_изоляции"]["блок_запуска"]
+    prover = BLOCKS["отпечаток_изоляции"]["проверяет_блок"]
+
+    def ancestors(name, seen=None):
+        seen = seen if seen is not None else set()
+        for dependency in tables.blocks[name].depends:
+            if dependency not in seen:
+                seen.add(dependency)
+                ancestors(dependency, seen)
+        return seen
+
+    for name, block in tables.blocks.items():
+        if "вызов_модели" not in block.external or block.outside_mvp:
+            continue
+        if name in (prover, launcher):
+            continue
+        assert launcher in ancestors(name), (
+            f"{name}: зовёт вендора, но не зависит от {launcher} — звать нечем")
 
 
 def test_a_block_calling_models_is_held_by_the_isolation_gate():

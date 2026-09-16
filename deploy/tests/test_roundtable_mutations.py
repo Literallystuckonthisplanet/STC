@@ -233,11 +233,27 @@ CASES = [
      lambda r: _blocks(r)["блоки"]["БИ"].__setitem__(
          "приёмка", [i for i in _blocks(r)["блоки"]["БИ"]["приёмка"]
                      if i["id"] != "БИ-13"]),
-     "test_the_conveyor_rules_survive_as_acceptance_criteria", "БИ-13"),
+     "test_the_conveyor_rules_survive_as_acceptance_criteria", "пропал"),
     ("П35", "выхолостить критерий конвейера, сохранив его ID",
      lambda r: next(i for i in _blocks(r)["блоки"]["БП"]["приёмка"]
                     if i["id"] == "БП-1").__setitem__("условие", "готовность определяется движком"),
-     "test_the_conveyor_rules_survive_as_acceptance_criteria", "смысл подменён"),
+     "test_the_conveyor_rules_survive_as_acceptance_criteria", "выхолощено"),
+    # Обе прогнало ревью #25 против прежнего замка — обе прошли.
+    ("П36", "удалить критерий «прежняя редакция не переписывается»",
+     lambda r: _blocks(r)["блоки"]["БУ"].__setitem__(
+         "приёмка", [i for i in _blocks(r)["блоки"]["БУ"]["приёмка"] if i["id"] != "БУ-3"]),
+     "test_the_conveyor_rules_survive_as_acceptance_criteria", "выхолощено"),
+    ("П37", "вывернуть критерий наизнанку, сохранив опорные слова",
+     lambda r: next(i for i in _blocks(r)["блоки"]["БП"]["приёмка"]
+                    if i["id"] == "БП-1").__setitem__(
+         "условие", "готовность НЕ требует трёх условий: личное принятие Антона не требуется"),
+     "test_the_conveyor_rules_survive_as_acceptance_criteria", "выхолощено"),
+    ("П38", "снять архитектуру со шлюза изоляции, оставив ей вызов модели",
+     lambda r: _blocks(r)["шлюзы"]["изоляция_подтверждена"]["блокирует"].remove("БА"),
+     "test_a_block_calling_models_is_held_by_the_isolation_gate", "вызов_модели"),
+    ("П39", "снять зависимость выпуска от конвейера",
+     lambda r: _blocks(r)["блоки"]["Б13"].__setitem__("зависит", ["Б12"]),
+     "test_the_conveyor_is_mandatory_for_release", "не зависит от конвейера"),
     ("П32", "подменить поломку находки на чужую, но существующую",
      _swap_a_finding_to_a_foreign_break,
      "test_the_binding_between_a_finding_and_its_break_is_pinned", "привязка"),

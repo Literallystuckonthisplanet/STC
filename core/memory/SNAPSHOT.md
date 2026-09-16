@@ -28,7 +28,7 @@ A09 | Agent | agents/cleanup.md | You are an executor. You are handed a ready sp
 A10 | Agent | agents/builder.md | You are the executor tier of orchestrator mode (FR-28): the main session plans and dispatches; you write the code. You are handed… | —
 H01 | Hook | hooks/block-dangerous-git.sh | Pain: dangerous git (reset --hard, clean, branch -D, checkout .) and push to main = release are advisory-only rules and recidivis… | —
 H02 | Hook | hooks/playwright_reminder.sh | real-browser preflight (FR-18). Event: PreToolUse(mcp__playwright__browser). | —
-H04 | Hook | hooks/agent-reuse-contract.sh | 🔒 reuse-before-reinvent: build-capable sub-agents (general-purpose / claude / builder) must carry a reuse contract in their promp… | —
+H04 | Hook | hooks/agent-reuse-contract.sh | 🔒 reuse-before-reinvent: build-capable sub-agents (general-purpose / claude / builder / worker) must carry a reuse contract in th… | —
 H05 | Hook | hooks/secret-scan-memory.sh | PreToolUse(Write/Edit/MultiEdit): blocks writing a real secret into memory/. Memory is forbidden for secrets (I05) — secrets go t… | —
 H06 | Hook | hooks/session-start-context.sh | SessionStart: injects the always-context rule files (the original pre-@import mechanism — @import was a later refactor that does… | —
 H07 | Hook | hooks/dirty-tree-guard.sh | On the FIRST edit in a given project repo during a session (acknowledge-once, marker until exit): - 🔒 I09/I07 dirty-tree: a dirty… | I09

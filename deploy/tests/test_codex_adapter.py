@@ -106,10 +106,10 @@ def test_codex_defaults_route_luna_max_and_agent_sandbox_policies():
     assert config["model_reasoning_effort"] == "max"
 
     read_only = {
-        "code-reviewer", "security-arch", "qa", "security-deps", "e2e",
+        "code-reviewer", "security-arch", "security-deps", "e2e",
         "research", "docs", "harness-docs",
     }
-    write_roles = {"builder", "cleanup"}
+    write_roles = {"builder", "cleanup", "qa"}
     for path, body in rr.files.items():
         if not (path.startswith("agents/") and path.endswith(".stc.toml")):
             continue
@@ -134,8 +134,10 @@ def test_caveman_is_embedded_only_in_approved_read_only_agent_prompts():
     }
     for name in ("research", "docs", "harness-docs"):
         assert "CAVEMAN_PIPELINE" in rendered[name]
-    for name in ("builder", "cleanup", "code-reviewer", "qa", "security-arch", "e2e"):
-        assert "CAVEMAN_PIPELINE" not in rendered[name]
+    for name in ("builder", "cleanup", "code-reviewer", "qa", "security-arch", "security-deps", "e2e"):
+        assert "caveman" not in rendered[name].lower()
+    assert "temporary test files" in rendered["qa"].lower()
+    assert "do not modify source" in rendered["qa"].lower()
 
 
 def test_codex_native_routing_and_hook_bindings_are_explicit():
@@ -151,10 +153,10 @@ def test_codex_native_routing_and_hook_bindings_are_explicit():
     assert routing["default_model"] == "gpt-5.6-luna"
     assert routing["default_reasoning_effort"] == "max"
     assert routing["subagent_compression"] == "none"
-    for name in ("terra", "sol"):
+    for name in ("terra", "sol", "astra"):
         escalation = routing["escalations"][name]
         assert escalation["explicit_only"] is True
-        assert escalation["model"] in {"gpt-5.6-terra", "gpt-5.6-sol"}
+        assert escalation["model"] in {"gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"}
 
     hooks = rr.json_patches["hooks.json"]["hooks"]
     h04 = [

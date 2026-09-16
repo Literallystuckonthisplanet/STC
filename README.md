@@ -63,7 +63,7 @@ STC attacks this on several fronts:
 - **Exec-offload hook (H15)** blocks expensive data scripts (import/seed/publish/scrape/sync, audits without `--json`) in the main thread and routes them to an ephemeral sub-agent, so the main context stays lean.
 - **The web-route hook (H13)** blocks web calls from the main agent once per session and routes them through the single research sub-agent that has web access, so the main context never fills with search results.
 - **Acquire-dedup hook (H12)** keeps a session log of normalized read/grep/glob targets and nudges on exact repeats, so the agent does not re-acquire what it already has.
-- **Explicit model routing.** Codex uses Luna Max for the main task and every ordinary sub-agent by default. The running model must surface a need to escalate; Terra/Sol are reserved for explicitly identified high-risk or high-uncertainty forks, not selected merely because a task touches production.
+- **Explicit model routing.** Codex uses Luna Max for the main task and every ordinary sub-agent by default. Terra and Sol handle bounded escalation. Astra is available for complex end-to-end investigation, consequential architecture forks, and independent review of high-impact decisions. Model choice requires a stated trigger and scope; touching production alone does not select a stronger model.
 
 ### 2. Knowledge across sessions and providers
 

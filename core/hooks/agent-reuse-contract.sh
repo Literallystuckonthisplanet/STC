@@ -1,7 +1,7 @@
 #!/bin/bash
 # H04 — hook: agent guard (Codex SubagentStart + PreToolUse Agent; Claude Task)
 #   - 🔒 reuse-before-reinvent: build-capable sub-agents (general-purpose /
-#       claude / builder) must carry a reuse contract in their prompt, otherwise
+#       claude / builder / worker) must carry a reuse contract in their prompt, otherwise
 #       they start cold and reinvent what the repo already has → block.
 #   - 🔒 fork-protocol (FR-28): the same build-capable prompts must carry the
 #       fork protocol (local trivia → DECIDED line; architectural/business
@@ -24,8 +24,22 @@ MODEL=$(echo "$INPUT" | jq -r '.model // .tool_input.model // empty')
 
 USER_LANG="${USER_LANG:-en}"
 
+# QA has workspace-write so it can create and run temporary tests. Verify the
+# actual child checkout on SubagentStart; a prompt alone cannot isolate writes.
+# PreToolUse(Agent) still sees the parent's cwd, so this check belongs here.
+if [ "$HARNESS_NAME" = "codex" ] && [ "$EVENT" = "SubagentStart" ] && [ "$SUBAGENT" = "qa" ]; then
+  QA_CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+  QA_GIT_DIR=$(cd "$QA_CWD" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P)
+  QA_COMMON_DIR=$(cd "$QA_CWD" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)
+  QA_SUPER=$(git -C "$QA_CWD" rev-parse --show-superproject-working-tree 2>/dev/null)
+  if [ -z "$QA_GIT_DIR" ] || [ -z "$QA_COMMON_DIR" ] || [ "$QA_GIT_DIR" = "$QA_COMMON_DIR" ] || [ -n "$QA_SUPER" ]; then
+    echo "BLOCKED: Codex QA needs an isolated linked worktree before receiving workspace-write. Create a worktree and dispatch QA there." >&2
+    exit 2
+  fi
+fi
+
 case "$SUBAGENT" in
-  general-purpose|claude|builder)
+  general-purpose|claude|builder|worker)
     if ! echo "$PROMPT" | grep -qiF "reuse-before-reinvent"; then
       case "$USER_LANG" in
         ru) echo "BLOCKED: промпт build-агента ('$SUBAGENT') без reuse-before-reinvent контракта. Открой промпт agent-преамбулом (playbook §Контракт промпта агента): zoom-out + reuse-before-reinvent (grep/Explore существующие паттерны → переиспользуй) + fork-protocol + контракт возврата. Добавь и повтори запуск." >&2 ;;
@@ -53,26 +67,21 @@ case "$SUBAGENT" in
     ;;
 esac
 
-# Codex has an explicit model field on SubagentStart/Agent payloads. Terra/Sol
-# are valid only when the caller deliberately overrides the Luna default and
-# carries a bounded escalation output contract; ordinary production prompts do
-# not trigger this branch. The check is intentionally marker-based and never
-# prints the task prompt/model value back to the caller.
+# Codex has an explicit model field on SubagentStart/Agent payloads. A stronger
+# model override needs a complete escalation handoff. This validates the
+# presence of five nonempty fields, not the truth of their contents.
 if [ "$HARNESS_NAME" = "codex" ]; then
-  case "$MODEL $SUBAGENT" in
-    *gpt-5.6-terra*|*gpt-5.6-sol*|*terra*|*sol*)
-      if ! echo "$PROMPT" | grep -qiE 'escalat|why[[:space:]]+luna|luna[[:space:]]+(is[[:space:]]+)?insufficient|bounded[[:space:]]+(scope|task)|output[[:space:]]+contract'; then
-        case "$USER_LANG" in
-          ru) echo "BLOCKED: Codex Terra/Sol override требует escalation output contract: trigger; почему Luna недостаточна; bounded scope; continuation on Luna; статус FORK/BLOCKED/UNVERIFIED. Обычная production-задача сама по себе escalation не запускает." >&2 ;;
-          *) echo "BLOCKED: a Codex Terra/Sol override requires an escalation output contract: trigger; why Luna is insufficient; bounded scope; continuation on Luna; FORK/BLOCKED/UNVERIFIED status. Routine production alone does not escalate." >&2 ;;
-        esac
-        exit 2
-      fi
-      if ! echo "$PROMPT" | grep -qiE 'FORK|BLOCKED|UNVERIFIED|status'; then
-        case "$USER_LANG" in
-          ru) echo "BLOCKED: Codex Terra/Sol escalation contract должен явно вернуть статус FORK/BLOCKED/UNVERIFIED." >&2 ;;
-          *) echo "BLOCKED: a Codex Terra/Sol escalation contract must return an explicit FORK/BLOCKED/UNVERIFIED status." >&2 ;;
-        esac
+  case "$MODEL" in
+    gpt-5.6-terra|gpt-5.6-sol|gpt-6-astra)
+      for field in TRIGGER WHY SCOPE CONTINUE RESULT; do
+        if ! printf '%s\n' "$PROMPT" | grep -Eq "^[[:space:]]*STC_ESCALATION_${field}:[[:space:]]*[^[:space:]]"; then
+          echo "BLOCKED: $MODEL needs STC_ESCALATION_TRIGGER, _WHY, _SCOPE, _CONTINUE, and _RESULT fields with concrete values." >&2
+          exit 2
+        fi
+      done
+      RESULT_LINE=$(printf '%s\n' "$PROMPT" | grep -E '^[[:space:]]*STC_ESCALATION_RESULT:' | head -n 1)
+      if ! printf '%s\n' "$RESULT_LINE" | grep -Eq '(^|[^[:alnum:]_])(DONE|FORK|BLOCKED|UNVERIFIED)($|[^[:alnum:]_])'; then
+        echo "BLOCKED: STC_ESCALATION_RESULT must request an explicit DONE/FORK/BLOCKED/UNVERIFIED status." >&2
         exit 2
       fi
       ;;

@@ -22,9 +22,9 @@
 #   - skill_link   — the methodology skill that holds the same know-how, used
 #                    as the realisation when typed sub-agents are unavailable.
 #   - sandbox_mode — optional harness-native filesystem policy. Codex maps
-#                    read-only technical roles to `read-only`; only executors
-#                    that are explicitly allowed to edit workspace files use
-#                    `workspace-write`. Other harnesses ignore this binding.
+#                    read-only technical roles to `read-only`; agents that must
+#                    create tests or edit files use `workspace-write` in an
+#                    isolated worktree. Other harnesses ignore this binding.
 #   - compression  — optional response contract. `caveman` is allowed only on
 #                    read-only exploration/research/docs roles; never builders,
 #                    reviewers, QA, security, E2E, or architecture.
@@ -63,7 +63,7 @@ agents:
   qa:
     model_tier: mid
     effort_tier: mid
-    sandbox_mode: read-only
+    sandbox_mode: workspace-write
     tools: [Read, Write, Bash]
     affinity: any
     skill_link: qa

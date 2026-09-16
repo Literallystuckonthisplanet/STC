@@ -28,7 +28,8 @@ the ×3 review pipeline (code-reviewer + security-arch + qa).
 ## How to dispatch
 
 Call the Agent/Task tool with the prompt below, filling in `[FRAGMENT]`,
-`[ENTRY POINT / PUBLIC API]`, and `[PROJECT TEST COMMAND]`.
+`[ENTRY POINT / PUBLIC API]`, and `[PROJECT TEST COMMAND]`. Give QA an isolated
+worktree: it creates temporary test files and a report but cannot edit source.
 
 ```
 description: "QA tests: [FRAGMENT]"
@@ -41,12 +42,13 @@ prompt: |
   - Test through the PUBLIC API of the fragment, not its internals.
   - Target business logic + edge cases. Do NOT test trivia, framework glue,
     or generated code.
-  - Do NOT modify the source under test. If you cannot test it without a
-    source change, STOP and report why.
+  - Work in the assigned isolated worktree. Write only temporary test files
+    under .tmp/qa/ (or the declared test path) and the report. Do NOT modify
+    the source under test. If isolation is absent, STOP and report why.
   - Run the project's test command: [PROJECT TEST COMMAND].
   - Clean up any temp files you created.
 
-  Output (caveman-compressed if instructed):
+  Output:
   - Tests written: <paths>
   - Run command + result (PASS/FAIL, counts)
   - For each failure: the assertion, the expected vs actual, the file:line

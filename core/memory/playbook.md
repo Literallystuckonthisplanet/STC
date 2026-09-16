@@ -363,9 +363,8 @@ decisions, verification judgment. Enforcement: H14 (orchestrator gate), H21
 - **Model tier** — in the agent's frontmatter (docs/security-deps = haiku;
   reviewers = sonnet). When spawning, do not pass `model` → the frontmatter
   applies.
-- **caveman** — in agents whose output is facts (research/docs/security-deps).
-  Reviewers (code-reviewer/security-arch/qa) — WITHOUT caveman (need
-  reasoning). caveman compresses output, not thought.
+- **caveman** — only read-only exploration/research/docs/status agents.
+  Builders, reviewers, QA, security, E2E, and architects use structured prose.
 - **Snapshot over screenshot** — §Playwright MCP.
 
 **Habits (best-effort, discipline, not hard rules):**
@@ -499,7 +498,7 @@ because <reason>`.
 <!-- I21 -->
 
 When delegating to a **build-capable** sub-agent (`general-purpose` / `claude`
-/ `builder`), open the prompt with a contract — otherwise the agent starts
+/ `builder` / `worker`), open the prompt with a contract — otherwise the agent starts
 cold and reinvents what the repo already has. **Hook H04 blocks the launch**
 if the `reuse-before-reinvent` or `fork-protocol` marker is absent.
 
@@ -517,17 +516,28 @@ Contract preamble:
    picks a side on a fork.
 4. **return contract** — what comes back: status / AC met / checks / DECIDED
    / FORK + a `file:line` summary, not raw output; an answer ≤ 1500 tokens
-   (tight; this is inter-agent traffic). Caveman-compressed if
-   `${SUBAGENT_COMPRESSION}` is on.
+   (tight; this is inter-agent traffic). Use normal structured prose.
+
+For an explicit Codex Terra/Sol/Astra sub-agent override, include these five
+nonempty lines in the dispatch prompt. H04 checks their presence and the status
+vocabulary; the parent still judges whether the reasons are sound.
+
+```text
+STC_ESCALATION_TRIGGER: <observed uncertainty or risk>
+STC_ESCALATION_WHY: <why the current model is insufficient>
+STC_ESCALATION_SCOPE: <bounded task and evidence to inspect>
+STC_ESCALATION_CONTINUE: <what stays with Luna>
+STC_ESCALATION_RESULT: return DONE/FORK/BLOCKED/UNVERIFIED with evidence
+```
 
 For `builder` dispatches (FR-28 orchestrator mode): the brief = the block's
 spec section (`/to-spec`); link it in the prompt rather than restating it,
 and mark `tdd` when the block carries business logic. Update the task line
 (`[/]` → `[x]`) around the dispatch — the tasks file is the dispatch board.
 
-**Read-only agents are exempt:** `Explore`/`research`/`code-reviewer`/
-`security-*`/`docs`/`qa`/`e2e` don't write code, so they don't need the
-preamble — the hook (H04) passes them through without checking.
+**Non-build agents are exempt:** `Explore`/`research`/`code-reviewer`/
+`security-*`/`docs`/`qa`/`e2e` don't write source code, so they don't need the
+reuse/fork preamble. QA writes temporary tests in an isolated worktree.
 
 For **reviewer** agents (security-deps/qa/code-reviewer/e2e/security-arch):
 add the **baseline** (see § Agent baseline) and any "accepted/out-of-scope"

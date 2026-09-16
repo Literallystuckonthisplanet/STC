@@ -18,7 +18,7 @@ api:
   auth: bearer
   key_env: "OPENAI_API_KEY"
 
-# Routine tiers remain on Luna. Terra/Sol are escalation-only overrides and are
+# Routine tiers remain on Luna. Terra/Sol/Astra are explicit overrides and are
 # never selected by a routine tier.
 tiers:
   fast:  "gpt-5.6-luna"
@@ -29,11 +29,16 @@ escalations:
   terra:
     model: "gpt-5.6-terra"
     explicit_only: true
-    output_contract: "trigger; why Luna is insufficient; bounded Terra scope; continuation on Luna; FORK/BLOCKED/UNVERIFIED status"
+    output_contract: "trigger; why Luna is insufficient; bounded Terra scope; continuation on Luna; DONE/FORK/BLOCKED/UNVERIFIED status"
   sol:
     model: "gpt-5.6-sol"
     explicit_only: true
-    output_contract: "trigger; why Luna is insufficient; bounded Sol scope; continuation on Luna; FORK/BLOCKED/UNVERIFIED status"
+    output_contract: "trigger; why Luna is insufficient; bounded Sol scope; continuation on Luna; DONE/FORK/BLOCKED/UNVERIFIED status"
+  astra:
+    model: "gpt-6-astra"
+    explicit_only: true
+    use_for: "complex end-to-end investigation; consequential architecture fork; independent review of a high-impact decision"
+    output_contract: "trigger; why Luna/Sol is insufficient; bounded Astra scope; continuation on Luna; DONE/FORK/BLOCKED/UNVERIFIED status"
 
 context:
   fast:  200000

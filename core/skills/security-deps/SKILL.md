@@ -44,8 +44,8 @@ prompt: |
 
   Tools available: Bash, Read, WebSearch.
 
-  Chat output style: caveman (facts only: severity / package / CVE / fix,
-  no filler). Do not lose precision.
+  Chat output style: concise structured prose (severity / package / CVE / fix
+  and caveats). Do not lose precision.
 
   ## Step 1 — Detect package manager, run audit
   Check root for:

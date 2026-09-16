@@ -73,5 +73,5 @@ only a summary + `file:line`, ≤~1500 tokens, not raw files/diffs.
 - path:line — adjacent, out of the spec scope
 ```
 
-Final to chat — caveman (facts: status/counters/static/blockers), no filler.
+Final to chat — concise structured prose (status/counters/static/blockers), no filler.
 Applied cleanly with no blockers → say so briefly.

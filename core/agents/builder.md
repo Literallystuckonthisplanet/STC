@@ -86,6 +86,6 @@ Mid-block you WILL hit decision points. Route them by size:
 - path:line — adjacent, out of scope
 ```
 
-Final to chat — caveman (facts: status/AC/checks/forks), no filler. The
+Final to chat — concise structured prose (status/AC/checks/forks), no filler. The
 report's `file:line` summary IS the deliverable — never raw file dumps,
 ≤~1500 tokens.

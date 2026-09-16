@@ -68,5 +68,5 @@ STOP    — HIGH/CRITICAL found (deploy blocked)
 - If there are no dependencies at all — write PASS.
 - Final output to chat: only the verdict (PASS/WARNING/STOP) and the report
   path.
-- Chat output style — caveman (facts only: severity/package/CVE/fix, no
-  prose). Do not lose precision.
+- Chat output style — concise structured prose (severity/package/CVE/fix and
+  caveats). Do not lose precision.

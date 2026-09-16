@@ -56,12 +56,15 @@ its own verification contract.
 - Sol handles architecture or high-risk decisions when the uncertainty cannot
   be isolated. Main changes model only when the continuing user conversation
   itself requires that depth.
+- Astra handles complex end-to-end investigation, consequential architecture
+  forks, and independent review of high-impact decisions when Sol's depth is
+  insufficient. It is an explicit escalation, not a routine tier.
 - Escalate after two bounded failed Luna attempts, a `FORK/BLOCKED/UNVERIFIED`
   result, contradictory evidence, an unbounded blast radius, missing recovery,
   or a security/irreversibility decision. File count and routine production
   alone are not escalation triggers.
-- Before escalation, report: trigger, why Luna is insufficient, recommended
-  Terra/Sol scope, and what can safely continue on Luna.
+- Before escalation, report: trigger, why the current model is insufficient,
+  recommended Terra/Sol/Astra scope, and what can safely continue on Luna.
 - Read-only roles get technical read-only isolation. Parallel writers get
   disjoint worktrees/write scopes.
 - Caveman only for read-only exploration/research/docs/status. All builders,

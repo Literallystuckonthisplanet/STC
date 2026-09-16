@@ -27,6 +27,11 @@ cmd=$(echo "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)
 [ -z "$cmd" ] && exit 0
 case "$cmd" in *"# in-main"*) exit 0 ;; esac
 
+# Subagent tool calls can pass the same hook. The parent has already offloaded
+# the work, so do not block the child for following the hook's own advice.
+agent_id=$(echo "$input" | jq -r '.agent_id // .tool_input.agent_id // empty' 2>/dev/null)
+case "$agent_id" in ""|main|root) ;; *) exit 0 ;; esac
+
 block() {
   echo "🚫 H15 — expensive Bash in main: $1" >&2
   echo "Offload it to an ephemeral agent (run → return the summary/errors/counters, not the whole stdout) — the 'offload reading' lever (PEV §Step2)." >&2
@@ -43,6 +48,7 @@ IFS=';' read -ra SEGS <<< "$norm"
 for seg in "${SEGS[@]}"; do
   [ -z "${seg// /}" ] && continue
   redir_stdout "$seg" && continue          # output to a file → not the window, skip
+  printf '%s' "$seg" | grep -qE '\-\-json([[:space:]]|$)' && continue
 
   # B) audit as a wall (without --json)
   if printf '%s' "$seg" | grep -qE '(^|[[:space:]])(pnpm|npm|yarn)[[:space:]]+audit\b'; then

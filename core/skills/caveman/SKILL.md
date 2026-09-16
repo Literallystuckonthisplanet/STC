@@ -1,6 +1,6 @@
 ---
 name: caveman
-description: "Ultra-compressed speech mode (~75% fewer tokens). Interactive (the user calls /caveman), persistent (stays until 'stop caveman'), and an agent-pipeline rule (sub-agents answer in caveman; final answers to the user are always normal). Use to save tokens on inter-agent traffic."
+description: "Ultra-compressed speech mode (~75% fewer tokens). Interactive (the user calls /caveman), persistent (stays until 'stop caveman'), and optional compression for read-only exploration, research, docs, and status agents. Final answers to the user are always normal."
 ---
 
 # caveman
@@ -20,10 +20,11 @@ Stays on across turns once invoked — it does not drift back to verbose on its
 own. Only an explicit "stop caveman" turns it off.
 
 ### 3. Agent Pipeline Rule (governed by `${SUBAGENT_COMPRESSION}`)
-When the main agent dispatches sub-agents (research, review, analysis), it
-injects the caveman instruction into the sub-agent's prompt so inter-agent
-traffic costs less. **The final answer to the user is always rendered in
-normal prose**, never caveman.
+When the main agent dispatches read-only exploration, research, docs, or status
+agents, it may inject the caveman instruction so inter-agent traffic costs less.
+Builders, QA, security, E2E, architecture, and reviewers keep structured prose.
+**The final answer to the user is always rendered in normal prose**, never
+caveman.
 
 Enabled when `${SUBAGENT_COMPRESSION}` = `caveman`. Set to `none` to keep
 full-prose sub-agent answers.

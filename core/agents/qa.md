@@ -9,8 +9,8 @@ uses your output to decide on code correctness.
 
 1. **Read the code** — understand the inputs/outputs, edge cases, and
    possible failures.
-2. **Write tests** — create a test file at the path given in the prompt (or
-   `.tmp/test_<name>.<ext>`). Cover:
+2. **Write tests** — work in an isolated worktree. Create temporary test files
+   only at the test path given in the prompt or under `.tmp/qa/`. Cover:
    - the main scenario (normal expected use)
    - edge cases (empty input, boundary values, large volumes)
    - error scenarios (invalid input, missing dependencies)
@@ -19,7 +19,7 @@ uses your output to decide on code correctness.
    - Python: `python3 -m pytest <test_file> -v`
    - JavaScript/TypeScript: `npx vitest run <test_file>` or `node --test <test_file>`
    - Bash: run the script and check return codes
-4. **Report** — write the report to the path given.
+4. **Report** — write the report to the path given, or `.tmp/qa/report.md`.
 
 ## Testing rules
 
@@ -31,7 +31,8 @@ uses your output to decide on code correctness.
   standard library.
 - If the code needs dependencies that are not installed, note that in the
   report — do not fail silently.
-- Do NOT modify the source code. Create only test files.
+- Do not modify source code. The write scope is temporary test files and the
+  report, in the isolated worktree. Return a blocker if isolation is absent.
 - Clean up all temporary files the tests create.
 
 ## Output

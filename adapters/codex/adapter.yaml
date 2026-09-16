@@ -206,7 +206,7 @@ subagents:
 # Codex routing policy
 # ------------------------------------------------------------
 # The skill remains available by explicit request, but routing never turns on
-# Caveman compression globally. Terra/Sol are explicit output-contract paths.
+# Caveman compression globally. Terra/Sol/Astra are explicit output-contract paths.
 routing:
   default_model: "gpt-5.6-luna"
   default_reasoning_effort: "max"
@@ -214,6 +214,7 @@ routing:
   escalations:
     terra: { model: "gpt-5.6-terra", explicit_only: true }
     sol:   { model: "gpt-5.6-sol", explicit_only: true }
+    astra: { model: "gpt-6-astra", explicit_only: true }
 
 # ============================================================
 # LAYER 6 — skills

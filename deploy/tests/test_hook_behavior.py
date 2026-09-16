@@ -368,8 +368,8 @@ def test_codex_h04_binds_subagent_start_and_agent_payloads(tmp_path):
     assert direct.returncode == 0
 
 
-def test_codex_h04_requires_contract_only_for_explicit_terra_sol_override(tmp_path):
-    """Routine Luna production stays un-escalated; explicit Terra needs a contract."""
+def test_codex_h04_requires_contract_for_explicit_terra_sol_astra_override(tmp_path):
+    """Routine Luna stays un-escalated; stronger models need a full contract."""
     base = _codex_event(
         tmp_path,
         "SubagentStart",
@@ -384,30 +384,94 @@ def test_codex_h04_requires_contract_only_for_explicit_terra_sol_override(tmp_pa
     )
     assert routine.returncode == 0
 
-    terra = _run(
-        "agent-reuse-contract.sh",
-        dict(base, model="gpt-5.6-terra"),
-        tmp_path,
-        HARNESS_NAME="codex",
+    complete_prompt = (
+        "reuse-before-reinvent; fork-protocol\n"
+        "STC_ESCALATION_TRIGGER: contradictory architecture evidence\n"
+        "STC_ESCALATION_WHY: Luna could not resolve the conflict\n"
+        "STC_ESCALATION_SCOPE: review the two affected design documents\n"
+        "STC_ESCALATION_CONTINUE: implementation remains with Luna\n"
+        "STC_ESCALATION_RESULT: return DONE/FORK/BLOCKED/UNVERIFIED with evidence\n"
     )
-    assert terra.returncode == 2
-    assert "output contract" in terra.stderr
+    for model in ("gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"):
+        missing = _run(
+            "agent-reuse-contract.sh", dict(base, model=model), tmp_path,
+            HARNESS_NAME="codex",
+        )
+        slogan = _run(
+            "agent-reuse-contract.sh",
+            dict(base, model=model, prompt="reuse-before-reinvent; fork-protocol; bounded task status"),
+            tmp_path, HARNESS_NAME="codex",
+        )
+        contracted = _run(
+            "agent-reuse-contract.sh",
+            dict(base, model=model, prompt=complete_prompt),
+            tmp_path, HARNESS_NAME="codex",
+        )
+        assert missing.returncode == 2
+        assert slogan.returncode == 2
+        assert contracted.returncode == 0
 
-    contracted = _run(
+    indented = _run(
         "agent-reuse-contract.sh",
-        dict(
-            base,
-            model="gpt-5.6-terra",
-            prompt=(
-                "reuse-before-reinvent; fork-protocol; escalation: trigger; "
-                "why Luna is insufficient; bounded scope; continuation on Luna; "
-                "status FORK."
-            ),
-        ),
-        tmp_path,
-        HARNESS_NAME="codex",
+        dict(base, model="gpt-6-astra", prompt="\n".join("  " + line for line in complete_prompt.splitlines())),
+        tmp_path, HARNESS_NAME="codex",
     )
-    assert contracted.returncode == 0
+    fake_status = _run(
+        "agent-reuse-contract.sh",
+        dict(base, model="gpt-6-astra", prompt=complete_prompt.replace("DONE/FORK/BLOCKED/UNVERIFIED", "FORKED")),
+        tmp_path, HARNESS_NAME="codex",
+    )
+    assert indented.returncode == 0
+    assert fake_status.returncode == 2
+
+
+def test_codex_qa_requires_a_linked_worktree_before_writing_tests(tmp_path):
+    """A QA agent must not receive workspace-write in the shared checkout."""
+    repo = tmp_path / "source"
+    isolated = tmp_path / "qa-worktree"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "commit", "-q", "--allow-empty", "-m", "baseline"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(isolated)], check=True)
+    shared = _run(
+        "agent-reuse-contract.sh",
+        _codex_event(tmp_path, "SubagentStart", agent_type="qa", cwd=str(repo), prompt="Generate tests"),
+        tmp_path, HARNESS_NAME="codex",
+    )
+    safe = _run(
+        "agent-reuse-contract.sh",
+        _codex_event(tmp_path, "SubagentStart", agent_type="qa", cwd=str(isolated), prompt="Generate tests"),
+        tmp_path, HARNESS_NAME="codex",
+    )
+    assert shared.returncode == 2
+    assert "worktree" in shared.stderr
+    assert safe.returncode == 0
+
+
+def test_h15_allows_bounded_output_and_child_agent_execution(tmp_path):
+    """The suggested offload path must not be blocked by the same hook."""
+    base = _codex_event(
+        tmp_path, tool_name="Bash",
+        tool_input={"command": "python3 scripts/sync.py --json"},
+    )
+    bounded = _run("exec-offload-guard.sh", base, tmp_path, HARNESS_NAME="codex")
+    child = _run(
+        "exec-offload-guard.sh",
+        dict(base, agent_id="child-1", tool_input={"command": "python3 scripts/sync.py"}),
+        tmp_path, HARNESS_NAME="codex",
+    )
+    main = _run(
+        "exec-offload-guard.sh",
+        dict(base, tool_input={"command": "python3 scripts/sync.py"}),
+        tmp_path, HARNESS_NAME="codex",
+    )
+    assert bounded.returncode == 0
+    assert child.returncode == 0
+    assert main.returncode == 2
 
 
 def test_codex_h14_reads_apply_patch_payload_without_plan_escalation(tmp_path):

@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 4}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 78
+    assert len(findings) == 79
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "9d2b1adb8442f402631b1adcc0ec81a5922c16e486800cb569f013d5b584c373", (
+    assert digest == "1a806686bc89b568cfba82b8e72996b950c854f5f7d6faebfba706474bb70c1a", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1040,7 +1040,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
     triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "93e06d200f908bc29de97c280793c23ec7ad24e01e665e4add11ffd4625e946d", (
+    assert digest == "b3d683ac8b47abe7aa8b9c1a19cd9eb7496d015b17f81abcb5d6b3248480eeab", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1096,6 +1096,40 @@ def test_a_dismissed_or_open_finding_carries_its_reason():
 def test_the_table_list_matches_the_tables_the_engine_loads():
     module = import_tables_module()
     assert BLOCKS["списки"]["таблицы"] == list(module.TABLE_NAMES)
+
+
+def test_the_conveyor_rules_survive_as_acceptance_criteria():
+    """Правила конвейера, решённые Антоном 16.09, живут критериями приёмки.
+
+    Без этого их можно удалить по одному: храповик считает строки верхнего
+    уровня, а отдельный критерий внутри блока в его знаменатель не попадает.
+    Это ровно тот класс, на котором «100 %» уже однажды обмануло.
+    """
+    criteria = {item["id"]: item["условие"]
+                for spec in BLOCKS["блоки"].values() for item in spec["приёмка"]}
+    for identifier, must_say in (
+        ("БИ-13", "явн"),            # переход к архитектуре только по явному ОК
+        ("БУ-2", "Антон"),           # поправка от Антона, а не только решение
+        ("БУ-4", "потолок"),         # у цикла уточнений есть предел
+        ("БУ-5", "отвергается"),     # молчаливый переход невозможен
+        ("БА-3", "тот же цикл"),     # архитектура правится так же, как решение
+        ("БА-5", "не засчитывается"),  # автор не независимый критик своего
+        ("БП-1", "трёх условий"),             # готовность = три условия
+        ("БП-4", "изоляция"),        # пункт 5 PEV: кто и на какой модели
+        ("Б12-8", "слепого пятна"),  # замер, а не спор
+    ):
+        assert identifier in criteria, f"{identifier}: критерий конвейера пропал"
+        assert must_say in criteria[identifier], (
+            f"{identifier}: смысл подменён — нет «{must_say}»")
+
+
+def test_the_handoff_names_all_six_pev_points():
+    # Выход стола — план уровня L по PEV. Шесть пунктов, не пять и не «примерно».
+    points = BLOCKS["списки"]["пункты_плана_PEV"]
+    assert len(points) == 6
+    assert "делегирование_модель_изоляция" in points, (
+        "без пункта «кто и на какой модели берёт блок» план не передаётся агенту")
+    assert "неразрешённые_решения_пользователя" in points
 
 
 def test_the_review_protocol_is_written_down_not_remembered():

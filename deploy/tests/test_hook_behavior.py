@@ -198,6 +198,97 @@ def test_h18_first_touch_of_a_project_points_at_snapshot_without_blocking(tmp_pa
         marker.unlink(missing_ok=True)
 
 
+def test_h18_missing_graph_gives_nonblocking_on_demand_pointer(tmp_path):
+    project = tmp_path / "projects" / "missing-graph"
+    project.mkdir(parents=True)
+    (project / "SNAPSHOT.md").write_text("# snapshot", encoding="utf-8")
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(project))
+    marker = Path(f"/tmp/stc-projectfirst-behavior-missing-{slug}")
+    marker.unlink(missing_ok=True)
+    result = _run(
+        "graphify-first.sh",
+        {
+            "tool_name": "Bash",
+            "session_id": "behavior-missing",
+            "tool_input": {"command": f"rg symbol {project}"},
+        },
+        tmp_path,
+        USER_LANG="en",
+    )
+    try:
+        assert result.returncode == 0
+        assert "graphify_on_demand.py" in result.stdout
+        assert not (project / "graphify-out").exists()
+    finally:
+        marker.unlink(missing_ok=True)
+
+
+def test_h18_grep_without_path_uses_event_cwd(tmp_path):
+    project = tmp_path / "projects" / "cwd-project"
+    project.mkdir(parents=True)
+    (project / "SNAPSHOT.md").write_text("# snapshot", encoding="utf-8")
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(project))
+    marker = Path(f"/tmp/stc-projectfirst-behavior-cwd-{slug}")
+    marker.unlink(missing_ok=True)
+    result = _run(
+        "graphify-first.sh",
+        {
+            "tool_name": "Grep",
+            "session_id": "behavior-cwd",
+            "cwd": str(project),
+            "tool_input": {"pattern": "symbol"},
+        },
+        tmp_path,
+        USER_LANG="en",
+    )
+    try:
+        assert result.returncode == 0
+        assert "graphify_on_demand.py" in result.stdout
+    finally:
+        marker.unlink(missing_ok=True)
+
+
+def test_h18_quoted_project_path_and_absolute_pattern(tmp_path):
+    project = tmp_path / "projects" / "space project"
+    project.mkdir(parents=True)
+    (project / "SNAPSHOT.md").write_text("# snapshot", encoding="utf-8")
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(project))
+    marker = Path(f"/tmp/stc-projectfirst-behavior-quoted-{slug}")
+    marker.unlink(missing_ok=True)
+    quoted = _run(
+        "graphify-first.sh",
+        {
+            "tool_name": "Bash",
+            "session_id": "behavior-quoted",
+            "tool_input": {"command": f'rg symbol "{project}"'},
+        },
+        tmp_path,
+        USER_LANG="en",
+    )
+    try:
+        assert quoted.returncode == 0
+        assert "graphify_on_demand.py" in quoted.stdout
+    finally:
+        marker.unlink(missing_ok=True)
+
+    absolute_pattern = _run(
+        "graphify-first.sh",
+        {
+            "tool_name": "Bash",
+            "session_id": "behavior-quoted",
+            "cwd": str(project),
+            "tool_input": {"command": "rg /api/v1 ."},
+        },
+        tmp_path,
+        USER_LANG="en",
+    )
+    try:
+        assert absolute_pattern.returncode == 0
+        assert "graphify_on_demand.py" in absolute_pattern.stdout
+    finally:
+        marker.unlink(missing_ok=True)
+
+
 def test_h18_does_not_fire_when_the_snapshot_itself_is_being_read(tmp_path):
     """Чтение снапшота — это и есть нужное поведение, подсказка была бы шумом."""
     project = tmp_path / "projects" / "quiet-app"

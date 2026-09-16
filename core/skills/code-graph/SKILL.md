@@ -26,14 +26,13 @@ Not installed → install per the upstream (safishamsi/graphify), then
 `install-mcp.md` for the per-harness wiring.
 
 > **Enforced by H18 (`graphify-first`):** in a repo that already has a built
-> graph, the first grep-style search is blocked once, nudging `query` instead —
-> so a built graph does not sit unused (acknowledge-once; an exact-string grep
-> passes on repeat).
+> graph, the first grep-style search is blocked once, nudging `query` instead.
+> An exact-string grep passes on repeat. The hook never starts extraction.
 
 ## When to use
 
-- **Entering an unfamiliar repo** → `extract .`, then `query`/`explain` to get
-  the lay of the land faster than reading files linearly.
+- **Entering an unfamiliar repo for a structural question** → run the
+  on-demand command below, then `query`/`explain` to get the lay of the land.
 - **"How does X connect to Y" / "what calls this"** → `path` (shortest path
   between two nodes) or `affected` (reverse traversal — what a change to X
   impacts).
@@ -55,9 +54,20 @@ Not installed → install per the upstream (safishamsi/graphify), then
 `${G} = ${GRAPHIFY_CLI}` (default `graphify`). Run inside the repo root
 unless noted. Output lands in `graphify-out/` (gitignored in target repos).
 
+Before a structural query, run
+`python3 ~/.stc/core/scripts/graphify_on_demand.py --project .` from the
+target project (or pass its path to `--project`).
+It prints the graph path. If the graph is missing or invalid, it performs one
+serialized structural bootstrap in the primary checkout using the maintenance
+path (`extract . --no-cluster`, with semantic files excluded). Linked worktrees
+reuse that graph instead of extracting their own. An existing graph is returned
+without refresh; if a question depends on branch-only edits, refresh that
+worktree explicitly and say which revision its graph covers.
+
 ### Build / refresh
-- `${G} extract .` — initial build. Extracts code → graph.json + report +
-  communities. Heaviest step; run once per repo, then maintain incrementally.
+- `${G} extract .` — explicit full initial build. Extracts code → graph.json +
+  report + communities. Heaviest step; use only when semantic extraction is
+  needed, then maintain incrementally.
   (`--backend`/`--model` pick the clustering LLM.) NOTE: there is no `ingest`
   command in graphify 0.9.x — build is `extract`, refresh is `update`.
 - `${G} update` — re-extract changed code files, update the graph (no LLM
@@ -113,8 +123,8 @@ This folder is **gitignored in target repos** (it is derived, not source).
 
 ## Workflow
 
-1. **First contact with a repo** → `${G} extract .`. Then a couple of
-   `query`/`explain` to orient.
+1. **First structural question in a repo** → run the on-demand command; then
+   `query`/`explain` to orient. Exact text or single-file lookup goes to search.
 2. **During work** → `query` for "how/why" questions instead of escalating
    grep. `affected` before a non-trivial change.
 3. **After a good Q&A** → `${G} save-result` (the feedback loop).

@@ -135,9 +135,15 @@ def inspect_project(project: Path | str, head: str | None = None) -> dict:
 
     try:
         data = json.loads(graph.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         record["state"] = "invalid"
         record["error"] = str(exc)
+        return _set_health(record)
+
+    if not isinstance(data, dict) or not isinstance(data.get("nodes"), list) \
+            or not isinstance(data.get("links"), list):
+        record["state"] = "invalid"
+        record["error"] = "graph.json must contain nodes and links lists"
         return _set_health(record)
 
     record["built_at_commit"] = str(data.get("built_at_commit") or "")

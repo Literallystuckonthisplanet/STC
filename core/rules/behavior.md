@@ -79,8 +79,10 @@ the reminder; examples → playbook § SELF-EXEC.
   follows `project_docs.md`.
 - Project status → central project index, then that project's `SNAPSHOT.md`.
 - STC/infra status → `core/memory/SNAPSHOT.md` first.
-- Code relationships/impact → Graphify after the snapshot. Graphify covers
-  code, not project memory or the Wiki.
+- Code relationships/impact → run
+  `python3 ~/.stc/core/scripts/graphify_on_demand.py --project .` in the
+  project; query its graph. Missing graph builds once in the main checkout;
+  worktrees reuse it. Exact lookup → search.
 
 ## Research, output, and code names
 <!-- I14 I22 I28 I29 -->

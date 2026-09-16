@@ -68,6 +68,15 @@ def test_inspect_project_distinguishes_missing_graph(tmp_path):
     assert "bootstrap" in GM.plan_actions(status)
 
 
+@pytest.mark.parametrize("content", ["null", "[]", '{"nodes":"bad","links":[]}'])
+def test_inspect_project_marks_wrong_graph_shape_invalid(tmp_path, content):
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text(content, encoding="utf-8")
+
+    assert GM.inspect_project(tmp_path)["state"] == "invalid"
+
+
 def test_inspect_project_marks_stale_graph_and_missing_viewer(tmp_path):
     _graph(tmp_path, built_at_commit="old")
 

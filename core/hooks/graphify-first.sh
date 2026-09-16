@@ -50,7 +50,41 @@ case "$TOOL" in
     if echo "$CMD" | grep -qE '(^|[|&;[:space:]])(grep|rg|ag)[[:space:]]' || \
        echo "$CMD" | grep -qE 'git[[:space:]]+grep'; then
       GREP_STYLE=1
-      TARGET=$(pwd)
+      # Parse known grep arguments without executing the command. The first
+      # positional argument is the pattern, not a project path; shlex keeps
+      # quoted paths with spaces intact.
+      EVENT_CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+      TARGET=$(python3 - "$CMD" "${EVENT_CWD:-$(pwd)}" <<'PY'
+import pathlib
+import shlex
+import sys
+
+base = pathlib.Path(sys.argv[2])
+try:
+    tokens = shlex.split(sys.argv[1])
+except ValueError:
+    raise SystemExit(0)
+for index, token in enumerate(tokens):
+    if pathlib.Path(token).name not in {"grep", "rg", "ag"}:
+        continue
+    args = []
+    for arg in tokens[index + 1:]:
+        if arg in {"|", ";", "&&", "||"}:
+            break
+        if arg and not arg.startswith("-"):
+            args.append(arg)
+    for arg in args[1:]:
+        path = pathlib.Path(arg).expanduser()
+        if not path.is_absolute():
+            path = base / path
+        if path.exists():
+            print(path.resolve())
+            raise SystemExit(0)
+    break
+PY
+)
+      [ -z "$TARGET" ] && TARGET=$(echo "$INPUT" | jq -r '.cwd // empty')
+      [ -z "$TARGET" ] && TARGET=$(pwd)
     else
       # A path lookup (ls/find/cat/...) still lands in a project — take the
       # first path-looking token so `ls ~/Work/projects/foo` is attributed to
@@ -69,6 +103,7 @@ case "$TOOL" in
     ;;
   *) exit 0 ;;
 esac
+[ -z "$TARGET" ] && TARGET=$(echo "$INPUT" | jq -r '.cwd // empty')
 [ -z "$TARGET" ] && TARGET=$(pwd)
 
 # Reading the snapshot or the graph itself is already the right move.
@@ -105,8 +140,7 @@ done
 REPO_SLUG=$(printf '%s' "$ROOT" | tr -c 'a-zA-Z0-9' '-')
 
 # --- branch 1: grep-style search in a graphed repo → block once -------------
-if [ "$GREP_STYLE" = "1" ]; then
-  [ -z "$GRAPH" ] && exit 0   # no graph in this repo → nothing to enforce
+if [ "$GREP_STYLE" = "1" ] && [ -n "$GRAPH" ]; then
   MARKER="/tmp/stc-graphify-${SESSION_ID:-nosession}-${REPO_SLUG}"
   [ -f "$MARKER" ] && exit 0
   : > "$MARKER"   # set BEFORE exit 2 so the retry passes (acknowledge-once)
@@ -145,10 +179,20 @@ fi
 
 case "$USER_LANG" in
   ru)
-    MSG="🗺️ project-first (H18): проект «$PROJECT» — первое место, куда смотреть: $PARTS. Статус, ветка, HEAD, указатели на память и открытые вопросы уже собраны там; про связи кода спрашивай граф (\`graphify query\`), а не обход каталогов. Восстанавливать это руками через ls/find — дороже и врёт (сборка свежее ручного обхода)."
+    if [ -n "$GRAPH" ]; then
+      CODE_HINT="Для связей кода используй граф (\`graphify query\`)."
+    else
+      CODE_HINT="Если задача требует связей кода, один раз запусти \`python3 ${STC_CORE}/scripts/graphify_on_demand.py --project '$ROOT'\`; точный поиск продолжай без графа."
+    fi
+    MSG="🗺️ project-first (H18): проект «$PROJECT» — первое место, куда смотреть: $PARTS. Статус, ветка, HEAD, указатели на память и открытые вопросы уже собраны там. $CODE_HINT"
     ;;
   *)
-    MSG="🗺️ project-first (H18): project '$PROJECT' — look here first: $PARTS. Status, branch, HEAD, memory pointers and open items are already collected there; for code relationships ask the graph (\`graphify query\`) instead of walking directories. Reconstructing this by hand with ls/find costs more and drifts (the generated view is fresher)."
+    if [ -n "$GRAPH" ]; then
+      CODE_HINT="For code relationships, query the graph (\`graphify query\`)."
+    else
+      CODE_HINT="If the task needs code relationships, run \`python3 ${STC_CORE}/scripts/graphify_on_demand.py --project '$ROOT'\` once; continue exact text lookups without a graph."
+    fi
+    MSG="🗺️ project-first (H18): project '$PROJECT' — look here first: $PARTS. Status, branch, HEAD, memory pointers and open items are already collected there. $CODE_HINT"
     ;;
 esac
 

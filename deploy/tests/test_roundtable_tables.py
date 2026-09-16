@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 2}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 4}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 76
+    assert len(findings) == 78
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "f96cb59466d73f73ab50ce4dbe32210e2f2d4e7421518cdb254c87c92854d071", (
+    assert digest == "9d2b1adb8442f402631b1adcc0ec81a5922c16e486800cb569f013d5b584c373", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1040,7 +1040,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
     triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "f209d27e7cffccda287dd23549c6f964021dd75203bd7ca61550e0625ba6408c", (
+    assert digest == "93e06d200f908bc29de97c280793c23ec7ad24e01e665e4add11ffd4625e946d", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 

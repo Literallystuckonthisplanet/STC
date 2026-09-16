@@ -354,11 +354,19 @@ def _render_hooks(core_dir, adapter, varmap, result, native_hooks_dir, disabled=
         else:
             events = [explicit_event] if explicit_event else _matcher_events(matchers)
         for ev in events:
+            handler = {"type": "command", "command": f"{cmd_prefix}/{out_name}"}
+            context_limit = cap.get("additional_context_limit")
+            if context_limit is not None:
+                if facts.get("hook_config_file") != "hooks.json":
+                    raise ValueError(f"{cap_name}: additional_context_limit requires Codex hooks.json")
+                if isinstance(context_limit, bool) or not isinstance(context_limit, int) or context_limit <= 0:
+                    raise ValueError(f"{cap_name}: additional_context_limit must be a positive integer")
+                handler["additionalContextLimit"] = context_limit
             wiring["hooks"].setdefault(ev, []).append({
                 "matcher": event_matchers.get(ev, "|".join(matchers)),
                 "_stc_managed": True,          # tags this as STC-owned (idempotent
                 "_stc_cap": cap_name,          #   update + uninstall strip)
-                "hooks": [{"type": "command", "command": f"{cmd_prefix}/{out_name}"}],
+                "hooks": [handler],
             })
 
     if not wiring["hooks"]:

@@ -131,7 +131,10 @@ hooks:
     H04_agent_reuse_contract:  { supported: true, matcher: ["Agent"], event_matchers: { SubagentStart: ".*", PreToolUse: "Agent" }, events: ["SubagentStart", "PreToolUse"], binding: { file: agent-reuse-contract.sh } }
     # apply_patch normalize: H05/H07/H09/H10/H16 wrap the body in _apply_patch_normalize.sh
     H05_secret_scan_memory:    { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: secret-scan-memory.sh } }
-    H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",                binding: { file: session-start-context.sh } }
+    # H06 emits ~10 KB of rules; Codex's default ~2,500-token per-hook preview
+    # spills its middle (including PEV thresholds). 6,000 tokens gives headroom
+    # for all three rules and applies only to H06.
+    H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart", additional_context_limit: 6000, binding: { file: session-start-context.sh } }
     H07_dirty_tree_guard:      { supported: true, matcher: ["apply_patch","Edit","Write"],              binding: { file: dirty-tree-guard.sh } }
     # H08: no session lifecycle event in Codex; use offline link lint instead.
     H08_link_integrity:        { supported: false, matcher: ["*"], event: "UserPromptSubmit",            binding: { file: link-integrity-guard.sh }, note: "no session-end lifecycle event; offline lint" }

@@ -58,6 +58,20 @@ def test_codex_emits_hooks_json_not_settings():
     assert "PreToolUse" in wiring["hooks"], "PreToolUse events missing"
 
 
+def test_codex_session_start_context_is_not_spilled_by_default_limit():
+    """H06's three rules exceed Codex's default per-hook context preview."""
+    _, _, _, rr = _load_codex()
+    entries = rr.json_patches["hooks.json"]["hooks"]["SessionStart"]
+    h06 = next(item for item in entries if item.get("_stc_cap") == "H06_session_start_context")
+    assert h06["hooks"][0]["additionalContextLimit"] == 6000
+    assert all(
+        "additionalContextLimit" not in hook
+        for event, groups in rr.json_patches["hooks.json"]["hooks"].items()
+        for group in groups if group.get("_stc_cap") != "H06_session_start_context"
+        for hook in group["hooks"]
+    )
+
+
 def test_codex_emits_toml_config_patch():
     """MCP servers render into config.toml (TOML), NOT .mcp.json (JSON)."""
     _, _, _, rr = _load_codex()

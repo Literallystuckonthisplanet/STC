@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 79
+    assert len(findings) == 87
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "1a806686bc89b568cfba82b8e72996b950c854f5f7d6faebfba706474bb70c1a", (
+    assert digest == "9ca46634a40ab8722c431087886fb7f401603c0d4ca5ef7849b976c58126e22b", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1040,7 +1040,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
     triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "b3d683ac8b47abe7aa8b9c1a19cd9eb7496d015b17f81abcb5d6b3248480eeab", (
+    assert digest == "c3f1cafc2920ced37abb0cbdd23f64990341389a660414153195b225c24f1d04", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1098,29 +1098,77 @@ def test_the_table_list_matches_the_tables_the_engine_loads():
     assert BLOCKS["списки"]["таблицы"] == list(module.TABLE_NAMES)
 
 
-def test_the_conveyor_rules_survive_as_acceptance_criteria():
-    """Правила конвейера, решённые Антоном 16.09, живут критериями приёмки.
+# Блоки конвейера целиком плюс два правила, живущие в соседних блоках.
+# Прежняя версия замка перечисляла девять критериев, выбранных РУКАМИ, и ревью
+# #25 удалило БУ-3 — его в списке просто не было. Набор больше не выбирается.
+CONVEYOR_BLOCKS = ("БУ", "БА", "БП")
+CONVEYOR_EXTRA = ("БИ-13", "Б12-8")
 
-    Без этого их можно удалить по одному: храповик считает строки верхнего
-    уровня, а отдельный критерий внутри блока в его знаменатель не попадает.
-    Это ровно тот класс, на котором «100 %» уже однажды обмануло.
+
+def _conveyor_pairs():
+    pairs = []
+    for name in CONVEYOR_BLOCKS:
+        pairs += [[i["id"], i["условие"]] for i in BLOCKS["блоки"][name]["приёмка"]]
+    everywhere = {i["id"]: i["условие"]
+                  for spec in BLOCKS["блоки"].values() for i in spec["приёмка"]}
+    for identifier in CONVEYOR_EXTRA:
+        pairs.append([identifier, everywhere.get(identifier, "—")])
+    return pairs
+
+
+def test_the_conveyor_rules_survive_as_acceptance_criteria():
+    """Правила конвейера закреплены ПОЛНЫМ текстом, а не поиском слов.
+
+    Ревью #25 прогнало две подмены против прежней версии этого замка и обе
+    прошли: удаление БУ-3 он не заметил вовсе, а БП-1, переписанный в «готовность
+    НЕ требует трёх условий… личное принятие не требуется», сохранил слова
+    «трёх условий» и прошёл проверку. Поиск слов — не защита смысла, и называть
+    его так было очередным «сильнее реализации».
     """
-    criteria = {item["id"]: item["условие"]
-                for spec in BLOCKS["блоки"].values() for item in spec["приёмка"]}
-    for identifier, must_say in (
-        ("БИ-13", "явн"),            # переход к архитектуре только по явному ОК
-        ("БУ-2", "Антон"),           # поправка от Антона, а не только решение
-        ("БУ-4", "потолок"),         # у цикла уточнений есть предел
-        ("БУ-5", "отвергается"),     # молчаливый переход невозможен
-        ("БА-3", "тот же цикл"),     # архитектура правится так же, как решение
-        ("БА-5", "не засчитывается"),  # автор не независимый критик своего
-        ("БП-1", "трёх условий"),             # готовность = три условия
-        ("БП-4", "изоляция"),        # пункт 5 PEV: кто и на какой модели
-        ("Б12-8", "слепого пятна"),  # замер, а не спор
-    ):
-        assert identifier in criteria, f"{identifier}: критерий конвейера пропал"
-        assert must_say in criteria[identifier], (
-            f"{identifier}: смысл подменён — нет «{must_say}»")
+    pairs = _conveyor_pairs()
+    assert all(condition != "—" for _, condition in pairs), "критерий конвейера пропал"
+    digest = hashlib.sha256(
+        json.dumps(pairs, ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert digest == "ca60bb6658888aa685eaacca1d3eef62b461cc305bbcedacf887c44f4dcf7c7c", (
+        "правило конвейера удалено или выхолощено под прежним ID")
+
+
+def test_a_block_calling_models_is_held_by_the_isolation_gate():
+    """Блок, зовущий вендора, обязан ждать доказательства изоляции.
+
+    БА зовёт модель и не был под шлюзом: архитектуру можно было писать вызовами,
+    про которые не доказано, что критик не видит лишнего. Правило общее, а не
+    про один блок, — иначе следующий такой блок заведут так же.
+    """
+    module = import_tables_module()
+    tables = module.load()
+    held = set(BLOCKS["шлюзы"]["изоляция_подтверждена"]["блокирует"])
+    # Единственное исключение — блок, который изоляцию и доказывает: держать его
+    # её же шлюзом значило бы требовать доказательство до доказательства.
+    prover = BLOCKS["отпечаток_изоляции"]["проверяет_блок"]
+    for name, block in tables.blocks.items():
+        if "вызов_модели" not in block.external or block.outside_mvp or name == prover:
+            continue
+        assert name in held, (
+            f"{name}: объявлен вызов_модели, а шлюзом изоляции не удерживается")
+
+
+def test_the_conveyor_is_mandatory_for_release():
+    # Блоки конвейера стояли в списке, но выпуск от них не зависел: положение в
+    # порядке ничего не держит, механизм пропускает недостижимые блоки.
+    module = import_tables_module()
+    tables = module.load()
+
+    def ancestors(name, seen=None):
+        seen = seen if seen is not None else set()
+        for dependency in tables.blocks[name].depends:
+            if dependency not in seen:
+                seen.add(dependency)
+                ancestors(dependency, seen)
+        return seen
+
+    required = {"БУ", "БА", "БП"} - ancestors("Б13")
+    assert not required, f"выпуск не зависит от конвейера: {sorted(required)}"
 
 
 def test_the_handoff_names_all_six_pev_points():

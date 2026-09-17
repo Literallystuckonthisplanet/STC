@@ -11,6 +11,37 @@ release notes.
 
 ## [Unreleased]
 
+### Added — decision journal: a resolved fork records what was dropped
+- `H23` (`decision-record.sh`, UserPromptSubmit): when the user answers a fork
+  the previous reply marked `🗳️`, the hook appends a short note asking for a
+  service ```decision block — what was kept, one `отклонено:` line per rejected
+  option, reason only when it was voiced. Choosing one option rejects the others
+  silently, and the silent rejection leaves no trace anywhere, which is why it
+  gets proposed again a month later.
+- Delivered by a hook rather than a rule in always-context because that kernel
+  is full: 9989 bytes against the 10,000 budget that
+  `test_h06_kernel_fits_codex_visible_context_budget` guards. Just-in-time is
+  also cheaper — forks run ~22 a month, so the note costs nothing the rest of
+  the time. Not an enforcement gate: the owner chose to measure first.
+- `core/scripts/decision_health.py`: counts, from transcripts, the share of
+  resolved forks carrying the block and the share of rejections recorded with no
+  reason. Baseline 2026-09-17: 56 forks over 76 days (~22/month), 0 marked.
+  `--extract` prints the records; each carries its session and timestamp, which
+  is the pointer back to the discussion.
+- The fork signal is the agent's own `🗳️` marker, not the shape of the user's
+  reply. Three alternatives were measured and dropped: the numbered-answer
+  pattern over raw transcripts (190 hits, mostly the agent's own subagent
+  prompts and `cat -n`/grep pastes), the same over the curated corpus (103 hits,
+  2 real in a sample of 12), and the same restricted to `origin.kind == "human"`
+  (214 hits, half of them the user quoting the agent). The marker's one known
+  hole — a fork presented without it — is left unpatched and documented.
+- A local model was evaluated for spotting rejections semantically and rejected:
+  with example phrases in the prompt it flagged 9 of 24 with 4 wrong, including
+  one that filed the accepted option as rejected; without them, 0 of 24. It
+  stays a mechanical parser, never the author of a record.
+- A placeholder block (`принято: <...>`) is not a record, so explaining the
+  format cannot be mistaken for complying with it.
+
 ### Changed — STC model routing and verification
 - Codex keeps Luna Max as the routine model and adds Astra as an explicit
   escalation for complex cross-cutting investigation, consequential

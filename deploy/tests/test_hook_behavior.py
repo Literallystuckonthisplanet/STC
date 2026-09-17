@@ -908,3 +908,80 @@ def test_h07_subagent_neither_claims_nor_is_turned_away(tmp_path):
         claim.unlink(missing_ok=True)
         for m in Path("/tmp").glob("stc-dirty-check-*session-*"):
             m.unlink(missing_ok=True)
+
+
+def _transcript(tmp_path, name, last_assistant_text):
+    """Транскрипт, где последняя реплика ассистента — заданная."""
+    p = tmp_path / name
+    p.write_text("\n".join([
+        json.dumps({"message": {"role": "user", "content": "погнали"}}),
+        json.dumps({"message": {"role": "assistant",
+                                "content": [{"type": "text",
+                                             "text": last_assistant_text}]}}),
+    ]) + "\n", encoding="utf-8")
+    return p
+
+
+def test_h23_asks_for_a_record_only_after_a_fork(tmp_path):
+    """Приписка идёт, только если моя прошлая реплика несла маркер развилки.
+
+    Молча отвергнутый вариант не остаётся нигде — ни в коде, ни в разговоре, —
+    и через месяц предлагается заново. Но приписка на КАЖДОЕ сообщение была бы
+    шумом: развилок по корпусу ~22 в месяц.
+    """
+    fork = _transcript(tmp_path, "fork.jsonl", "🗳️ Развилка: так или иначе?")
+    plain = _transcript(tmp_path, "plain.jsonl", "Готово, посмотри.")
+
+    after_fork = _run("decision-record.sh",
+                      {"transcript_path": str(fork), "prompt": "вариант 1"},
+                      tmp_path, USER_LANG="en")
+    after_plain = _run("decision-record.sh",
+                       {"transcript_path": str(plain), "prompt": "давай"},
+                       tmp_path, USER_LANG="en")
+
+    assert after_fork.returncode == 0
+    assert "```decision" in after_fork.stdout
+    assert "отклонено:" in after_fork.stdout
+    assert after_plain.returncode == 0
+    assert after_plain.stdout.strip() == ""
+
+
+def test_h23_example_is_a_placeholder_the_counter_ignores(tmp_path):
+    """Пример в приписке не должен засчитываться как настоящая запись.
+
+    Иначе правило накручивается: показал формат — получил соблюдение.
+    """
+    import sys
+    sys.path.insert(0, str(REPO / "core" / "scripts"))
+    import decision_health as dh
+
+    fork = _transcript(tmp_path, "fork.jsonl", "🗳️ выбор?")
+    out = _run("decision-record.sh",
+               {"transcript_path": str(fork), "prompt": "1"},
+               tmp_path, USER_LANG="en").stdout
+    body = re.search(r"```decision\n(.*?)```", out, re.S).group(1)
+    assert dh.parse_block(body) == {"kept": [], "dropped": []}
+
+
+def test_h23_is_silent_for_subagents_and_without_a_transcript(tmp_path):
+    fork = _transcript(tmp_path, "fork.jsonl", "🗳️ выбор?")
+    sub = _run("decision-record.sh",
+               {"transcript_path": str(fork), "agent_id": "builder-1"},
+               tmp_path, USER_LANG="en")
+    nothing = _run("decision-record.sh", {"prompt": "x"}, tmp_path, USER_LANG="en")
+    assert (sub.returncode, sub.stdout.strip()) == (0, "")
+    assert (nothing.returncode, nothing.stdout.strip()) == (0, "")
+
+
+def test_h23_ignores_a_toolonly_reply_and_looks_further_back(tmp_path):
+    """Реплика без слов (только вызов инструмента) не гасит развилку."""
+    p = tmp_path / "toolonly.jsonl"
+    p.write_text("\n".join([
+        json.dumps({"message": {"role": "assistant",
+                                "content": [{"type": "text", "text": "🗳️ выбор?"}]}}),
+        json.dumps({"message": {"role": "assistant",
+                                "content": [{"type": "tool_use", "name": "Bash"}]}}),
+    ]) + "\n", encoding="utf-8")
+    res = _run("decision-record.sh", {"transcript_path": str(p), "prompt": "1"},
+               tmp_path, USER_LANG="en")
+    assert "```decision" in res.stdout

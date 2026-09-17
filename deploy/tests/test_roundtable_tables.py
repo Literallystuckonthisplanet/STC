@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 93
+    assert len(findings) == 97
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "e0826c6ec087e7db9043e6249f038837a7302a370f3fea5b652454d3f58683e3", (
+    assert digest == "4711c88eac2a7e85761def5f195be0235c001f7db69bb912214f875293af319a", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1040,7 +1040,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
     triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "3c2bc679a908b66e6a0cbf001d1de06d4e506d855bee6c8ecaab3923ff97ebac", (
+    assert digest == "0c38f8e582d762b0d5ec33b15ef58d4133ba7494cb089a36b73209000c52d6e7", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1165,6 +1165,42 @@ def test_a_rule_a_criterion_points_at_is_part_of_the_scope():
     thinner = copy.deepcopy(plan)
     thinner["согласия"]["сколько"] = 99
     assert tables.blocks["БУ"].scope_sha256(thinner) != tables.blocks["БУ"].scope_sha256(plan)
+
+
+def test_the_launcher_is_a_block_that_can_actually_launch():
+    """Роль запускателя нельзя переназначить на того, кто не запускает.
+
+    Ревью #27 подменило `блок_запуска` на Б3а — блок, прямо описанный как
+    «сборщик команд, БЕЗ запуска». check и все тесты прошли: правило проверяло
+    путь к указанному имени, но не то, годится ли это имя.
+    """
+    module = import_tables_module()
+    tables = module.load()
+    launcher = BLOCKS["отпечаток_изоляции"]["блок_запуска"]
+    assert launcher in tables.blocks, launcher
+    external = set(tables.blocks[launcher].external)
+    assert "запуск_процесса" in external, (
+        f"{launcher} назначен запускателем, а процессов не запускает")
+    assert "вызов_модели" in external, (
+        f"{launcher} назначен запускателем, а вендоров не зовёт")
+
+
+def test_the_isolation_report_must_be_a_successful_one():
+    """Совпадение хешей — не доказательство успеха.
+
+    Ревью #27 подставило отчёт с теми же хешами и вердиктом FAIL: шлюз
+    открывался. Отпечаток доказывает, что проверяли ЭТУ команду; вердикт — что
+    проверка удалась. Нужны оба.
+    """
+    spec = BLOCKS["отпечаток_изоляции"]
+    assert spec["успешный_вердикт"] == "PASS"
+    assert set(spec["версии_команд"]) == {"claude", "codex"}
+    module = import_tables_module()
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert 'report.get("verdict")' in source
+    assert 'report.get("command_frozen")' in source
+    assert "observe_cli_versions" in source, (
+        "версии обязаны спрашиваться у среды, а не только когда их передали")
 
 
 def test_a_block_calling_models_must_depend_on_the_launcher():
@@ -1338,10 +1374,27 @@ def test_the_isolation_gate_is_computed_and_not_declared(tmp_path, monkeypatch):
     report.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(module, "ROOT", tmp_path)
 
-    matching = {"отпечаток": tables.isolation_fingerprint()}
-    report.write_text(json.dumps(matching), encoding="utf-8")
-    assert tables.isolation_ok(), "совпадающий отпечаток должен открывать шлюз"
+    # Успешный отчёт целиком: совпавший отпечаток, вердикт PASS, замороженная
+    # команда и те версии, что стоят сейчас. Меньшего для «закрыт» не хватает.
+    versions = module.observe_cli_versions(spec["версии_команд"])
+    def _report(**changes):
+        base = {"отпечаток": tables.isolation_fingerprint(), "verdict": "PASS",
+                "command_frozen": True, "versions": versions}
+        base.update(changes)
+        return json.dumps(base)
+
+    report.write_text(_report(), encoding="utf-8")
+    if versions is None:
+        pytest.skip("вендоры недоступны в этой среде — версии не спросить")
+    assert tables.isolation_ok(), "успешный отчёт должен открывать шлюз"
     assert tables.closed("Ш1")
+
+    for label, changes in (("вердикт", {"verdict": "FAIL"}),
+                           ("заморозка", {"command_frozen": False}),
+                           ("версии", {"versions": {"claude": "древняя"}})):
+        report.write_text(_report(**changes), encoding="utf-8")
+        assert tables.isolation_drift(), f"{label}: негодный отчёт открыл шлюз"
+    report.write_text(_report(), encoding="utf-8")
 
     adapters = tmp_path / spec["артефакты"]["хеш_adapters_py"]
     original = adapters.read_bytes()
@@ -1351,8 +1404,7 @@ def test_the_isolation_gate_is_computed_and_not_declared(tmp_path, monkeypatch):
     assert any("изоляция_подтверждена" in r for r in tables.hold_reasons("Б3б"))
 
     adapters.write_bytes(original)
-    report.write_text(json.dumps({"отпечаток": tables.isolation_fingerprint(),
-                                  "versions": {"claude": "2.1.227"}}), encoding="utf-8")
+    report.write_text(_report(versions={"claude": "2.1.227"}), encoding="utf-8")
     assert tables.isolation_drift({"claude": "2.1.999"}) == ["версии_CLI"]
 
     report.unlink()

@@ -33,6 +33,7 @@ The same entry points work as `python3 -m roundtable.tables …` when
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -911,14 +912,30 @@ class Tables:
             report = json.loads(report_path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             return ["отчёт нечитаем"]
+        spec_report = self.plan["отпечаток_изоляции"]
+        # 🚩 Ревью #27: сравнивались ТОЛЬКО хеши файлов. Отчёт с вердиктом FAIL
+        # или INCOMPLETE, со снятой заморозкой команды — и шлюз открывался,
+        # потому что файлы-то не менялись. Совпадение отпечатка доказывает, что
+        # проверяли ЭТУ команду, но не то, что проверка удалась.
+        if report.get("verdict") != spec_report["успешный_вердикт"]:
+            return [f"вердикт отчёта {report.get('verdict')!r}, а не "
+                    f"{spec_report['успешный_вердикт']!r}"]
+        if report.get("command_frozen") is not True:
+            return ["команда не помечена замороженной"]
+
         recorded = report.get("отпечаток") or {}
         drift = []
         for field_name, digest in self.isolation_fingerprint().items():
             if recorded.get(field_name) != digest:
                 drift.append(field_name)
-        if observed_versions is not None:
-            if report.get("versions") != observed_versions:
-                drift.append("версии_CLI")
+
+        # Версии среды спрашиваются ВСЕГДА, а не только когда их передали:
+        # обновление CLI без правки исходников — обычный день, и прежде оно
+        # проходило молча. Не смогли спросить — считаем расхождением.
+        observed = observed_versions if observed_versions is not None else observe_cli_versions(
+            spec_report["версии_команд"])
+        if report.get("versions") != observed:
+            drift.append("версии_CLI")
         return drift
 
     def isolation_fingerprint(self) -> dict:
@@ -930,6 +947,27 @@ class Tables:
             out[field_name] = (hashlib.sha256(path.read_bytes()).hexdigest()
                                if path.exists() else "")
         return out
+
+
+@functools.lru_cache(maxsize=1)
+def _cli_version(command: tuple) -> str | None:
+    import subprocess
+    try:
+        done = subprocess.run(list(command), capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def observe_cli_versions(commands: dict) -> dict | None:
+    """Спросить среду, какие вендоры стоят сейчас. Не ответила — не согласие."""
+    observed = {}
+    for vendor, command in commands.items():
+        version = _cli_version(tuple(command))
+        if version is None:
+            return None
+        observed[vendor] = version
+    return observed
 
 
 def _is_sha256(value) -> bool:

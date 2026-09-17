@@ -115,6 +115,7 @@ hooks:
     H04_agent_reuse_contract:  { supported: true, matcher: ["Task"],                                  binding: { file: agent-reuse-contract.sh } }
     H05_secret_scan_memory:    { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: secret-scan-memory.sh } }
     H06_session_start_context: { supported: true, matcher: ["*"], event: "SessionStart",              binding: { file: session-start-context.sh } }
+    H06b_session_start_context_extra: { supported: true, matcher: ["*"], event: "SessionStart", binding: { file: session-start-context-extra.sh } }
     H07_dirty_tree_guard:      { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: dirty-tree-guard.sh } }
     H08_link_integrity:        { supported: true, matcher: ["*"], event: "Stop",                      binding: { file: link-integrity-guard.sh } }
     H09_memory_guard:          { supported: true, matcher: ["Write|Edit|MultiEdit"],                  binding: { file: memory-guard.sh } }

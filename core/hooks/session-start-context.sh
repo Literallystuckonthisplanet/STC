@@ -7,8 +7,8 @@
 # WHAT H06 OWNS:
 #   - cat ~/.stc/core/rules/{behavior,pev,session}.md → stdout
 #     → the harness feeds hook output to the model as additionalContext.
-#     Claude needs the structured JSON form: its plain-text hook preview
-#     persists output above 10 KB and exposes only the first 2 KB to the model.
+#     Claude needs two bounded SessionStart outputs: its hook result above
+#     10 KB exposes only a short preview to the model, even with JSON.
 #     This is the ONLY way the always-context rules reliably reach the model
 #     across harnesses. The always-context bundle (CLAUDE.stc.md/AGENTS.stc.md)
 #     is a fallback pointer, not the loader.
@@ -29,6 +29,14 @@ case "$SOURCE" in
 esac
 
 USER_LANG="${USER_LANG:-en}"
+RULE_FILES=(behavior pev session)
+if [ "${HARNESS_NAME}" = "claude" ]; then
+  if [ "${STC_H06_PART:-primary}" = "secondary" ]; then
+    RULE_FILES=(pev session)
+  else
+    RULE_FILES=(behavior)
+  fi
+fi
 
 render_context() {
 echo "=== ОБЯЗАТЕЛЬНЫЙ КОНТЕКСТ СТАРТА (инжектнут хуком H06 — НЕ перечитывать вручную, если уже видишь) ==="
@@ -41,7 +49,7 @@ AUDIT_FILE=""
 for cand in "${HARNESS_DIR}/skills/infra-audit/SKILL.stc.md" "${HARNESS_DIR}/skills/infra-audit/SKILL.md"; do
   [ -f "$cand" ] && AUDIT_FILE="$cand" && break
 done
-if [ -f "$AUDIT_FILE" ]; then
+if [ "${STC_H06_PART:-primary}" != "secondary" ] && [ -f "$AUDIT_FILE" ]; then
   AUDIT_DATE=$(grep -oE 'Last run:.*[0-9]{4}-[0-9]{2}-[0-9]{2}' "$AUDIT_FILE" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
   if [ -n "$AUDIT_DATE" ]; then
     AUDIT_TS=$(date -j -f "%Y-%m-%d" "$AUDIT_DATE" +%s 2>/dev/null || date -d "$AUDIT_DATE" +%s 2>/dev/null)
@@ -62,7 +70,7 @@ fi
 # project_docs.md stays lazy (read by anchor [[project-docs]] when writing
 # ADRs/specs) — this keeps the inject within the ZCode 24KB additionalContext
 # cap (4 files overflow it by ~160 bytes).
-for f in behavior pev session; do
+for f in "${RULE_FILES[@]}"; do
   src="${STC_CORE}/rules/${f}.md"
   if [ -f "$src" ]; then
     echo ""

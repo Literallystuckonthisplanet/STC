@@ -6,7 +6,9 @@
 #
 # WHAT H06 OWNS:
 #   - cat ~/.stc/core/rules/{behavior,pev,session}.md → stdout
-#     → the harness feeds hook stdout to the model as additionalContext.
+#     → the harness feeds hook output to the model as additionalContext.
+#     Claude needs the structured JSON form: its plain-text hook preview
+#     persists output above 10 KB and exposes only the first 2 KB to the model.
 #     This is the ONLY way the always-context rules reliably reach the model
 #     across harnesses. The always-context bundle (CLAUDE.stc.md/AGENTS.stc.md)
 #     is a fallback pointer, not the loader.
@@ -17,6 +19,7 @@
 # Render-time vars (resolved by deploy.py from stc.yaml):
 #   ${STC_CORE}    — the shared rules/memory root (~/.stc/core), harness-neutral.
 #   ${HARNESS_DIR} — the harness home (~/.claude), where skills/ live.
+#   ${HARNESS_NAME} — selects Claude's structured hook output.
 #   ${USER_LANG}   — message language (en|ru). Default en.
 
 INPUT=$(cat)
@@ -27,6 +30,7 @@ esac
 
 USER_LANG="${USER_LANG:-en}"
 
+render_context() {
 echo "=== ОБЯЗАТЕЛЬНЫЙ КОНТЕКСТ СТАРТА (инжектнут хуком H06 — НЕ перечитывать вручную, если уже видишь) ==="
 
 # Infra-audit cadence: ≥30 days since the last run → remind.
@@ -66,3 +70,12 @@ for f in behavior pev session; do
     cat "$src"
   fi
 done
+}
+
+if [ "${HARNESS_NAME}" = "claude" ]; then
+  CONTEXT=$(render_context)
+  jq -cn --arg c "$CONTEXT" \
+    '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$c}}'
+else
+  render_context
+fi

@@ -132,6 +132,23 @@ def test_h06_injects_startup_but_not_compact(tmp_path):
     assert compact.stdout == ""
 
 
+def test_h06_claude_delivers_full_rules_as_additional_context(tmp_path):
+    startup = _run(
+        "session-start-context.sh",
+        {"source": "startup"},
+        tmp_path,
+        HARNESS_NAME="claude",
+    )
+    assert startup.returncode == 0
+    payload = json.loads(startup.stdout)
+    assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert "2–5 files" in context
+    assert "6+ files" in context
+    assert "Caveman only for read-only" in context
+    assert "----- rules/session.md -----" in context
+
+
 def test_h17_secret_read_guard_has_allow_and_block_branches(tmp_path):
     blocked = _run(
         "secret-read-guard.sh",

@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 97
+    assert len(findings) == 99
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "4711c88eac2a7e85761def5f195be0235c001f7db69bb912214f875293af319a", (
+    assert digest == "cc91f5f21298b3be7013518f0901ef72ae7526cc9cdbfa17817bf2203cc4cbaf", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1036,11 +1036,15 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
     выведет. Её устанавливают один раз при ревью и дальше защищают отпечатком:
     любая перепривязка меняет хеш.
     """
+    # Критерий входит в отпечаток наравне с поломкой и сторожем: ревью #28
+    # вернуло R23-1 с положительной приёмки БУ-10 на отрицательный БИ-13, и
+    # прежний замок этого не заметил — БИ открыт, назначение формально годное.
     findings = _load("findings")["находки"]
-    triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—")] for f in findings]
+    triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—"),
+                f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "0c38f8e582d762b0d5ec33b15ef58d4133ba7494cb089a36b73209000c52d6e7", (
+    assert digest == "6af20f9c6a2f7974ed3cc03b4a47ed8ac87e76f2cf767fabfb148edd03c45ce4", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1165,6 +1169,57 @@ def test_a_rule_a_criterion_points_at_is_part_of_the_scope():
     thinner = copy.deepcopy(plan)
     thinner["согласия"]["сколько"] = 99
     assert tables.blocks["БУ"].scope_sha256(thinner) != tables.blocks["БУ"].scope_sha256(plan)
+
+
+def test_missing_versions_are_never_read_as_agreement(tmp_path, monkeypatch):
+    """Нет данных — это отказ, а не согласие.
+
+    Ревью #28: «не смогли спросить» возвращало None, отсутствующее поле в
+    отчёте — тоже None, и два неизвестных сравнивались как РАВНЫЕ. Шлюз
+    открывался. Проверка идёт с ПОДСТАВЛЕННЫМ ответом среды, иначе на машине
+    без вендоров она бы просто пропускалась — а именно там дыра и жила.
+    """
+    module = import_tables_module()
+    tables = module.load()
+    spec = tables.plan["отпечаток_изоляции"]
+    for relative in spec["артефакты"].values():
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((module.ROOT / relative).read_bytes())
+    report = tmp_path / spec["отчёт"]
+    report.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+
+    live = {"claude": "версия-A", "codex": "версия-B"}
+    base = {"отпечаток": tables.isolation_fingerprint(),
+            "verdict": "PASS", "command_frozen": True}
+
+    monkeypatch.setattr(module, "observe_cli_versions", lambda commands: live)
+    report.write_text(json.dumps({**base, "versions": live}), encoding="utf-8")
+    assert not tables.isolation_drift(), "успешный отчёт при живой среде должен проходить"
+
+    # среда молчит — согласия из этого не возникает
+    monkeypatch.setattr(module, "observe_cli_versions", lambda commands: None)
+    assert tables.isolation_drift(), "недоступная среда принята за совпадение"
+
+    for broken in ({}, {"versions": None}, {"versions": {"claude": "A"}},
+                   {"versions": {"claude": "", "codex": ""}}):
+        report.write_text(json.dumps({**base, **broken}), encoding="utf-8")
+        monkeypatch.setattr(module, "observe_cli_versions", lambda commands: live)
+        assert tables.isolation_drift(), f"отчёт без версий принят: {broken}"
+
+
+def test_the_architecture_stage_waits_for_the_machinery_it_needs():
+    # Критерии БА-3 и БА-6 требуют работающего цикла замечаний и вердикта.
+    # Проверка порядка зависимостей этого не стережёт: удалённой зависимости
+    # для неё уже не существует, проверять нечего (ревью #28).
+    module = import_tables_module()
+    tables = module.load()
+    depends = set(tables.blocks["БА"].depends)
+    for needed, why in (("Б5", "реестры находок"), ("Б6", "вердикт и круги"),
+                        ("Б3б", "запуск вендоров"), ("БУ", "цикл уточнений")):
+        assert needed in depends, (
+            f"БА обещает полную стадию, но не ждёт {needed} — {why}")
 
 
 def test_the_launcher_is_a_block_that_can_actually_launch():
@@ -1404,8 +1459,9 @@ def test_the_isolation_gate_is_computed_and_not_declared(tmp_path, monkeypatch):
     assert any("изоляция_подтверждена" in r for r in tables.hold_reasons("Б3б"))
 
     adapters.write_bytes(original)
-    report.write_text(_report(versions={"claude": "2.1.227"}), encoding="utf-8")
-    assert tables.isolation_drift({"claude": "2.1.999"}) == ["версии_CLI"]
+    stale = {"claude": "2.1.227", "codex": "0.147.0"}
+    report.write_text(_report(versions=stale), encoding="utf-8")
+    assert tables.isolation_drift({"claude": "2.1.999", "codex": "0.150.0"}) == ["версии_CLI"]
 
     report.unlink()
     assert tables.isolation_drift() == ["отчёта нет"], "нет отчёта — шлюз закрыт"

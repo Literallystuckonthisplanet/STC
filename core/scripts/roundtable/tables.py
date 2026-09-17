@@ -929,12 +929,22 @@ class Tables:
             if recorded.get(field_name) != digest:
                 drift.append(field_name)
 
-        # Версии среды спрашиваются ВСЕГДА, а не только когда их передали:
-        # обновление CLI без правки исходников — обычный день, и прежде оно
-        # проходило молча. Не смогли спросить — считаем расхождением.
-        observed = observed_versions if observed_versions is not None else observe_cli_versions(
-            spec_report["версии_команд"])
-        if report.get("versions") != observed:
+        # Версии среды спрашиваются ВСЕГДА, а не только когда их передали.
+        #
+        # 🚩 Ревью #28: «не смогли спросить» возвращало None, отсутствующее поле
+        # в отчёте — тоже None, и два неизвестных сравнивались как РАВНЫЕ. Нет
+        # данных превращалось в согласие. Теперь недоступность среды и пустые
+        # версии в отчёте — самостоятельные расхождения, до всякого сравнения.
+        recorded_versions = report.get("versions")
+        if not isinstance(recorded_versions, dict) or not all(
+                recorded_versions.get(vendor) for vendor in spec_report["версии_команд"]):
+            drift.append("в отчёте нет версий обоих вендоров")
+            return drift
+        observed = (observed_versions if observed_versions is not None
+                    else observe_cli_versions(spec_report["версии_команд"]))
+        if observed is None:
+            drift.append("среду не удалось спросить о версиях")
+        elif recorded_versions != observed:
             drift.append("версии_CLI")
         return drift
 

@@ -269,6 +269,13 @@ CASES = [
     ("П44", "объявить успешным любой вердикт отчёта изоляции",
      lambda r: _blocks(r)["отпечаток_изоляции"].__setitem__("успешный_вердикт", "INCONCLUSIVE"),
      "test_the_isolation_report_must_be_a_successful_one", "PASS"),
+    ("П45", "вернуть находку с положительной приёмки на отрицательный критерий",
+     lambda r: next(f for f in r["findings"]["находки"]
+                    if f["id"] == "R23-1").__setitem__("критерий", "БИ-13"),
+     "test_the_binding_between_a_finding_and_its_break_is_pinned", "привязка"),
+    ("П46", "снять зависимость архитектуры от расчёта вердикта",
+     lambda r: _blocks(r)["блоки"]["БА"].__setitem__("зависит", ["БУ", "Б3б", "Б5"]),
+     "test_the_architecture_stage_waits_for_the_machinery_it_needs", "не ждёт Б6"),
     ("П32", "подменить поломку находки на чужую, но существующую",
      _swap_a_finding_to_a_foreign_break,
      "test_the_binding_between_a_finding_and_its_break_is_pinned", "привязка"),

@@ -159,3 +159,31 @@ def test_canary_no_live_hook_is_reported_dead():
     seen = {k.split(" (")[0] for k in res["fired"]}
     dead = sorted(d for d in blocking if d.split(" (")[0] not in seen)
     assert dead == [], f"в мёртвых числятся: {dead}"
+
+
+def test_empty_registry_is_reported_as_unknown_not_as_all_alive(tmp_path, capsys):
+    """Нет реестра — значит «не знаю», а не «мёртвых нет».
+
+    Развёрнутая копия лежит в ~/.stc, куда adapters/ не копируется. Пока код
+    брался из текста сообщения, это не было видно; после перехода на реестр
+    боевой счётчик печатал благополучное «нет», не имея списка для сравнения.
+    Измеритель, чьё молчание выглядит как здоровье, — ровно тот дефект,
+    который этот скрипт и чинит.
+    """
+    import os
+    from unittest import mock
+    fake = tmp_path / "no-adapters"
+    (fake / "core" / "hooks").mkdir(parents=True)
+    with mock.patch.dict(os.environ, {"STC_SOURCE": str(fake), "HOME": str(fake)}):
+        blocking, quiet, codes = hook_health.declared_hooks(fake)
+    assert blocking == set() and codes == {}
+
+
+def test_registry_is_found_via_stc_source(tmp_path):
+    """Развёрнутая копия находит реестр по указателю на исходники."""
+    import os
+    from unittest import mock
+    with mock.patch.dict(os.environ, {"STC_SOURCE": str(REPO)}):
+        blocking, _quiet, codes = hook_health.declared_hooks(tmp_path / "nowhere")
+    assert codes.get("link-integrity-guard") == "H08"
+    assert any(h.startswith("link-integrity-guard") for h in blocking)

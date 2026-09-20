@@ -33,6 +33,10 @@
 # Render-time vars: ${USER_LANG}, ${STC_CORE}.
 
 USER_LANG="${USER_LANG:-ru}"
+# Как в остальных хуках: ${STC_CORE} подставляется при сборке в ТЕКСТ
+# скрипта, в окружении его нет. Первая редакция читала os.environ и
+# потому в бою молчала всегда — тесты этого не поймали: они задавали её сами.
+STC_CORE="${STC_CORE:-$HOME/.stc/core}"
 
 INPUT=$(cat)
 
@@ -97,14 +101,14 @@ for line in reversed(lines):
     # Правило «предъявление, а не упоминание» живёт в одном месте — здесь
     # только спрашиваем. Своя копия шаблона уже разъезжалась с измерителем
     # (линза: аудит считал не то, что срабатывало).
-    sys.path.insert(0, os.path.join(os.environ.get("STC_CORE", ""), "scripts"))
+    sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
     try:
         from decision_health import presents_fork
     except Exception:
         sys.exit(0)            # счётчик недоступен — молчим, а не гадаем
     print("fork" if presents_fork(text) else "")
     break
-' 2>/dev/null)
+' "$STC_CORE" 2>/dev/null)
 
 [ "$FORK" = "fork" ] || exit 0
 

@@ -11,6 +11,23 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — both new tools were broken in production while green in tests
+- `H23` read `STC_CORE` from the environment, but the variable is substituted
+  into the script TEXT at render time and is not in the environment. The
+  deployed hook therefore failed its import and stayed silent on every fork.
+  The tests missed it because they set the variable themselves; the new one
+  runs with it removed and a relocated `$HOME`, the shape production has.
+- `hook_health.py` resolves its repo as `parents[2]`, which in the deployed
+  copy is `~/.stc` — and `adapters/` is not deployed. After the switch to
+  registry-based codes, the deployed counter lost both the codes and the list
+  of declared hooks, so "no dead hooks" became a VACUOUS truth: nothing to
+  compare against, and the report looked healthy. It now searches the source
+  tree (`STC_SOURCE`, then `~/Work/STC`) and, when no registry is found, says
+  so instead of reporting a clean bill.
+- The hook's source file is looked up under the root where the registry was
+  found, not under an unrelated one; otherwise every declared hook silently
+  fell into the "quiet" bucket, which is the bucket exempt from the dead check.
+
 ### Fixed — two measuring tools that lied about their own subject
 - `hook_health.py` recognised only `PreToolUse … hook error:` and filtered on
   the word "error", so a Stop-hook objection — an ordinary reply with no such

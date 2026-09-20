@@ -232,7 +232,21 @@ def declared_hooks(repo: Path) -> tuple[set[str], set[str]]:
     """
     blocking, quiet = set(), set()
     codes: dict[str, str] = {}
-    adapter = repo / "adapters" / "claude" / "adapter.yaml"
+    # Развёрнутая копия живёт в ~/.stc, а adapters/ туда не копируется. Пока
+    # код правила выдёргивался из текста сообщения, это было незаметно; после
+    # перехода на реестр развёрнутый счётчик потерял и коды, и — что хуже —
+    # список объявленных хуков, из-за чего «мёртвых нет» стало ПУСТОЙ ПРАВДОЙ:
+    # сравнивать оказалось не с чем, а отчёт выглядел благополучным.
+    for cand in (repo,
+                 Path(os.environ.get("STC_SOURCE", "")) if os.environ.get("STC_SOURCE") else None,
+                 Path.home() / "Work" / "STC"):
+        if cand is None:
+            continue
+        adapter = cand / "adapters" / "claude" / "adapter.yaml"
+        if adapter.is_file():
+            break
+    else:
+        return blocking, quiet, codes
     if not adapter.is_file():
         return blocking, quiet, codes
     for line in adapter.read_text(encoding="utf-8").splitlines():
@@ -243,11 +257,18 @@ def declared_hooks(repo: Path) -> tuple[set[str], set[str]]:
         name = m.group(1) + (f" ({code.group(1)})" if code else "")
         if code:
             codes[m.group(1)] = code.group(1)
-        src = repo / "core" / "hooks" / f"{m.group(1)}.sh"
-        try:
-            can_block = "exit 2" in src.read_text(encoding="utf-8")
-        except OSError:
-            can_block = False
+        # Файл хука ищем в ТОМ ЖЕ корне, где нашёлся реестр, и только потом
+        # рядом со скриптом: иначе реестр берётся из исходников, а признак
+        # «умеет блокировать» — из несуществующего пути, и все объявленные
+        # хуки молча уезжают в «тихие», то есть в неподсудные.
+        can_block = False
+        for base in (adapter.parents[2], repo):
+            src = base / "core" / "hooks" / f"{m.group(1)}.sh"
+            try:
+                can_block = "exit 2" in src.read_text(encoding="utf-8")
+                break
+            except OSError:
+                continue
         (blocking if can_block else quiet).add(name)
     return blocking, quiet, codes
 
@@ -294,7 +315,14 @@ def main() -> int:
         for tool, n in sorted(res["advice"].items(), key=lambda x: -x[1]):
             print(f"  {tool:34} {n:5}")
     print("\nмёртвые — умеют блокировать и ни разу не сработали:")
-    print("  " + (", ".join(dead) if dead else "нет"))
+    if not blocking:
+        # Пустой реестр — это «не знаю», а не «всё живо». Молчание измерителя,
+        # выглядящее как благополучие, — тот самый дефект, который этот скрипт
+        # и чинит.
+        print("  ⚠ реестр хуков не найден — сказать нечего. Укажи STC_SOURCE "
+              "на каталог исходников STC.")
+    else:
+        print("  " + (", ".join(dead) if dead else "нет"))
     print("\nневидимы этим методом (тихие, без exit 2) — молчание ничего не доказывает:")
     print("  " + (", ".join(invisible) if invisible else "нет"))
     print("\nОговорка: «повтор» — это тот же вызов после блокировки. Для "

@@ -1030,3 +1030,26 @@ def test_h23_stays_silent_when_the_marker_is_only_mentioned(tmp_path):
                tmp_path, USER_LANG="en", STC_CORE=str(REPO / "core"))
     assert res.returncode == 0
     assert res.stdout.strip() == ""
+
+
+def test_h23_finds_the_counter_without_any_environment_variable(tmp_path):
+    """В бою ${STC_CORE} подставляется в ТЕКСТ скрипта, в окружении его нет.
+
+    Первая редакция читала os.environ и потому молчала ВСЕГДА. Тесты этого не
+    увидели: они сами задавали переменную. Здесь она убрана, а путь по
+    умолчанию ($HOME/.stc/core) подменён — как у развёрнутой копии.
+    """
+    fake_home = tmp_path / "home"
+    (fake_home / ".stc").mkdir(parents=True)
+    (fake_home / ".stc" / "core").symlink_to(REPO / "core")
+    transcript = _transcript(tmp_path, "fork.jsonl", "## 🗳️ Развилка: A или B?")
+
+    env = os.environ.copy()
+    env.pop("STC_CORE", None)
+    env["HOME"] = str(fake_home)
+    env["USER_LANG"] = "en"
+    res = subprocess.run(["bash", str(HOOKS / "decision-record.sh")],
+                         input=json.dumps({"transcript_path": str(transcript)}),
+                         text=True, capture_output=True, env=env)
+    assert res.returncode == 0
+    assert "```decision" in res.stdout, f"хук промолчал: {res.stderr[:200]}"

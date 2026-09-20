@@ -181,3 +181,37 @@ def test_placeholder_example_is_not_a_record(tmp_path):
     _write(tmp_path, "a.jsonl", [_fork(), _human(), _reply(body=body)])
     res = dh.scan(tmp_path, None)
     assert (res["forks"], res["marked"]) == (1, 0)
+
+
+def test_marker_mentioned_is_not_a_fork_presented():
+    """Разговор о маркере — не предъявленный выбор.
+
+    20.09 хук сработал на фразе «развилка без маркера 🗳️ в знаменатель не
+    попадает»: та же порода, что «считал упоминания вместо вызовов». По
+    корпусу (264 реплики с маркером) правило отсекает ровно одно упоминание
+    и ни одного живого предъявления.
+    """
+    assert dh.presents_fork("🗳️ Развилка: так или иначе?")
+    assert dh.presents_fork("## 🗳️ Что нужно от тебя")          # после заголовка
+    assert dh.presents_fork("**Шаг 3.** 🗳️ Развилка А")         # после жирного
+    assert not dh.presents_fork("развилка без маркера 🗳️ не считается")
+    assert not dh.presents_fork("| **Мой маркер 🗳️** | 56 |")
+    # упоминание и предъявление в одной реплике — считается предъявлением
+    assert dh.presents_fork("про маркер 🗳️ говорил\n\n🗳️ Развилка: A или B?")
+
+
+def test_line_anchor_would_have_been_wrong():
+    """Якорь на начало строки выбросил бы 87 настоящих развилок из 264.
+
+    Тест стережёт от «упрощения» правила обратно к позиции в строке.
+    """
+    assert dh.presents_fork("## 🗳️ Развилка")
+    assert dh.presents_fork("**Шаг 3.** 🗳️ гнать на круг или нет")
+
+
+def test_mention_does_not_open_a_fork_in_the_scan(tmp_path):
+    mention = _line({"timestamp": TS.format(0), "sessionId": "s1",
+                     "message": {"role": "assistant", "content": [
+                         {"type": "text", "text": "маркер 🗳️ я объяснял выше"}]}})
+    _write(tmp_path, "a.jsonl", [mention, _human(), _plain_reply()])
+    assert dh.scan(tmp_path, None)["forks"] == 0

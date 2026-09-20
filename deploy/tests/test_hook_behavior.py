@@ -1015,3 +1015,18 @@ def test_h23_ignores_a_toolonly_reply_and_looks_further_back(tmp_path):
     res = _run("decision-record.sh", {"transcript_path": str(p), "prompt": "1"},
                tmp_path, USER_LANG="en")
     assert "```decision" in res.stdout
+
+
+def test_h23_stays_silent_when_the_marker_is_only_mentioned(tmp_path):
+    """Хук спрашивает правило у счётчика, а не держит свою копию.
+
+    Разведённые копии одного правила уже расходились: в линзе аудит считал не
+    то, что срабатывало. Здесь это проверяется поведением — разговор о
+    маркере не должен открывать развилку.
+    """
+    mention = _transcript(tmp_path, "mention.jsonl",
+                          "развилка без маркера 🗳️ в знаменатель не попадает")
+    res = _run("decision-record.sh", {"transcript_path": str(mention), "prompt": "ок"},
+               tmp_path, USER_LANG="en", STC_CORE=str(REPO / "core"))
+    assert res.returncode == 0
+    assert res.stdout.strip() == ""

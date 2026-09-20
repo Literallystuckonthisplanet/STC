@@ -11,6 +11,32 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — two measuring tools that lied about their own subject
+- `hook_health.py` recognised only `PreToolUse … hook error:` and filtered on
+  the word "error", so a Stop-hook objection — an ordinary reply with no such
+  word — was dropped silently. H08 had fired 37 times in 37 sessions and was
+  reported dead: the tool built as a cure for ungrounded claims failed in
+  exactly the way it cures, and its output invited removing a live rule.
+  It now reads three shapes: tool blocks, end-of-reply objections, and
+  prompt-time injections (counted by event, since they carry no hook identity).
+- Firing counts are now keyed by the code from the adapter registry, not by a
+  code scraped from the message text. A hook's own message routinely mentions
+  other hooks' codes, which split one `block-dangerous-git` across three rows
+  (116, 5 and 2) and `web-route-guard` across two.
+- `decision_health.py` / `H23` treated a marker MENTIONED in prose as a fork
+  PRESENTED. On 2026-09-20 the hook fired on the sentence "развилка без
+  маркера 🗳️ в знаменатель не попадает" — the same family as counting
+  mentions instead of invocations. A marker preceded by a referring word
+  (маркер/значок/символ/эмодзи) no longer opens a fork; measured over 264
+  marker-bearing replies the rule drops exactly one mention and no live
+  presentation. Anchoring to the start of a line was measured and rejected:
+  the marker legitimately follows `## ` and `**Шаг 3.** `, so the anchor would
+  have discarded 87 genuine forks out of 264.
+- The marker rule now lives in one place: the hook asks `presents_fork()`
+  rather than keeping its own copy, because duplicated copies of one rule have
+  already drifted here — the lens audit counted something other than what
+  fired.
+
 ### Added — decision journal: a resolved fork records what was dropped
 - `H23` (`decision-record.sh`, UserPromptSubmit): when the user answers a fork
   the previous reply marked `🗳️`, the hook appends a short note asking for a

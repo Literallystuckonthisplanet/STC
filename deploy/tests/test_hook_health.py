@@ -9,6 +9,7 @@
 
 import json
 import sys
+import pytest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -53,7 +54,8 @@ def _write(tmp_path, name, lines):
 
 def test_silent_repeat_counts_as_blind(tmp_path):
     _write(tmp_path, "blind.jsonl", [_call("rg foo"), _block(), _call("rg foo")])
-    res = hook_health.health(tmp_path, None)
+    # Код — из реестра: из текста сообщения его брать нельзя, там мелькают чужие.
+    res = hook_health.health(tmp_path, None, {"graphify-first": "H18"})
     key = "graphify-first (H18)"
     assert res["fired"][key] == 1
     assert res["blind"][key] == 1
@@ -63,7 +65,8 @@ def test_silent_repeat_counts_as_blind(tmp_path):
 def test_repeat_after_saying_something_counts_as_aware(tmp_path):
     _write(tmp_path, "aware.jsonl",
            [_call("rg foo"), _block(), _said("нужен точный поиск строки"), _call("rg foo")])
-    res = hook_health.health(tmp_path, None)
+    # Код — из реестра: из текста сообщения его брать нельзя, там мелькают чужие.
+    res = hook_health.health(tmp_path, None, {"graphify-first": "H18"})
     key = "graphify-first (H18)"
     assert res["fired"][key] == 1
     assert res["aware"][key] == 1
@@ -74,7 +77,8 @@ def test_a_different_next_call_is_neither_blind_nor_aware(tmp_path):
     """Агент послушался и сделал другое — это не повтор вообще."""
     _write(tmp_path, "obeyed.jsonl",
            [_call("rg foo"), _block(), _call("graphify query 'кто вызывает foo'")])
-    res = hook_health.health(tmp_path, None)
+    # Код — из реестра: из текста сообщения его брать нельзя, там мелькают чужие.
+    res = hook_health.health(tmp_path, None, {"graphify-first": "H18"})
     key = "graphify-first (H18)"
     assert res["fired"][key] == 1
     assert res["blind"].get(key, 0) == 0
@@ -83,7 +87,7 @@ def test_a_different_next_call_is_neither_blind_nor_aware(tmp_path):
 
 def test_quiet_hooks_are_never_called_dead(tmp_path):
     """Тихий хук не оставляет следа и в норме — молчание не улика."""
-    blocking, quiet = hook_health.declared_hooks(REPO)
+    blocking, quiet, _codes = hook_health.declared_hooks(REPO)
     assert "session-start-context (H06)" in quiet
     assert "prompt-safety-reminder (H03)" in quiet
     # а стерегущие блокировкой — в другой корзине
@@ -100,3 +104,58 @@ def test_window_filter_excludes_older_events(tmp_path):
     since = datetime(2026, 7, 1, tzinfo=timezone.utc)
     assert hook_health.health(tmp_path, since)["fired"] == {}
     assert hook_health.health(tmp_path, None)["fired"] != {}
+
+
+def _stop_feedback(hook="link-integrity-guard", ts="2026-08-01T10:00:02Z"):
+    """Возражение на конце ответа: обычная реплика, без слова «error»."""
+    msg = (f"Stop hook feedback:\n[/Users/x/.claude/hooks/{hook}.stc.sh]: "
+           "Broken [[wiki-links]] in the loaded memory")
+    return _line({"timestamp": ts, "message": {"role": "user", "content": msg}})
+
+
+def test_stop_hook_feedback_counts_as_a_firing(tmp_path):
+    """Живой H08 числился мёртвым: фильтр искал слово «error», а его тут нет.
+
+    Измеритель, построенный как лекарство от недостоверности, врал ровно тем
+    способом, от которого лечит: 37 срабатываний в 37 сессиях он показывал
+    нулём и предлагал снять работающее правило.
+    """
+    _write(tmp_path, "stop.jsonl", [_stop_feedback()])
+    res = hook_health.health(tmp_path, None, {"link-integrity-guard": "H08"})
+    assert res["fired"]["link-integrity-guard (H08)"] == 1
+
+
+def test_code_comes_from_the_registry_not_from_the_message(tmp_path):
+    """Сообщение хука упоминает чужие коды — по ним считать нельзя.
+
+    По ним один block-dangerous-git разъезжался на три строки: 116, 5 и 2.
+    """
+    msg = ("PreToolUse:Bash hook error: [/Users/x/.claude/hooks/"
+           "block-dangerous-git.stc.sh]: сгребающая команда; коммить путями (см. H19, H18)")
+    _write(tmp_path, "codes.jsonl",
+           [_line({"timestamp": "2026-08-01T10:00:00Z",
+                   "message": {"role": "user",
+                               "content": [{"type": "tool_result", "content": msg}]}})])
+    res = hook_health.health(tmp_path, None, {"block-dangerous-git": "H01"})
+    assert list(res["fired"]) == ["block-dangerous-git (H01)"]
+
+
+def test_prompt_injection_counts_as_advice(tmp_path):
+    _write(tmp_path, "inject.jsonl",
+           [_line({"timestamp": "2026-08-01T10:00:00Z",
+                   "message": {"role": "user",
+                               "content": "UserPromptSubmit hook success: SELF-EXEC: …"}})])
+    res = hook_health.health(tmp_path, None)
+    assert res["advice"]["UserPromptSubmit"] == 1
+
+
+@pytest.mark.skipif(not (Path.home() / "Work" / "transcripts" / "raw").is_dir(),
+                    reason="нет корпуса транскриптов")
+def test_canary_no_live_hook_is_reported_dead():
+    """Страж от рецидива: живой хук в «мёртвых» — повод снять работающее правило."""
+    raw = Path.home() / "Work" / "transcripts" / "raw"
+    blocking, _quiet, codes = hook_health.declared_hooks(REPO)
+    res = hook_health.health(raw, None, codes)
+    seen = {k.split(" (")[0] for k in res["fired"]}
+    dead = sorted(d for d in blocking if d.split(" (")[0] not in seen)
+    assert dead == [], f"в мёртвых числятся: {dead}"

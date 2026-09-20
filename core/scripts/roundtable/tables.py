@@ -800,6 +800,27 @@ class Tables:
             if block.state == "неполный" and not block.blocker:
                 raise ContractError(f"{name}: неполный, но не сказано, чем заблокирован")
 
+        fingerprint = plan["отпечаток_изоляции"]
+        artefacts, declared = fingerprint["артефакты"], set(fingerprint["входит_в_отпечаток"])
+        missing_core = set(fingerprint["требуются_всегда"]) - set(artefacts)
+        if missing_core:
+            raise ContractError(
+                f"отпечаток изоляции: ядро {sorted(missing_core)} выброшено из артефактов")
+        unlisted = set(artefacts) - declared
+        if unlisted:
+            raise ContractError(
+                f"отпечаток изоляции: {sorted(unlisted)} считается, но не объявлено")
+        # Объявленное, но не считаемое, обязано быть названо с причиной —
+        # иначе таблица обещает больше, чем проверяет, и никто этого не видит.
+        promised = declared - set(artefacts) - {"версии_CLI"}
+        unexplained = promised - set(fingerprint["пока_не_вычисляется"])
+        if unexplained:
+            raise ContractError(
+                f"отпечаток изоляции: {sorted(unexplained)} обещано, но не считается "
+                f"и не объяснено")
+        checked.append(f"отпечаток изоляции: считается {len(artefacts) + 1} полей из "
+                       f"{len(declared)}, остальные названы с причиной")
+
         self._check_absorption()
         checked.append("поглощение: формулы объединения соблюдены")
 

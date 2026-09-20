@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 100
+    assert len(findings) == 102
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "d79ba9ac7ac4ca14641bf5e053e207b48a2b64d6013c03d6da8753369b823330", (
+    assert digest == "9c8dc97d844c279c02b57335d8e806a65afe1e76e94f5bf23d8eec4b91565fe8", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "3024648cecd0878ede4339c1cd7188e897870f2555c875a207f7c8198970b6ff", (
+    assert digest == "e45ebc39a547711492b106f3e0861e64a81e3bae25b44e9c7c83ae6fc0760d40", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1207,6 +1207,37 @@ def test_missing_versions_are_never_read_as_agreement(tmp_path, monkeypatch):
         report.write_text(json.dumps({**base, **broken}), encoding="utf-8")
         monkeypatch.setattr(module, "observe_cli_versions", lambda commands: live)
         assert tables.isolation_drift(), f"отчёт без версий принят: {broken}"
+
+
+def test_the_mandatory_artefacts_cannot_be_dropped_from_the_rule():
+    """Защищено не только содержимое списка, но и его состав.
+
+    Ревью #30 удалило запись `хеш_probe` из `артефакты` — и её просто перестали
+    проверять: контракт валиден, 122 теста зелёные, а Ш1 закрывался при
+    отсутствующем файле шипа. Проверять каждый ОСТАВШИЙСЯ элемент мало: нужно,
+    чтобы обязательный не исчез из самого правила.
+    """
+    fingerprint = BLOCKS["отпечаток_изоляции"]
+    assert set(fingerprint["требуются_всегда"]) == {"хеш_adapters_py", "хеш_probe"}
+    for name in fingerprint["требуются_всегда"]:
+        assert name in fingerprint["артефакты"], f"{name}: выброшен из артефактов"
+        assert name in fingerprint["входит_в_отпечаток"], name
+
+
+def test_the_fingerprint_does_not_promise_more_than_it_computes():
+    """Объявлено семь полей, считается три — и это сказано, а не спрятано.
+
+    Найдено при починке предыдущей находки: `входит_в_отпечаток` перечислял
+    argv, env, схему ответа и CODEX_HOME, которых не считает никто. Таблица
+    обещала больше, чем проверяет, — тот же класс, что «сильнее реализации».
+    """
+    fingerprint = BLOCKS["отпечаток_изоляции"]
+    computed = set(fingerprint["артефакты"]) | {"версии_CLI"}
+    promised = set(fingerprint["входит_в_отпечаток"]) - computed
+    assert promised == set(fingerprint["пока_не_вычисляется"]), (
+        "объявленное поле отпечатка не считается и не объяснено")
+    for name, why in fingerprint["пока_не_вычисляется"].items():
+        assert why.strip(), f"{name}: сказано «пока не считается» без причины"
 
 
 def test_a_missing_file_is_never_read_as_a_matching_fingerprint(tmp_path, monkeypatch):

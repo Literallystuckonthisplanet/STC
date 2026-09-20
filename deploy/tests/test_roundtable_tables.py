@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 99
+    assert len(findings) == 100
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "cc91f5f21298b3be7013518f0901ef72ae7526cc9cdbfa17817bf2203cc4cbaf", (
+    assert digest == "d79ba9ac7ac4ca14641bf5e053e207b48a2b64d6013c03d6da8753369b823330", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "6af20f9c6a2f7974ed3cc03b4a47ed8ac87e76f2cf767fabfb148edd03c45ce4", (
+    assert digest == "3024648cecd0878ede4339c1cd7188e897870f2555c875a207f7c8198970b6ff", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1207,6 +1207,47 @@ def test_missing_versions_are_never_read_as_agreement(tmp_path, monkeypatch):
         report.write_text(json.dumps({**base, **broken}), encoding="utf-8")
         monkeypatch.setattr(module, "observe_cli_versions", lambda commands: live)
         assert tables.isolation_drift(), f"отчёт без версий принят: {broken}"
+
+
+def test_a_missing_file_is_never_read_as_a_matching_fingerprint(tmp_path, monkeypatch):
+    """Пропавший файл — отказ, а не совпадение с пустотой.
+
+    Ревью #29, тот же класс, что и с версиями, но во второй половине проверки:
+    отсутствующий файл давал пустую строку, пустая строка в отчёте — тоже, и
+    два «ничего» сходились. Обязательный файл пропал — шлюз обязан закрыться,
+    что бы ни лежало в отчёте.
+    """
+    module = import_tables_module()
+    tables = module.load()
+    spec = tables.plan["отпечаток_изоляции"]
+    for relative in spec["артефакты"].values():
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((module.ROOT / relative).read_bytes())
+    report = tmp_path / spec["отчёт"]
+    report.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    live = {"claude": "версия-A", "codex": "версия-B"}
+    monkeypatch.setattr(module, "observe_cli_versions", lambda commands: live)
+
+    def _write(fingerprint):
+        report.write_text(json.dumps({"отпечаток": fingerprint, "verdict": "PASS",
+                                      "command_frozen": True, "versions": live}),
+                          encoding="utf-8")
+
+    field, relative = next(iter(spec["артефакты"].items()))
+    good = tables.isolation_fingerprint()
+    _write(good)
+    assert not tables.isolation_drift(), "контроль: целые файлы должны проходить"
+
+    _write({**good, field: ""})
+    assert tables.isolation_drift(), "пустой отпечаток в отчёте принят за доказательство"
+
+    (tmp_path / relative).unlink()
+    for fingerprint in (good, {**good, field: ""}):
+        _write(fingerprint)
+        assert tables.isolation_drift(), "пропавший файл принят за совпадение"
+        assert not tables.closed("Ш1")
 
 
 def test_the_architecture_stage_waits_for_the_machinery_it_needs():

@@ -923,10 +923,21 @@ class Tables:
         if report.get("command_frozen") is not True:
             return ["команда не помечена замороженной"]
 
+        # 🚩 Ревью #29, тот же класс во второй половине: отсутствующий файл
+        # давал пустую строку, пустая строка в отчёте — тоже, и два «ничего»
+        # совпадали. Отсутствие обязательного файла — самостоятельный отказ, а
+        # пустой отпечаток не доказательство ни с одной стороны.
+        missing = [field_name for field_name, relative in spec["артефакты"].items()
+                   if not (ROOT / relative).is_file()]
+        if missing:
+            return [f"нет обязательного файла: {', '.join(sorted(missing))}"]
+
         recorded = report.get("отпечаток") or {}
         drift = []
         for field_name, digest in self.isolation_fingerprint().items():
-            if recorded.get(field_name) != digest:
+            if not digest or not recorded.get(field_name):
+                drift.append(f"{field_name}: пустой отпечаток не доказательство")
+            elif recorded[field_name] != digest:
                 drift.append(field_name)
 
         # Версии среды спрашиваются ВСЕГДА, а не только когда их передали.
@@ -954,8 +965,10 @@ class Tables:
         out = {}
         for field_name, relative in spec["артефакты"].items():
             path = ROOT / relative
+            # Пустая строка для пропавшего файла — не «значение», а признак его
+            # отсутствия; сравнивать её ни с чем нельзя (ревью #29).
             out[field_name] = (hashlib.sha256(path.read_bytes()).hexdigest()
-                               if path.exists() else "")
+                               if path.is_file() else "")
         return out
 
 

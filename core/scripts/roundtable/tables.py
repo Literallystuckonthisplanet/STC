@@ -845,6 +845,14 @@ class Tables:
         if missing_core:
             raise ContractError(
                 f"отпечаток изоляции: ядро {sorted(missing_core)} выброшено из артефактов")
+        if not isinstance(fingerprint.get("подтверждение_действует"), bool):
+            raise ContractError("отпечаток изоляции: подтверждение_действует — только да или нет")
+        _string_list(fingerprint.get("входы"), "blocks.отпечаток_изоляции.входы")
+        uncovered = [path for path in artefacts.values()
+                     if not _overlaps([path], fingerprint["входы"])]
+        if uncovered:
+            raise ContractError(f"отпечаток изоляции: {uncovered} хешируется, но не во входах — "
+                                f"его правка не отменила бы подтверждение")
         unlisted = set(artefacts) - declared
         if unlisted:
             raise ContractError(
@@ -993,28 +1001,42 @@ class Tables:
         spec = self.plan["исполнение"]
         _require(spec, {"роли", "проверки", "шаги", "блоки"}, set(), "blocks.исполнение")
         roles, checks = set(spec["роли"]), set(spec["проверки"])
+        rows = spec["блоки"]
         pending = {name for name, block in self.blocks.items()
                    if block.state != "сделано" and not block.outside_mvp}
-        # Ревью #34: «сделано» в таблице — не то же, что закрыт. Пока отпечаток
-        # неполон, доказывающий блок не закроется никогда, и его повторный
-        # прогон обязан стоять в плане — иначе план молча упирается в шлюз.
-        # Решается по таблице, без обращения к среде: `check` остаётся чистым.
         fingerprint = self.plan["отпечаток_изоляции"]
         prover = fingerprint["проверяет_блок"]
-        if fingerprint["пока_не_вычисляется"]:
+        # Ревью #34–#35: «сделано» в таблице — не «изоляция подтверждена», и
+        # «все поля умеем считать» — тоже не она. Действует ли подтверждение,
+        # записано явным флагом (его сверяет с реальностью `authority`), а
+        # отменяет его любой блок, пишущий во входы отпечатка. Решается по
+        # таблице, без обращения к среде: `check` остаётся чистым.
+        writers = {name for name in pending
+                   if name != prover and _overlaps(self.blocks[name].writes, fingerprint["входы"])}
+        needed = (not fingerprint["подтверждение_действует"] or bool(writers)
+                  or bool(fingerprint["пока_не_вычисляется"]))
+        if needed:
             pending.add(prover)
-            if prover not in spec["блоки"]:
+            if prover not in rows:
                 raise ContractError(
-                    f"исполнение: отпечаток неполон, а повторного {prover} в плане нет")
-        listed = set(spec["блоки"])
+                    f"исполнение: подтверждение изоляции не действует или будет отменено "
+                    f"{sorted(writers)}, а повторного {prover} в плане нет")
+        listed = set(rows)
         if pending - listed:
             raise ContractError(f"исполнение: без исполнителя {sorted(pending - listed)}")
         if listed - pending:
             raise ContractError(f"исполнение: {sorted(listed - pending)} закрыт или вне MVP")
-        waves = {}
-        for name, row in spec["блоки"].items():
+        waves_of = {}
+        by_wave = {}
+        for name, row in rows.items():
             where = f"blocks.исполнение.блоки.{name}"
             _require(row, {"волна", "исполнитель", "изоляция", "ревью"}, set(), where)
+            own = row["волна"] if isinstance(row["волна"], list) else [row["волна"]]
+            if len(own) > 1 and name != prover:
+                raise ContractError(f"{where}: несколько волн бывает только у {prover}")
+            if not own or any(not isinstance(w, int) or isinstance(w, bool) for w in own):
+                raise ContractError(f"{where}: волна — целое или список целых")
+            waves_of[name] = sorted(own)
             if row["исполнитель"] not in roles:
                 raise ContractError(f"{where}: исполнитель {row['исполнитель']!r} не из ролей")
             unknown = set(row["ревью"]) - checks
@@ -1024,60 +1046,60 @@ class Tables:
                 raise ContractError(f"{where}: блок без внешнего критика")
             if row["изоляция"] not in ("worktree", "основное_дерево"):
                 raise ContractError(f"{where}: изоляция {row['изоляция']!r}")
-            waves.setdefault(row["волна"], []).append(name)
-        for name, row in spec["блоки"].items():
+            for wave in own:
+                by_wave.setdefault(wave, []).append(name)
+        for name in rows:
             for dependency in self.blocks[name].depends:
                 if dependency not in pending:
                     continue
-                if dependency not in spec["блоки"]:
+                if dependency not in rows:
                     raise ContractError(
                         f"исполнение: {name} ждёт {dependency}, которого нет в плане исполнения")
-                if spec["блоки"][dependency]["волна"] >= row["волна"]:
+                if waves_of[dependency][0] >= waves_of[name][0]:
                     raise ContractError(
-                        f"исполнение: {name} в волне {row['волна']}, а его зависимость "
+                        f"исполнение: {name} в волне {waves_of[name][0]}, а его зависимость "
                         f"{dependency} — не раньше")
-        for wave, names in waves.items():
-            if len(names) > 1 and any(spec["блоки"][n]["изоляция"] != "worktree"
-                                      for n in names):
+        for wave, names in by_wave.items():
+            if len(names) > 1 and any(rows[n]["изоляция"] != "worktree" for n in names):
                 raise ContractError(f"исполнение: волна {wave} параллельна, а не в worktree")
             for left, right in itertools.combinations(sorted(names), 2):
-                shared = [a for a in self.blocks[left].writes if not a.startswith("~")
-                          for b in self.blocks[right].writes if not b.startswith("~")
-                          if a == b or (a.endswith("/") and b.startswith(a))
-                          or (b.endswith("/") and a.startswith(b))]
+                shared = _overlaps(self.blocks[left].writes, self.blocks[right].writes)
                 if shared:
                     raise ContractError(f"исполнение: {left} и {right} в волне {wave} "
-                                        f"пишут общее {sorted(set(shared))}")
-
-        if prover in spec["блоки"]:
-            owners = {self._criterion_owner(entry["закрывает"])
-                      for entry in fingerprint["пока_не_вычисляется"].values()}
-            late = [o for o in owners if spec["блоки"][o]["волна"] >= spec["блоки"][prover]["волна"]]
-            if late:
+                                        f"пишут общее {shared}")
+        owners = {self._criterion_owner(entry["закрывает"])
+                  for entry in fingerprint["пока_не_вычисляется"].values()}
+        if prover in rows and owners:
+            last_owner = max(waves_of[o][0] for o in owners)
+            if waves_of[prover][-1] <= last_owner:
                 raise ContractError(f"исполнение: повторный {prover} не позже "
-                                    f"{sorted(late)}, чьи поля отпечатка он доказывает")
-        self._dry_run(spec["блоки"], pending, prover, owners if prover in spec["блоки"] else set())
+                                    f"{sorted(owners)}, чьи поля отпечатка он доказывает")
+        self._dry_run(waves_of, by_wave, pending, prover, owners, writers,
+                      fingerprint["подтверждение_действует"])
 
     def _criterion_owner(self, criterion: str) -> str:
         return next(name for name, block in self.blocks.items()
                     if any(item.id == criterion for item in block.acceptance))
 
-    def _dry_run(self, rows: dict, pending: set, prover: str, owners: set) -> None:
-        """Сквозной сухой прогон волн: всё ли исполнимо по-настоящему.
+    def _dry_run(self, waves_of: dict, by_wave: dict, pending: set, prover: str,
+                 owners: set, writers: set, confirmed: bool) -> None:
+        """Сквозной сухой прогон волн с меняющимся по ходу допуском.
 
-        Ревью #34: отдельные правила были проверены лучше, чем возможность
-        пройти весь процесс. Здесь волны проходятся по порядку с подставленными
-        результатами — разрешение считается выданным, работа блока сделанной —
-        и спрашивается ТОТ ЖЕ `hold_reasons`, что в бою: зависимости, шлюзы,
-        производная закрытость доказывающего блока. Единственное допущение —
-        разрешение Антона; оно выдаётся на объём и заранее не выводится.
+        Ревью #34: правила по отдельности зелёные, а план не проходился.
+        Ревью #35: прогон считал подтверждение изоляции неизменным, хотя его
+        отменяет каждый блок, пишущий во входы отпечатка, а восстанавливает
+        только прогон доказывающего блока ПОСЛЕ полного отпечатка. Здесь волны
+        проходятся по порядку, и спрашивается ТОТ ЖЕ `hold_reasons`, что в бою.
+        Единственное допущение — разрешение Антона: оно выдаётся на объём и
+        заранее не выводится.
         """
         done = {name for name, block in self.blocks.items()
                 if block.state == "сделано" and name not in pending}
+        state = {"подтверждено": confirmed}
 
         def closed(name: str) -> bool:
-            if name == prover and owners and not owners <= done:
-                return False
+            if name == prover:
+                return state["подтверждено"]
             block = self.blocks[name]
             if block.state == "объединён_с" and block.absorbed_by:
                 return block.absorbed_by in done
@@ -1087,15 +1109,31 @@ class Tables:
         object.__setattr__(self, "closed", closed)
         object.__setattr__(self, "permitted", lambda name: {"сухой_прогон": True})
         try:
-            for wave in sorted({row["волна"] for row in rows.values()}):
-                names = sorted(n for n, row in rows.items() if row["волна"] == wave)
+            for wave in sorted(by_wave):
+                names = sorted(by_wave[wave])
                 for name in names:
                     held = self.hold_reasons(name)
                     if held:
                         raise ContractError(
                             f"исполнение: сухой прогон — {name} в волне {wave} "
                             f"удержан: {'; '.join(held)}")
-                done |= set(names)
+                if prover in names:
+                    if not owners <= done:
+                        raise ContractError(
+                            f"исполнение: сухой прогон — повторный {prover} в волне {wave} "
+                            f"до полного отпечатка, ждёт {sorted(owners - done)}")
+                    if writers & set(names):
+                        raise ContractError(
+                            f"исполнение: сухой прогон — в волне {wave} {prover} "
+                            f"подтверждает то, что меняет {sorted(writers & set(names))}")
+                    state["подтверждено"] = True
+                if writers & set(names):
+                    state["подтверждено"] = False
+                done |= set(names) - {prover}
+            if not state["подтверждено"]:
+                raise ContractError(
+                    f"исполнение: сухой прогон — после последней волны подтверждение "
+                    f"изоляции отменено и не восстановлено")
         finally:
             for attribute, value in zip(("closed", "permitted"), saved):
                 if value is None:
@@ -1261,6 +1299,14 @@ def canon_commit(plan: dict) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def _overlaps(left, right) -> list[str]:
+    """Общие пути двух областей записи: совпадение или вложенность в каталог."""
+    return sorted({a for a in left if not a.startswith("~")
+                   for b in right if not b.startswith("~")
+                   if a == b or (a.endswith("/") and b.startswith(a))
+                   or (b.endswith("/") and a.startswith(b))})
 
 
 def within(path: str, writes) -> bool:
@@ -1781,6 +1827,11 @@ def main(argv: list[str] | None = None) -> int:
                         problems.append(f"{label}: {problem}")
                     else:
                         print(f"✓ {label}")
+            if plan["отпечаток_изоляции"]["подтверждение_действует"]:
+                drift = tables.isolation_drift()
+                if drift:
+                    problems.append(f"таблица говорит «подтверждение изоляции действует», "
+                                    f"а отпечаток расходится: {drift}")
             scope_problems = write_scope_receipt(tables)
             problems += [f"сверка записи: {problem}" for problem in scope_problems]
             if not scope_problems:

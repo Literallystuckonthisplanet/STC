@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 113
+    assert len(findings) == 115
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "83c28e0f0a45e2540d7d88687729c71f3580fcdb1ae9a03f0440e0a58edc0ebc", (
+    assert digest == "7ac3337f6e4b213453f1176786645ed7f23b2f2151060fecd011f30715363029", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "7befa60104dda0106ba736f0cc56644f2fb2df1f089618646330862e2232d630", (
+    assert digest == "bfe88fc37a11d02f1baa91334057b41cfd8f2619128c0c8645b40a03b233f75c", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -2128,8 +2128,56 @@ def test_the_execution_plan_survives_a_dry_run():
     rows = BLOCKS["исполнение"]["блоки"]
     assert "Ш1" not in tables.blocks["Ш2"].depends, "круг Ш2 → Ш1 → полный отпечаток → Ш2"
     assert "Ш1" in rows, "повторный Ш1 выпал из плана при неполном отпечатке"
-    assert rows["Ш1"]["волна"] > rows["Ш2"]["волна"]
+    assert min(rows["Ш1"]["волна"]) > rows["Ш2"]["волна"]
+    assert max(rows["Ш1"]["волна"]) > rows["Б7"]["волна"], (
+        "после правки кода запуска подтверждение не восстановлено")
     assert rows["Б0б"]["волна"] > rows["БИ"]["волна"], "Б0б раньше ремонтного шлюза"
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "self._dry_run(" in source, "сухой прогон выпал из проверки контракта"
     tables.check()
+
+
+def test_completing_the_fingerprint_does_not_confirm_isolation():
+    """Ревью #35: «все поля умеем считать» принималось за «изоляция подтверждена».
+
+    Сценарий критика в памяти: Ш2 завершён, список несчитаемых пуст, живого
+    подтверждения нет. Прежде проверка требовала УБРАТЬ повторный Ш1 и после
+    этого объявляла путь исполнимым. Теперь повторный Ш1 обязателен, пока
+    флаг подтверждения ложен или кто-то впереди пишет во входы отпечатка.
+    """
+    import dataclasses
+    module = import_tables_module()
+
+    def after_sh2():
+        tables = module.load()
+        tables.blocks["Ш2"] = dataclasses.replace(tables.blocks["Ш2"], state="сделано")
+        tables.plan["отпечаток_изоляции"]["пока_не_вычисляется"] = {}
+        del tables.plan["исполнение"]["блоки"]["Ш2"]
+        return tables
+
+    tables = after_sh2()
+    tables._check_execution()  # повторный Ш1 остался — план проходится
+
+    tables = after_sh2()
+    del tables.plan["исполнение"]["блоки"]["Ш1"]
+    with pytest.raises(module.ContractError, match="повторного Ш1"):
+        tables._check_execution()
+
+    # правка входа отпечатка отменяет подтверждение: одного Ш1 до Б3б мало
+    tables = after_sh2()
+    tables.plan["исполнение"]["блоки"]["Ш1"]["волна"] = [8]
+    with pytest.raises(module.ContractError, match="удержан: удерживается шлюзом изоляция"):
+        tables._check_execution()
+
+
+def test_the_confirmation_flag_is_checked_against_reality():
+    # Флаг «подтверждение действует» ставится руками — значит, его сверяет
+    # `authority` с настоящим отпечатком, иначе он стал бы новой лазейкой.
+    module = import_tables_module()
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert 'if plan["отпечаток_изоляции"]["подтверждение_действует"]:' in source
+    spec = BLOCKS["отпечаток_изоляции"]
+    assert spec["подтверждение_действует"] is False, "подтверждения нет: CLI обновились"
+    assert set(spec["входы"]) == {
+        "core/scripts/roundtable/adapters.py", "deploy/tests/isolation_probe.py",
+        "core/scripts/roundtable/schemas/"}, "входы отпечатка сужены"

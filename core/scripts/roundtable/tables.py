@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -104,7 +105,7 @@ TOP_LEVEL = {
         "порядок", "вне_порядка", "блоки", "списки",
         "заключения_ревью", "разрешения_исполнения", "история_разрешений", "шлюзы",
         "отпечаток_изоляции", "проверки_источников", "проверка_памяти", "согласия",
-        "порядок_критики",
+        "порядок_критики", "сверка_записи", "исполнение",
     },
     "stages": {
         "стадии", "слепой_вопрос", "сигнал_нежизнеспособности",
@@ -272,18 +273,23 @@ class Block:
     absorbs: tuple[str, ...] = ()
     declared_counts: dict = field(default_factory=dict)
     outside_mvp: bool = False
+    commits: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, name: str, row: dict, vocabulary: dict | None = None) -> "Block":
         _require(
             row, {"что", "зависит", "читает", "пишет", "внешние_действия", "приёмка"},
             {"состояние", "блокер", "переоткрыт_из_за", "объединён_с", "поглощает",
-             "объявленное_количество", "вне_MVP"},
+             "объявленное_количество", "вне_MVP", "коммиты"},
             f"blocks.блоки.{name}")
         where = f"blocks.блоки.{name}"
         for field_name in ("зависит", "читает", "пишет", "внешние_действия"):
             _string_list(row[field_name], f"{where}.{field_name}")
         _string_list(row.get("поглощает") or [], f"{where}.поглощает")
+        _string_list(row.get("коммиты") or [], f"{where}.коммиты")
+        for sha in row.get("коммиты") or []:
+            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise ContractError(f"{where}.коммиты: {sha!r} — не полный sha коммита")
         _nonempty_string(row["что"], f"{where}.что")
         if "вне_MVP" in row and not isinstance(row["вне_MVP"], bool):
             raise ContractError(f"{where}.вне_MVP: ожидался boolean")
@@ -329,6 +335,7 @@ class Block:
             absorbs=tuple(row.get("поглощает") or ()),
             declared_counts=dict(counts),
             outside_mvp=bool(row.get("вне_MVP", False)),
+            commits=tuple(row.get("коммиты") or ()),
         )
 
     def scope(self, plan: dict | None = None) -> dict:
@@ -800,6 +807,42 @@ class Tables:
             if block.state == "неполный" and not block.blocker:
                 raise ContractError(f"{name}: неполный, но не сказано, чем заблокирован")
 
+        # 🚩 R19-7: объём описывал намерение, но не ограничивал исполнение —
+        # коммит блока мог тронуть что угодно. Закрытый блок обязан назвать свои
+        # коммиты (их сверяет `authority`), а блок, пишущий код движка, — файл
+        # тестов: иначе сверка запретила бы ему тесты или их спрятали бы в чужом.
+        rule = plan["сверка_записи"]
+        _require(rule, {"трейлер", "код_движка", "тесты", "до_правила"}, set(),
+                 "blocks.сверка_записи")
+        _string_list(rule["до_правила"], "blocks.сверка_записи.до_правила")
+        for key in ("трейлер", "код_движка", "тесты"):
+            _nonempty_string(rule[key], f"blocks.сверка_записи.{key}")
+        grandfathered = set(rule["до_правила"])
+        unknown = grandfathered - set(self.blocks)
+        if unknown:
+            raise ContractError(f"сверка записи: {sorted(unknown)} нет среди блоков")
+        for name, block in self.blocks.items():
+            if block.commits and block.state != "сделано":
+                raise ContractError(f"{name}: коммиты записаны, а блок не закрыт")
+            if (block.state == "сделано" and name not in grandfathered
+                    and not block.commits):
+                raise ContractError(
+                    f"{name}: закрыт, но коммиты не названы — выход за `пишет` не сверить")
+            if name in grandfathered or block.state == "сделано":
+                continue
+            code = [path for path in block.writes
+                    if path.startswith(rule["код_движка"]) and path.endswith(".py")]
+            tests = [path for path in block.writes if path.startswith(rule["тесты"])]
+            if code and not tests:
+                raise ContractError(
+                    f"{name}: пишет код движка {code}, но файл тестов не объявлен")
+        checked.append(f"сверка записи: закрытые блоки называют коммиты, "
+                       f"до правила — {len(grandfathered)}")
+
+        self._check_execution()
+        checked.append("исполнение: у каждого незакрытого блока исполнитель, "
+                       "волны уважают зависимости, параллельные области не пересекаются")
+
         fingerprint = plan["отпечаток_изоляции"]
         artefacts, declared = fingerprint["артефакты"], set(fingerprint["входит_в_отпечаток"])
         missing_core = set(fingerprint["требуются_всегда"]) - set(artefacts)
@@ -940,6 +983,60 @@ class Tables:
         return combinations
 
     # -- isolation ----------------------------------------------------------
+    def _check_execution(self) -> None:
+        """Пункт 5 PEV как проверяемые данные, а не абзац плана.
+
+        Параллельные исполнители с общим файлом правят одно и то же; волна,
+        стоящая раньше своей зависимости, — работа на несуществующем основании.
+        """
+        spec = self.plan["исполнение"]
+        _require(spec, {"роли", "проверки", "шаги", "блоки"}, set(), "blocks.исполнение")
+        roles, checks = set(spec["роли"]), set(spec["проверки"])
+        pending = {name for name, block in self.blocks.items()
+                   if block.state != "сделано" and not block.outside_mvp}
+        listed = set(spec["блоки"])
+        if pending - listed:
+            raise ContractError(f"исполнение: без исполнителя {sorted(pending - listed)}")
+        if listed - pending:
+            raise ContractError(f"исполнение: {sorted(listed - pending)} закрыт или вне MVP")
+        waves = {}
+        for name, row in spec["блоки"].items():
+            where = f"blocks.исполнение.блоки.{name}"
+            _require(row, {"волна", "исполнитель", "изоляция", "ревью"}, set(), where)
+            if row["исполнитель"] not in roles:
+                raise ContractError(f"{where}: исполнитель {row['исполнитель']!r} не из ролей")
+            unknown = set(row["ревью"]) - checks
+            if unknown:
+                raise ContractError(f"{where}: проверки {sorted(unknown)} не из списка")
+            if "codex" not in row["ревью"]:
+                raise ContractError(f"{where}: блок без внешнего критика")
+            if row["изоляция"] not in ("worktree", "основное_дерево"):
+                raise ContractError(f"{where}: изоляция {row['изоляция']!r}")
+            waves.setdefault(row["волна"], []).append(name)
+        for name, row in spec["блоки"].items():
+            for dependency in self.blocks[name].depends:
+                if self.blocks[dependency].state == "сделано":
+                    continue
+                if dependency not in spec["блоки"]:
+                    raise ContractError(
+                        f"исполнение: {name} ждёт {dependency}, которого нет в плане исполнения")
+                if spec["блоки"][dependency]["волна"] >= row["волна"]:
+                    raise ContractError(
+                        f"исполнение: {name} в волне {row['волна']}, а его зависимость "
+                        f"{dependency} — не раньше")
+        for wave, names in waves.items():
+            if len(names) > 1 and any(spec["блоки"][n]["изоляция"] != "worktree"
+                                      for n in names):
+                raise ContractError(f"исполнение: волна {wave} параллельна, а не в worktree")
+            for left, right in itertools.combinations(sorted(names), 2):
+                shared = [a for a in self.blocks[left].writes if not a.startswith("~")
+                          for b in self.blocks[right].writes if not b.startswith("~")
+                          if a == b or (a.endswith("/") and b.startswith(a))
+                          or (b.endswith("/") and a.startswith(b))]
+                if shared:
+                    raise ContractError(f"исполнение: {left} и {right} в волне {wave} "
+                                        f"пишут общее {sorted(set(shared))}")
+
     def isolation_ok(self, observed_versions: dict | None = None) -> bool:
         """Whether the isolation proof still describes the current command.
 
@@ -1098,6 +1195,92 @@ def canon_commit(plan: dict) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def within(path: str, writes) -> bool:
+    """Путь внутри объявленной области записи: точное имя или каталог с `/`."""
+    return any(path == entry or (entry.endswith("/") and path.startswith(entry))
+               for entry in writes if not entry.startswith("~"))
+
+
+def _git(*args: str) -> str | None:
+    import subprocess
+    try:
+        done = subprocess.run(["git", "-C", str(ROOT), *args],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def _paths(raw: str) -> list[str]:
+    """Имена из вывода git с `-z`: пробелы и не-ASCII приходят как есть."""
+    return [path for path in raw.split("\x00") if path]
+
+
+def write_scope_receipt(tables: "Tables") -> list[str]:
+    """R19-7: коммиты каждого закрытого блока не выходят за его `пишет`.
+
+    Сверяется в обе стороны. Названный коммит обязан существовать, быть
+    обычным (у слияния diff пуст, и оно прятало бы что угодно), нести трейлер
+    своего блока и трогать только объявленное. И наоборот: коммит с трейлером
+    блока, не названный в его списке, — работа мимо учёта. Коммит без трейлера
+    сверке невидим; это граница, а не гарантия — её держит ревью блока.
+
+    Молчание git — отказ, а не пустой diff: ревью #33 нашло, что `None` от
+    упавшего git превращался в «коммит ничего не трогал» и в пустую историю.
+    """
+    trailer = tables.plan["сверка_записи"]["трейлер"]
+    trailer_format = f"%(trailers:key={trailer},valueonly,separator=%x02)"
+    problems = []
+    listed = {}
+    for name, block in tables.blocks.items():
+        for sha in block.commits:
+            listed[sha] = name
+            parents = _git("rev-list", "--parents", "-n", "1", sha)
+            if parents is None:
+                problems.append(f"{name}: коммита {sha[:7]} нет")
+                continue
+            # корневой коммит — обычный: одна запись без родителя
+            if len(parents.split()) > 2:
+                problems.append(f"{name}: {sha[:7]} — слияние, diff не сверить")
+                continue
+            claimed = _git("log", "-1", f"--format={trailer_format}", sha)
+            if claimed is None:
+                problems.append(f"{name}: {sha[:7]} — git не отдал трейлеры")
+                continue
+            # только настоящий трейлер: строка «Блок: X» посреди текста не в счёт
+            if name not in [v.strip() for v in claimed.strip().split("\x02")]:
+                problems.append(f"{name}: {sha[:7]} без трейлера «{trailer}: {name}»")
+            raw = _git("-c", "core.quotePath=false", "diff-tree", "--root",
+                       "--no-commit-id", "--name-only", "-r", "--no-renames", "-z", sha)
+            if raw is None:
+                problems.append(f"{name}: {sha[:7]} — git не отдал diff, сверить нечего")
+                continue
+            outside = [path for path in _paths(raw) if not within(path, block.writes)]
+            if outside:
+                problems.append(f"{name}: {sha[:7]} вышел за `пишет`: {outside}")
+    history = _git("log", f"--format=%H%x00{trailer_format}%x01")
+    if history is None:
+        return problems + ["git не отдал историю — работу мимо учёта не проверить"]
+    for record in history.split("\x01"):
+        if "\x00" not in record:
+            continue
+        sha, values = record.strip("\n").split("\x00", 1)
+        for claimed in (v.strip() for v in values.split("\x02")):
+            if claimed and listed.get(sha) != claimed:
+                problems.append(f"{sha[:7]} помечен «{trailer}: {claimed}», но в коммитах "
+                                f"{claimed} не назван — работа мимо учёта")
+    return problems
+
+
+def staged_outside_scope(tables: "Tables", name: str) -> list[str]:
+    """Что из подготовленного к коммиту вышло за `пишет` блока — до коммита."""
+    staged = _git("-c", "core.quotePath=false", "diff", "--cached", "--name-only",
+                  "--no-renames", "-z")
+    if staged is None:
+        raise ContractError("git не ответил, что подготовлено к коммиту")
+    return [path for path in _paths(staged) if not within(path, tables.blocks[name].writes)]
 
 
 def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
@@ -1490,6 +1673,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check", help="load every table and verify the engine's invariants")
     sub.add_parser("authority", help="resolve every permission against the real world")
     sub.add_parser("isolation", help="whether the isolation proof still describes the command")
+    scope = sub.add_parser("scope", help="staged files of one block against its write scope")
+    scope.add_argument("block")
 
     render = sub.add_parser("render", help="regenerate the normative sections of the document")
     render.add_argument("--document", default=str(DOCUMENT))
@@ -1525,6 +1710,10 @@ def main(argv: list[str] | None = None) -> int:
                         problems.append(f"{label}: {problem}")
                     else:
                         print(f"✓ {label}")
+            scope_problems = write_scope_receipt(tables)
+            problems += [f"сверка записи: {problem}" for problem in scope_problems]
+            if not scope_problems:
+                print("✓ коммиты закрытых блоков не выходят за объявленное")
             for problem in memory_receipt(plan):
                 problems.append(f"память: {problem}")
             else:
@@ -1533,6 +1722,16 @@ def main(argv: list[str] | None = None) -> int:
             for problem in problems:
                 print(f"✗ {problem}")
             return 1 if problems else 0
+
+        if args.command == "scope":
+            if args.block not in tables.blocks:
+                raise ContractError(f"блока {args.block!r} нет")
+            outside = staged_outside_scope(tables, args.block)
+            for path in outside:
+                print(f"✗ {args.block}: {path} вне `пишет`")
+            if not outside:
+                print(f"✓ {args.block}: подготовленное не выходит за `пишет`")
+            return 1 if outside else 0
 
         if args.command == "isolation":
             # Separate command, separate exit code. Isolation being stale must

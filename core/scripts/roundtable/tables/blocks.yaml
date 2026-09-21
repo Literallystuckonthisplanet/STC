@@ -257,6 +257,8 @@
       - core/scripts/roundtable/schemas/
       - core/scripts/roundtable/context.py
       - deploy/tests/fixtures/roundtable/idea/
+      - deploy/tests/test_roundtable_contracts.py
+      - deploy/tests/test_roundtable_context.py
     внешние_действия: []
     приёмка:
       - id: БИ-1
@@ -351,7 +353,7 @@
     зависит: [Б2]
     объявленное_количество: {коды_предпроверки: 5}
     читает: [core/scripts/roundtable/context.py]
-    пишет: [core/scripts/roundtable/precheck.py, core/scripts/roundtable/schemas/precheck_frontmatter.json]
+    пишет: [core/scripts/roundtable/precheck.py, core/scripts/roundtable/schemas/precheck_frontmatter.json, deploy/tests/test_roundtable_precheck.py]
     внешние_действия: []
     приёмка:
       - id: Б15-1
@@ -368,7 +370,7 @@
     зависит: [БТ, БИ]
     объявленное_количество: {схемы_контрактов: 9}
     читает: [core/scripts/roundtable/tables/]
-    пишет: [core/scripts/roundtable/contracts.py, core/scripts/roundtable/schemas/]
+    пишет: [core/scripts/roundtable/contracts.py, core/scripts/roundtable/schemas/, deploy/tests/test_roundtable_contracts.py]
     внешние_действия: []
     приёмка:
       - id: Б4-1
@@ -409,7 +411,7 @@
     что: "запуск, таймауты, читатели ответов"
     зависит: [Ш1, Ш2, Б2]
     читает: [core/scripts/roundtable/context.py]
-    пишет: [core/scripts/roundtable/adapters.py]
+    пишет: [core/scripts/roundtable/adapters.py, deploy/tests/test_roundtable_adapters.py]
     внешние_действия: [вызов_модели, запуск_процесса]
     приёмка:
       - id: Б3б-1
@@ -421,7 +423,7 @@
     что: "реестры и проекции"
     зависит: [Б4]
     читает: [core/scripts/roundtable/tables/]
-    пишет: [core/scripts/roundtable/registry.py]
+    пишет: [core/scripts/roundtable/registry.py, deploy/tests/test_roundtable_registry.py]
     внешние_действия: []
     приёмка:
       - id: Б5-1
@@ -435,7 +437,7 @@
     что: "вердикт, круги, контракт E"
     зависит: [Б5]
     читает: [core/scripts/roundtable/registry.py]
-    пишет: [core/scripts/roundtable/decision.py]
+    пишет: [core/scripts/roundtable/decision.py, deploy/tests/test_roundtable_decision.py]
     внешние_действия: []
     приёмка:
       - id: Б6-1
@@ -451,7 +453,7 @@
     что: "устойчивость, отказы, группы процессов"
     зависит: [Б1, Б3б]
     читает: []
-    пишет: [core/scripts/roundtable/state.py, core/scripts/roundtable/adapters.py]
+    пишет: [core/scripts/roundtable/state.py, core/scripts/roundtable/adapters.py, deploy/tests/test_roundtable_adapters.py, deploy/tests/test_roundtable_state.py]
     внешние_действия: [запуск_процесса]
     приёмка:
       - id: Б7-1
@@ -464,7 +466,7 @@
     зависит: [Б6, Б7, Б15]
     объявленное_количество: {операции: 11}
     читает: [core/scripts/roundtable/decision.py]
-    пишет: [core/scripts/roundtable/cli.py, core/scripts/roundtable/__main__.py]
+    пишет: [core/scripts/roundtable/cli.py, core/scripts/roundtable/__main__.py, deploy/tests/test_roundtable_cli.py]
     внешние_действия: []
     приёмка:
       - id: Б8-1
@@ -482,7 +484,7 @@
     что: "публикация протокола"
     зависит: [Б5, Б6]
     читает: [core/scripts/roundtable/registry.py]
-    пишет: [core/scripts/roundtable/protocol.py]
+    пишет: [core/scripts/roundtable/protocol.py, deploy/tests/test_roundtable_protocol.py]
     внешние_действия: []
     приёмка:
       - id: Б9-1
@@ -492,7 +494,7 @@
     что: "секретарь"
     зависит: [Б6, Б3б]
     читает: [core/scripts/roundtable/registry.py]
-    пишет: [core/scripts/roundtable/protocol.py]
+    пишет: [core/scripts/roundtable/protocol.py, deploy/tests/test_roundtable_protocol.py]
     внешние_действия: [вызов_модели]
     приёмка:
       - id: Б10-1
@@ -508,6 +510,7 @@
     пишет:
       - core/scripts/roundtable/handoff.py
       - deploy/tests/fixtures/roundtable/handoff/
+      - deploy/tests/test_roundtable_handoff.py
     внешние_действия: []
     приёмка:
       - id: БП-1
@@ -600,7 +603,7 @@
     зависит: [Б15, Б10]
     вне_MVP: true
     читает: []
-    пишет: [core/scripts/roundtable/precheck.py, core/scripts/roundtable/protocol.py]
+    пишет: [core/scripts/roundtable/precheck.py, core/scripts/roundtable/protocol.py, deploy/tests/test_roundtable_precheck.py, deploy/tests/test_roundtable_protocol.py]
     внешние_действия: [вызов_модели]
     приёмка:
       - id: Б16-1
@@ -788,6 +791,69 @@
       почему: "каталог создаётся шипом; отпечаток его содержимого ещё не считается"
       закрывает: Ш2-4
   расхождение: закрывает_шлюз
+
+# --- исполнение ----------------------------------------------------------------
+# Кто и как исполняет каждый незакрытый блок (пункт 5 PEV). Волна — блоки,
+# которые можно вести одновременно: зависимости закрыты в прежних волнах, а
+# области записи не пересекаются. И то и другое проверяет контракт, а не глаз:
+# две волны с общим файлом — это два исполнителя, правящих одно и то же.
+# Разрешение Антона выдаётся на объём каждого блока, а не на волну.
+исполнение:
+  роли:
+    main: "главная сессия: брифы, интеграция, коммиты с трейлером, учёт, отчёт Антону"
+    builder: "субагент-исполнитель: код и тесты блока строго в его `пишет`, TDD по критериям; на развилке возвращает FORK, а не решает"
+  проверки:
+    qa: "независимые тесты граничных случаев, без правки исходников"
+    code-reviewer: "ревью фрагмента без контекста проекта"
+    security-arch: "аудит границы безопасности"
+    codex: "внешний критик ломает блок по методу «ломать таблицу»"
+  # Шаги для каждого блока, по порядку. Шаг не пропускается.
+  шаги:
+    - "main проверяет разрешение на текущий объём блока; нет — стоп, вопрос Антону"
+    - "main выдаёт бриф: блок, критерии приёмки, `пишет`, запреты (флаги обхода, push в main, живые вызовы при закрытом шлюзе)"
+    - "исполнитель пишет по тесту на критерий, красный → зелёный"
+    - "`tables.py scope <блок>` на подготовленном; файл вне `пишет` — назад исполнителю"
+    - "проверки из `ревью` блока; находка — назад, повтор"
+    - "main коммитит с трейлером «Roundtable-Block: <блок>»"
+    - "codex ломает блок; находки — в реестр, закрыть или обосновать"
+    - "main записывает коммиты, ставит «сделано»; authority и храповик зелёные"
+  блоки:
+    БК: {волна: 1, исполнитель: main, изоляция: основное_дерево, ревью: [codex]}
+    Б1: {волна: 2, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    БТ2: {волна: 2, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б0б: {волна: 2, исполнитель: builder, изоляция: worktree, ревью: [codex]}
+    Б2: {волна: 3, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, security-arch, codex]}
+    БИ: {волна: 4, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, security-arch, codex]}
+    БУ: {волна: 5, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б15: {волна: 5, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б4: {волна: 6, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Ш2: {волна: 7, исполнитель: main, изоляция: worktree, ревью: [qa, security-arch, codex]}
+    Б5: {волна: 7, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б3б: {волна: 8, исполнитель: main, изоляция: worktree, ревью: [qa, security-arch, codex]}
+    Б6: {волна: 8, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    БА: {волна: 9, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б7: {волна: 9, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, security-arch, codex]}
+    Б9: {волна: 9, исполнитель: builder, изоляция: worktree, ревью: [qa, security-arch, codex]}
+    Б8: {волна: 10, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б10: {волна: 10, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    БП: {волна: 10, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б11: {волна: 11, исполнитель: main, изоляция: основное_дерево, ревью: [codex]}
+    Б12: {волна: 12, исполнитель: main, изоляция: основное_дерево, ревью: [security-arch, codex]}
+    Б13: {волна: 13, исполнитель: main, изоляция: основное_дерево, ревью: [security-arch, codex]}
+
+# --- сверка записи -------------------------------------------------------------
+# 🚩 R19-7: `пишет` описывало намерение, но не ограничивало исполнение. Теперь
+# закрытый блок называет свои коммиты, а `authority` сверяет каждый: трейлер
+# своего блока, обычный коммит, ни одного файла вне `пишет`. Коммит с трейлером
+# блока, не названный в его списке, — работа мимо учёта. Коммит без трейлера
+# сверке невидим: это граница, её держит ревью блока, а не программа.
+сверка_записи:
+  трейлер: Roundtable-Block
+  код_движка: core/scripts/roundtable/
+  тесты: deploy/tests/test_roundtable_
+  # Закрыты до правила, их коммиты не записаны. Восстанавливать их задним
+  # числом — подгонка, поэтому они названы поимённо, а список заперт тестом.
+  до_правила: [Б0а, Б3а, Ш1, БТ]
 
 # Квитанция второго шага БК. Память живёт вне git, поэтому «обновим тем же
 # коммитом» невыполнимо — вместо обещания проверяется факт: каждый файл памяти

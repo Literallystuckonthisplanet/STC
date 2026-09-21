@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 106
+    assert len(findings) == 110
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "778a4aaa9c86bfb8da3acb5c06a666f41775ecc01cf527ccce84daa0fde94408", (
+    assert digest == "f761727f92ecab6253e88bd31ae2be9289a77a9c1c322b6df78f78edb3bf9b92", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "927ca321a2516b5cf5e496d6ad544979714d7d69218c6e5ad2105a89702495ad", (
+    assert digest == "fdaa1de768853024b473eb60378059cdd1204e0d7dd92b30fbb3eb31b687284e", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1923,3 +1923,166 @@ def test_the_foundation_block_states_what_it_must_deliver():
         "не только отмена", "без правки Python", "генерируются", "мутации",
     ):
         assert requirement in criteria, requirement
+
+
+def test_the_write_scope_rule_is_pinned():
+    """R19-7: исключения из сверки записи названы поимённо и заперты.
+
+    Добавь блок в `до_правила` — и он закрывается без коммитов, то есть без
+    сверки. Трейлер тоже нельзя переименовать молча: старые коммиты перестали
+    бы находиться, и «работа мимо учёта» стала бы невидимой.
+    """
+    rule = BLOCKS["сверка_записи"]
+    assert set(rule["до_правила"]) == {"Б0а", "Б3а", "Ш1", "БТ"}, (
+        "список «до правила» расширен — блок ушёл от сверки")
+    assert rule["трейлер"] == "Roundtable-Block"
+    module = import_tables_module()
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert "write_scope_receipt(tables)" in source, "authority перестал сверять запись"
+
+
+def _git_repo(tmp_path):
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    git("config", "commit.gpgsign", "false")
+
+    def commit(files, message):
+        for relative, text in files.items():
+            target = tmp_path / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+            git("add", relative)
+        git("commit", "-q", "-m", message)
+        return git("rev-parse", "HEAD")
+    return git, commit
+
+
+def test_commits_of_a_closed_block_are_checked_against_its_scope(tmp_path, monkeypatch):
+    """Коммит блока, вышедший за `пишет`, — отказ, а не молчание.
+
+    Проверка на настоящем git во временном каталоге: положительный контроль
+    (коммит в пределах объявленного проходит), затем по одному нарушению на
+    каждый путь обхода — чужой файл, нет трейлера, коммит мимо учёта,
+    несуществующий коммит, слияние.
+    """
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    base = commit({"README": "x"}, "init")
+
+    def tables_with(commits):
+        raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["блоки"]["БТ2"]["состояние"] = "сделано"
+        raw["blocks"]["блоки"]["БТ2"]["коммиты"] = commits
+        return module.Tables.from_raw(raw)
+
+    good = commit({"deploy/tests/test_roundtable_decide.py": "ok"}, "работа\n\nRoundtable-Block: БТ2")
+    assert module.write_scope_receipt(tables_with([good])) == [], "контроль: честный коммит"
+
+    wide = commit({"core/scripts/roundtable/adapters.py": "чужое"}, "работа\n\nRoundtable-Block: БТ2")
+    problems = module.write_scope_receipt(tables_with([good, wide]))
+    assert any("вышел за `пишет`" in p and "adapters.py" in p for p in problems), problems
+
+    bare = commit({"deploy/tests/test_roundtable_decide.py": "ещё"}, "без трейлера")
+    assert any("без трейлера" in p for p in module.write_scope_receipt(tables_with([good, bare])))
+
+    # помечен блоком, но в его списке не назван — работа мимо учёта
+    assert any("мимо учёта" in p for p in module.write_scope_receipt(tables_with([good])))
+
+    assert any("нет" in p for p in module.write_scope_receipt(tables_with(["0" * 40])))
+
+    git("checkout", "-q", "-b", "side", base)
+    commit({"deploy/tests/test_roundtable_decide.py": "бок"}, "бок")
+    git("checkout", "-q", "-")
+    git("merge", "-q", "--no-edit", "-X", "ours", "side")
+    merge = git("rev-parse", "HEAD")
+    assert any("слияние" in p for p in module.write_scope_receipt(tables_with([merge])))
+
+
+def test_staged_work_is_checked_before_the_commit(tmp_path, monkeypatch):
+    # Исполнитель сверяет подготовленное ДО коммита: `tables.py scope <блок>`.
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    commit({"README": "x"}, "init")
+    tables = module.load()
+    (tmp_path / "deploy/tests").mkdir(parents=True)
+    (tmp_path / "deploy/tests/test_roundtable_decide.py").write_text("ok", encoding="utf-8")
+    git("add", "deploy/tests/test_roundtable_decide.py")
+    assert module.staged_outside_scope(tables, "БТ2") == [], "контроль: своё проходит"
+    (tmp_path / "README").write_text("чужое", encoding="utf-8")
+    git("add", "README")
+    assert module.staged_outside_scope(tables, "БТ2") == ["README"]
+
+
+def test_a_block_writing_engine_code_declares_its_tests():
+    # R33-1: с включённой сверкой записи блок без объявленного файла тестов либо
+    # не смог бы их написать, либо спрятал бы их в чужом файле мимо учёта.
+    rule = BLOCKS["сверка_записи"]
+    for name, row in BLOCKS["блоки"].items():
+        if name in rule["до_правила"] or row.get("состояние") == "сделано":
+            continue
+        code = [p for p in row["пишет"]
+                if p.startswith(rule["код_движка"]) and p.endswith(".py")]
+        if code:
+            assert any(p.startswith(rule["тесты"]) for p in row["пишет"]), (
+                f"{name}: пишет код движка, файл тестов не объявлен")
+
+
+def test_the_execution_plan_is_checked_by_the_contract():
+    # R33-3: план исполнения — данные. Каждый незакрытый блок MVP назван ровно
+    # один раз, у каждого внешний критик, параллельные волны — в worktree.
+    module = import_tables_module()
+    tables = module.load()
+    rows = BLOCKS["исполнение"]["блоки"]
+    pending = {n for n, b in tables.blocks.items() if b.state != "сделано" and not b.outside_mvp}
+    assert set(rows) == pending
+    assert all("codex" in row["ревью"] for row in rows.values())
+    assert any("scope" in step for step in BLOCKS["исполнение"]["шаги"]), (
+        "сверка подготовленного выпала из шагов исполнения")
+
+
+def test_the_write_scope_check_fails_closed(tmp_path, monkeypatch):
+    """Находки независимого ревью #33 — по одной проверке на каждую.
+
+    Молчание git было «пустым diff» и «пустой историей»; корневой коммит
+    отвергался и при этом его diff не читался вовсе; имя с пробелом или
+    не-ASCII разваливалось; строка «Блок: X» в теле письма засчитывалась
+    трейлером.
+    """
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+
+    def tables_with(commits):
+        raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["блоки"]["БТ2"]["состояние"] = "сделано"
+        raw["blocks"]["блоки"]["БТ2"]["коммиты"] = commits
+        raw["blocks"]["блоки"]["БТ2"]["пишет"].append("deploy/tests/fixtures/roundtable/")
+        return module.Tables.from_raw(raw)
+
+    # корневой коммит — обычный, и его файлы сверяются
+    root = commit({"core/scripts/roundtable/adapters.py": "чужое"}, "корень\n\nRoundtable-Block: БТ2")
+    problems = module.write_scope_receipt(tables_with([root]))
+    assert not any("слияние" in p for p in problems), problems
+    assert any("вышел за" in p for p in problems), "diff корневого коммита не прочитан"
+
+    good = commit({"deploy/tests/fixtures/roundtable/имя с пробелом.md": "ok"},
+                  "работа\n\nRoundtable-Block: БТ2")
+    problems = module.write_scope_receipt(tables_with([root, good]))
+    assert not any(good[:7] in p for p in problems), f"не-ASCII имя с пробелом: {problems}"
+
+    spoof = commit({"deploy/tests/test_roundtable_decide.py": "x"},
+                   "в тексте строка\nRoundtable-Block: БТ2\nи продолжение без трейлера")
+    assert any("без трейлера" in p for p in module.write_scope_receipt(
+        tables_with([root, good, spoof]))), "строка в теле принята за трейлер"
+
+    monkeypatch.setattr(module, "_git", lambda *args: None)
+    assert module.write_scope_receipt(tables_with([])), "молчание git принято за чистоту"
+    assert module.write_scope_receipt(tables_with([good])), "молчание git принято за чистоту"

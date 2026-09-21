@@ -818,6 +818,32 @@ class Tables:
             raise ContractError(
                 f"отпечаток изоляции: {sorted(unexplained)} обещано, но не считается "
                 f"и не объяснено")
+        # 🚩 Ревью #32: причина отсрочки без владельца — ничья работа. Каждое
+        # несчитаемое поле обязано указать критерий незакрытого блока, который
+        # его вычислит, и этот блок обязан держать шлюз изоляции.
+        criteria = {item.id: (name, item.condition)
+                    for name, block in self.blocks.items() for item in block.acceptance}
+        gate_blocks = set(plan["шлюзы"]["изоляция_подтверждена"]["до_закрытия"])
+        for field_name, entry in fingerprint["пока_не_вычисляется"].items():
+            if not isinstance(entry, dict) or not str(entry.get("почему", "")).strip():
+                raise ContractError(f"отпечаток изоляции: {field_name} отложено без причины")
+            target = entry.get("закрывает")
+            if target not in criteria:
+                raise ContractError(
+                    f"отпечаток изоляции: {field_name} отложено без владельца — "
+                    f"критерия {target!r} нет")
+            owner, condition = criteria[target]
+            if field_name not in condition:
+                raise ContractError(
+                    f"отпечаток изоляции: {field_name} отдано критерию {target}, "
+                    f"который о нём не говорит")
+            if self.blocks[owner].state == "сделано":
+                raise ContractError(
+                    f"отпечаток изоляции: {field_name} отдано закрытому блоку {owner}")
+            if owner not in gate_blocks:
+                raise ContractError(
+                    f"отпечаток изоляции: владелец {owner} поля {field_name} "
+                    f"не держит шлюз изоляции")
         checked.append(f"отпечаток изоляции: считается {len(artefacts) + 1} полей из "
                        f"{len(declared)}; несчитаемые держат шлюз закрытым")
 

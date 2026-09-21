@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 105
+    assert len(findings) == 106
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "14eea3b76b9afcb4c0ba20cb89f9a2d81884df4ba95b92e8a29a1a7db7039b85", (
+    assert digest == "778a4aaa9c86bfb8da3acb5c06a666f41775ecc01cf527ccce84daa0fde94408", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "545e8b0f194976539932cd3f9c9ac65441fa382c5022caa73a16d6575dbea653", (
+    assert digest == "927ca321a2516b5cf5e496d6ad544979714d7d69218c6e5ad2105a89702495ad", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1256,8 +1256,32 @@ def test_the_fingerprint_does_not_promise_more_than_it_computes():
     promised = set(fingerprint["входит_в_отпечаток"]) - computed
     assert promised == set(fingerprint["пока_не_вычисляется"]), (
         "объявленное поле отпечатка не считается и не объяснено")
-    for name, why in fingerprint["пока_не_вычисляется"].items():
-        assert why.strip(), f"{name}: сказано «пока не считается» без причины"
+    for name, entry in fingerprint["пока_не_вычисляется"].items():
+        assert entry["почему"].strip(), f"{name}: сказано «пока не считается» без причины"
+
+
+def test_every_deferred_field_has_an_owner_with_acceptance():
+    """Отсрочка без владельца — ничья работа.
+
+    Ревью #32: четыре поля стояли с причиной, но ни один блок не был обязан их
+    вычислить, а повторное подтверждение изоляции не требовало всех семи. Теперь
+    каждое поле указывает критерий Ш2, Ш2 держит шлюз изоляции, запуск его ждёт,
+    а текст приёмки закреплён целиком — выхолостить его под тем же ID нельзя.
+    """
+    module = import_tables_module()
+    tables = module.load()
+    fingerprint = BLOCKS["отпечаток_изоляции"]
+    owner = tables.blocks["Ш2"]
+    ids = {item.id: item.condition for item in owner.acceptance}
+    for field_name, entry in fingerprint["пока_не_вычисляется"].items():
+        assert entry["закрывает"] in ids, f"{field_name}: владелец не Ш2"
+        assert field_name in ids[entry["закрывает"]], field_name
+    assert "Ш2" in BLOCKS["шлюзы"]["изоляция_подтверждена"]["до_закрытия"]
+    assert "Ш2" in tables.blocks[fingerprint["блок_запуска"]].depends, (
+        "запуск не ждёт полного отпечатка")
+    pairs = [[item.id, item.condition] for item in owner.acceptance]
+    digest = hashlib.sha256(json.dumps(pairs, ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert digest == "6918ea7a27111afef8a5927fd763b95e7cf0a20b26b10985073bb27e34219548", "приёмка полного отпечатка удалена или выхолощена"
 
 
 def test_an_incomplete_fingerprint_never_opens_the_gate(tmp_path, monkeypatch):

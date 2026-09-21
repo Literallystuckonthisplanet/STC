@@ -83,6 +83,12 @@ def _reopen_without_reason(raw):
     grant["scope_sha256"]["Б9"] = block.scope_sha256(_blocks(raw))
 
 
+def _drop_env_from_the_fingerprint(root):
+    spec = _blocks(root)["отпечаток_изоляции"]
+    spec["входит_в_отпечаток"].remove("хеш_нормализованного_env")
+    del spec["пока_не_вычисляется"]["хеш_нормализованного_env"]
+
+
 def _swap_a_finding_to_a_foreign_break(raw):
     """Оставить статус «устранена», подменив поломку на чужую существующую.
 
@@ -282,6 +288,9 @@ CASES = [
     ("П48", "объявить в отпечатке поле, которое никто не считает",
      lambda r: _blocks(r)["отпечаток_изоляции"]["входит_в_отпечаток"].append("хеш_чего_нибудь"),
      "контракт", "обещано, но не считается"),
+    ("П49", "тихо сузить отпечаток: выкинуть окружение из обоих списков разом",
+     _drop_env_from_the_fingerprint,
+     "test_the_fingerprint_does_not_promise_more_than_it_computes", "сужен"),
     ("П32", "подменить поломку находки на чужую, но существующую",
      _swap_a_finding_to_a_foreign_break,
      "test_the_binding_between_a_finding_and_its_break_is_pinned", "привязка"),

@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 102
+    assert len(findings) == 105
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "9c8dc97d844c279c02b57335d8e806a65afe1e76e94f5bf23d8eec4b91565fe8", (
+    assert digest == "14eea3b76b9afcb4c0ba20cb89f9a2d81884df4ba95b92e8a29a1a7db7039b85", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "e45ebc39a547711492b106f3e0861e64a81e3bae25b44e9c7c83ae6fc0760d40", (
+    assert digest == "545e8b0f194976539932cd3f9c9ac65441fa382c5022caa73a16d6575dbea653", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1171,6 +1171,19 @@ def test_a_rule_a_criterion_points_at_is_part_of_the_scope():
     assert tables.blocks["БУ"].scope_sha256(thinner) != tables.blocks["БУ"].scope_sha256(plan)
 
 
+def _as_if_complete(tables):
+    """Отпечаток, в котором всё объявленное считается.
+
+    Положительный контроль проверок изоляции ставится на ПОЛНОМ отпечатке:
+    с несчитаемыми полями шлюз закрыт всегда (ревью #31), и контроль «хороший
+    отчёт проходит» был бы невыполним.
+    """
+    spec = tables.plan["отпечаток_изоляции"]
+    deferred = set(spec["пока_не_вычисляется"])
+    spec["входит_в_отпечаток"] = [f for f in spec["входит_в_отпечаток"] if f not in deferred]
+    spec["пока_не_вычисляется"] = {}
+
+
 def test_missing_versions_are_never_read_as_agreement(tmp_path, monkeypatch):
     """Нет данных — это отказ, а не согласие.
 
@@ -1182,6 +1195,7 @@ def test_missing_versions_are_never_read_as_agreement(tmp_path, monkeypatch):
     module = import_tables_module()
     tables = module.load()
     spec = tables.plan["отпечаток_изоляции"]
+    _as_if_complete(tables)
     for relative in spec["артефакты"].values():
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1232,12 +1246,62 @@ def test_the_fingerprint_does_not_promise_more_than_it_computes():
     обещала больше, чем проверяет, — тот же класс, что «сильнее реализации».
     """
     fingerprint = BLOCKS["отпечаток_изоляции"]
+    # Состав запёрт здесь, а не в таблице: выкинь поле сразу из обоих списков —
+    # и контракт согласится, что обещано ровно то, что считается (ревью #31).
+    assert set(fingerprint["входит_в_отпечаток"]) == {
+        "версии_CLI", "хеш_adapters_py", "хеш_probe", "хеш_нормализованных_argv",
+        "хеш_нормализованного_env", "хеш_схемы_ответа", "конфигурация_CODEX_HOME",
+    }, "состав отпечатка сужен"
     computed = set(fingerprint["артефакты"]) | {"версии_CLI"}
     promised = set(fingerprint["входит_в_отпечаток"]) - computed
     assert promised == set(fingerprint["пока_не_вычисляется"]), (
         "объявленное поле отпечатка не считается и не объяснено")
     for name, why in fingerprint["пока_не_вычисляется"].items():
         assert why.strip(), f"{name}: сказано «пока не считается» без причины"
+
+
+def test_an_incomplete_fingerprint_never_opens_the_gate(tmp_path, monkeypatch):
+    """Три поля из семи — не подтверждение изоляции.
+
+    Ревью #31: идеальный отчёт по трём вычисляемым полям давал `isolation` 0 и
+    `closed("Ш1")` True, а документ перечислял все семь полей и писал
+    «совпадает». Окружение и HOME/CODEX_HOME при этом меняются, не трогая ни
+    одного хешируемого файла. Пока поле не считается, шлюз закрыт — и документ
+    говорит это, а не «совпадает».
+    """
+    module = import_tables_module()
+    tables = module.load()
+    spec = tables.plan["отпечаток_изоляции"]
+    assert spec["пока_не_вычисляется"], "проверка имеет смысл, пока есть несчитаемое"
+    for relative in spec["артефакты"].values():
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((module.ROOT / relative).read_bytes())
+    report = tmp_path / spec["отчёт"]
+    report.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    live = {"claude": "версия-A", "codex": "версия-B"}
+    monkeypatch.setattr(module, "observe_cli_versions", lambda commands: live)
+    report.write_text(json.dumps({"отпечаток": tables.isolation_fingerprint(),
+                                  "verdict": "PASS", "command_frozen": True,
+                                  "versions": live}), encoding="utf-8")
+
+    drift = tables.isolation_drift()
+    for field_name in spec["пока_не_вычисляется"]:
+        assert f"{field_name}: не вычисляется" in drift, field_name
+    assert not tables.closed("Ш1"), "неполный отпечаток закрыл Ш1"
+
+    text = "\n".join(module._render_blocks(tables))
+    assert "Сейчас **совпадает**" not in text, "документ выдал частичное за полное"
+    assert "Не вычисляется" in text
+    for field_name in spec["пока_не_вычисляется"]:
+        assert field_name in text.split("Не вычисляется", 1)[1].split("\n", 1)[0], (
+            f"{field_name}: не назван среди несчитаемых")
+
+    # положительный контроль: тот же отчёт на полном отпечатке проходит
+    _as_if_complete(tables)
+    assert not tables.isolation_drift()
+    assert "Сейчас **совпадает** полностью" in "\n".join(module._render_blocks(tables))
 
 
 def test_a_missing_file_is_never_read_as_a_matching_fingerprint(tmp_path, monkeypatch):
@@ -1251,6 +1315,7 @@ def test_a_missing_file_is_never_read_as_a_matching_fingerprint(tmp_path, monkey
     module = import_tables_module()
     tables = module.load()
     spec = tables.plan["отпечаток_изоляции"]
+    _as_if_complete(tables)
     for relative in spec["артефакты"].values():
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1492,6 +1557,7 @@ def test_the_isolation_gate_is_computed_and_not_declared(tmp_path, monkeypatch):
     module = import_tables_module()
     tables = module.load()
     spec = tables.plan["отпечаток_изоляции"]
+    _as_if_complete(tables)
 
     for relative in spec["артефакты"].values():
         target = tmp_path / relative

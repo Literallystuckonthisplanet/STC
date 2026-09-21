@@ -819,7 +819,7 @@ class Tables:
                 f"отпечаток изоляции: {sorted(unexplained)} обещано, но не считается "
                 f"и не объяснено")
         checked.append(f"отпечаток изоляции: считается {len(artefacts) + 1} полей из "
-                       f"{len(declared)}, остальные названы с причиной")
+                       f"{len(declared)}; несчитаемые держат шлюз закрытым")
 
         self._check_absorption()
         checked.append("поглощение: формулы объединения соблюдены")
@@ -978,6 +978,14 @@ class Tables:
             drift.append("среду не удалось спросить о версиях")
         elif recorded_versions != observed:
             drift.append("версии_CLI")
+
+        # 🚩 Ревью #31: неполный отпечаток открывал шлюз живых вызовов. Совпадение
+        # трёх полей из семи выдавалось за подтверждение всей изоляции, хотя
+        # окружение и HOME/CODEX_HOME передаются сборщику параметрами и меняются,
+        # не трогая ни одного хешируемого файла. Допуск — только полный отпечаток:
+        # несчитаемое поле — расхождение, а не пропуск.
+        for field_name in sorted(spec["пока_не_вычисляется"]):
+            drift.append(f"{field_name}: не вычисляется")
         return drift
 
     def isolation_fingerprint(self) -> dict:
@@ -1367,12 +1375,19 @@ def _render_blocks(tables: Tables) -> list[str]:
                      f"«{basis.get('цитата', '')}»")
 
     drift = tables.isolation_drift()
-    lines += ["", "**Отпечаток изоляции.** Шлюз живых вызовов смотрит не на строку "
-              "версии, а на: " + _cell(plan["отпечаток_изоляции"]["входит_в_отпечаток"])
-              + f". Отчёт `{plan['отпечаток_изоляции']['отчёт']}`. "
-              + ("Сейчас **совпадает**." if not drift
-                 else f"Сейчас **расходится** по {_cell(drift)} — "
-                      f"{plan['отпечаток_изоляции']['проверяет_блок']} считается незакрытым.")]
+    fingerprint = plan["отпечаток_изоляции"]
+    deferred = fingerprint["пока_не_вычисляется"]
+    computed = [f for f in fingerprint["входит_в_отпечаток"] if f not in deferred]
+    lines += ["", "**Отпечаток изоляции.** Шлюз живых вызовов открывается только на "
+              f"полном отпечатке. Вычисляется {len(computed)} из "
+              f"{len(fingerprint['входит_в_отпечаток'])}: {_cell(computed)}."]
+    if deferred:
+        lines.append(f"Не вычисляется — и потому само держит шлюз закрытым: "
+                     f"{_cell(sorted(deferred))}.")
+    lines.append(f"Отчёт `{fingerprint['отчёт']}`. "
+                 + ("Сейчас **совпадает** полностью." if not drift
+                    else f"Сейчас **не подтверждено**: {_cell(drift)} — "
+                         f"{fingerprint['проверяет_блок']} считается незакрытым."))
 
     lines += ["", "**Вне порядка:**"]
     for name, why in plan["вне_порядка"].items():

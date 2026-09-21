@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 110
+    assert len(findings) == 113
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "f761727f92ecab6253e88bd31ae2be9289a77a9c1c322b6df78f78edb3bf9b92", (
+    assert digest == "83c28e0f0a45e2540d7d88687729c71f3580fcdb1ae9a03f0440e0a58edc0ebc", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "fdaa1de768853024b473eb60378059cdd1204e0d7dd92b30fbb3eb31b687284e", (
+    assert digest == "7befa60104dda0106ba736f0cc56644f2fb2df1f089618646330862e2232d630", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -2042,6 +2042,8 @@ def test_the_execution_plan_is_checked_by_the_contract():
     tables = module.load()
     rows = BLOCKS["исполнение"]["блоки"]
     pending = {n for n, b in tables.blocks.items() if b.state != "сделано" and not b.outside_mvp}
+    if BLOCKS["отпечаток_изоляции"]["пока_не_вычисляется"]:
+        pending.add(BLOCKS["отпечаток_изоляции"]["проверяет_блок"])
     assert set(rows) == pending
     assert all("codex" in row["ревью"] for row in rows.values())
     assert any("scope" in step for step in BLOCKS["исполнение"]["шаги"]), (
@@ -2086,3 +2088,48 @@ def test_the_write_scope_check_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_git", lambda *args: None)
     assert module.write_scope_receipt(tables_with([])), "молчание git принято за чистоту"
     assert module.write_scope_receipt(tables_with([good])), "молчание git принято за чистоту"
+
+
+def test_a_commit_from_an_unmerged_branch_does_not_count(tmp_path, monkeypatch):
+    # Ревью #34: работа исполнителя в своей ветке существует, но ещё не влита —
+    # сверка её принимала. Контроль: тот же коммит после влития проходит.
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    base = commit({"README": "x"}, "init")
+
+    def tables_with(commits):
+        raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["блоки"]["БТ2"]["состояние"] = "сделано"
+        raw["blocks"]["блоки"]["БТ2"]["коммиты"] = commits
+        return module.Tables.from_raw(raw)
+
+    git("checkout", "-q", "-b", "worker")
+    work = commit({"deploy/tests/test_roundtable_decide.py": "ok"},
+                  "работа\n\nRoundtable-Block: БТ2")
+    git("checkout", "-q", "-")
+    problems = module.write_scope_receipt(tables_with([work]))
+    assert any("не входит в проверяемую ветку" in p for p in problems), problems
+    git("merge", "-q", "--ff-only", "worker")
+    assert module.write_scope_receipt(tables_with([work])) == [], "контроль: влитый проходит"
+    assert base
+
+
+def test_the_execution_plan_survives_a_dry_run():
+    """Ревью #34: правила по отдельности зелёные, а план не проходится.
+
+    Ш2 ждал Ш1, который закрывается только полным отпечатком от Ш2 — круг;
+    Б0б стоял во второй волне под шлюзом, открывающимся после четвёртой.
+    Сухой прогон волн с тем же `hold_reasons`, что в бою, ловит оба. Он
+    встроен в `check`: «contract valid» теперь значит и «план проходится».
+    """
+    module = import_tables_module()
+    tables = module.load()
+    rows = BLOCKS["исполнение"]["блоки"]
+    assert "Ш1" not in tables.blocks["Ш2"].depends, "круг Ш2 → Ш1 → полный отпечаток → Ш2"
+    assert "Ш1" in rows, "повторный Ш1 выпал из плана при неполном отпечатке"
+    assert rows["Ш1"]["волна"] > rows["Ш2"]["волна"]
+    assert rows["Б0б"]["волна"] > rows["БИ"]["волна"], "Б0б раньше ремонтного шлюза"
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert "self._dry_run(" in source, "сухой прогон выпал из проверки контракта"
+    tables.check()

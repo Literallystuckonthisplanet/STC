@@ -387,7 +387,10 @@
   # работа Ш1, которую шлюз и так требует после любого расхождения.
   Ш2:
     что: "полный отпечаток изоляции: все семь полей считаются, шлюз сравнивает каждое"
-    зависит: [Ш1, БИ, Б4]
+    # Ревью #34: было [Ш1, БИ, Б4] — круг. Ш1 закрыт только при полном
+    # отпечатке, а полный отпечаток делает Ш2. Ш2 работает без моделей и
+    # доказанной изоляции не требует; повторный Ш1 идёт после него.
+    зависит: [БИ, Б4]
     читает: [core/scripts/roundtable/adapters.py, core/scripts/roundtable/schemas/]
     пишет: [core/scripts/roundtable/tables.py, core/scripts/roundtable/tables/blocks.yaml, deploy/tests/isolation_probe.py, deploy/tests/test_roundtable_tables.py]
     внешние_действия: []
@@ -821,25 +824,29 @@
     БК: {волна: 1, исполнитель: main, изоляция: основное_дерево, ревью: [codex]}
     Б1: {волна: 2, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
     БТ2: {волна: 2, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
-    Б0б: {волна: 2, исполнитель: builder, изоляция: worktree, ревью: [codex]}
     Б2: {волна: 3, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, security-arch, codex]}
     БИ: {волна: 4, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, security-arch, codex]}
+    # Б0б удерживается ремонтным шлюзом до БИ (ревью #34): раньше пятой волны не исполним.
     БУ: {волна: 5, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
     Б15: {волна: 5, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б0б: {волна: 5, исполнитель: builder, изоляция: worktree, ревью: [codex]}
     Б4: {волна: 6, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
     Ш2: {волна: 7, исполнитель: main, изоляция: worktree, ревью: [qa, security-arch, codex]}
     Б5: {волна: 7, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
-    Б3б: {волна: 8, исполнитель: main, изоляция: worktree, ревью: [qa, security-arch, codex]}
+    # Повторный Ш1: живой прогон шипа с полным отпечатком. В плане, пока
+    # отпечаток неполон, — иначе шлюз изоляции не откроется никогда.
+    Ш1: {волна: 8, исполнитель: main, изоляция: worktree, ревью: [security-arch, codex]}
     Б6: {волна: 8, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
-    БА: {волна: 9, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
-    Б7: {волна: 9, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, security-arch, codex]}
+    Б3б: {волна: 9, исполнитель: main, изоляция: worktree, ревью: [qa, security-arch, codex]}
     Б9: {волна: 9, исполнитель: builder, изоляция: worktree, ревью: [qa, security-arch, codex]}
-    Б8: {волна: 10, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
-    Б10: {волна: 10, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
-    БП: {волна: 10, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
-    Б11: {волна: 11, исполнитель: main, изоляция: основное_дерево, ревью: [codex]}
-    Б12: {волна: 12, исполнитель: main, изоляция: основное_дерево, ревью: [security-arch, codex]}
-    Б13: {волна: 13, исполнитель: main, изоляция: основное_дерево, ревью: [security-arch, codex]}
+    БА: {волна: 10, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б7: {волна: 10, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, security-arch, codex]}
+    Б8: {волна: 11, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б10: {волна: 11, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    БП: {волна: 11, исполнитель: builder, изоляция: worktree, ревью: [qa, code-reviewer, codex]}
+    Б11: {волна: 12, исполнитель: main, изоляция: основное_дерево, ревью: [codex]}
+    Б12: {волна: 13, исполнитель: main, изоляция: основное_дерево, ревью: [security-arch, codex]}
+    Б13: {волна: 14, исполнитель: main, изоляция: основное_дерево, ревью: [security-arch, codex]}
 
 # --- сверка записи -------------------------------------------------------------
 # 🚩 R19-7: `пишет` описывало намерение, но не ограничивало исполнение. Теперь

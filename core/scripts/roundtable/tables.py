@@ -839,10 +839,6 @@ class Tables:
         checked.append(f"сверка записи: закрытые блоки называют коммиты, "
                        f"до правила — {len(grandfathered)}")
 
-        self._check_execution()
-        checked.append("исполнение: у каждого незакрытого блока исполнитель, "
-                       "волны уважают зависимости, параллельные области не пересекаются")
-
         fingerprint = plan["отпечаток_изоляции"]
         artefacts, declared = fingerprint["артефакты"], set(fingerprint["входит_в_отпечаток"])
         missing_core = set(fingerprint["требуются_всегда"]) - set(artefacts)
@@ -892,6 +888,11 @@ class Tables:
 
         self._check_absorption()
         checked.append("поглощение: формулы объединения соблюдены")
+        # Сухой прогон — последним: он опирается на всё проверенное выше, и его
+        # отказ не должен заслонять более точную причину.
+        self._check_execution()
+        checked.append("исполнение: у каждого незакрытого блока исполнитель, волны "
+                       "уважают зависимости и шлюзы, сухой прогон проходит до конца")
 
         sources = {
             "схемы_контрактов": self.vocabulary["схемы_контрактов"],
@@ -994,6 +995,17 @@ class Tables:
         roles, checks = set(spec["роли"]), set(spec["проверки"])
         pending = {name for name, block in self.blocks.items()
                    if block.state != "сделано" and not block.outside_mvp}
+        # Ревью #34: «сделано» в таблице — не то же, что закрыт. Пока отпечаток
+        # неполон, доказывающий блок не закроется никогда, и его повторный
+        # прогон обязан стоять в плане — иначе план молча упирается в шлюз.
+        # Решается по таблице, без обращения к среде: `check` остаётся чистым.
+        fingerprint = self.plan["отпечаток_изоляции"]
+        prover = fingerprint["проверяет_блок"]
+        if fingerprint["пока_не_вычисляется"]:
+            pending.add(prover)
+            if prover not in spec["блоки"]:
+                raise ContractError(
+                    f"исполнение: отпечаток неполон, а повторного {prover} в плане нет")
         listed = set(spec["блоки"])
         if pending - listed:
             raise ContractError(f"исполнение: без исполнителя {sorted(pending - listed)}")
@@ -1015,7 +1027,7 @@ class Tables:
             waves.setdefault(row["волна"], []).append(name)
         for name, row in spec["блоки"].items():
             for dependency in self.blocks[name].depends:
-                if self.blocks[dependency].state == "сделано":
+                if dependency not in pending:
                     continue
                 if dependency not in spec["блоки"]:
                     raise ContractError(
@@ -1036,6 +1048,60 @@ class Tables:
                 if shared:
                     raise ContractError(f"исполнение: {left} и {right} в волне {wave} "
                                         f"пишут общее {sorted(set(shared))}")
+
+        if prover in spec["блоки"]:
+            owners = {self._criterion_owner(entry["закрывает"])
+                      for entry in fingerprint["пока_не_вычисляется"].values()}
+            late = [o for o in owners if spec["блоки"][o]["волна"] >= spec["блоки"][prover]["волна"]]
+            if late:
+                raise ContractError(f"исполнение: повторный {prover} не позже "
+                                    f"{sorted(late)}, чьи поля отпечатка он доказывает")
+        self._dry_run(spec["блоки"], pending, prover, owners if prover in spec["блоки"] else set())
+
+    def _criterion_owner(self, criterion: str) -> str:
+        return next(name for name, block in self.blocks.items()
+                    if any(item.id == criterion for item in block.acceptance))
+
+    def _dry_run(self, rows: dict, pending: set, prover: str, owners: set) -> None:
+        """Сквозной сухой прогон волн: всё ли исполнимо по-настоящему.
+
+        Ревью #34: отдельные правила были проверены лучше, чем возможность
+        пройти весь процесс. Здесь волны проходятся по порядку с подставленными
+        результатами — разрешение считается выданным, работа блока сделанной —
+        и спрашивается ТОТ ЖЕ `hold_reasons`, что в бою: зависимости, шлюзы,
+        производная закрытость доказывающего блока. Единственное допущение —
+        разрешение Антона; оно выдаётся на объём и заранее не выводится.
+        """
+        done = {name for name, block in self.blocks.items()
+                if block.state == "сделано" and name not in pending}
+
+        def closed(name: str) -> bool:
+            if name == prover and owners and not owners <= done:
+                return False
+            block = self.blocks[name]
+            if block.state == "объединён_с" and block.absorbed_by:
+                return block.absorbed_by in done
+            return name in done
+
+        saved = self.__dict__.get("closed"), self.__dict__.get("permitted")
+        object.__setattr__(self, "closed", closed)
+        object.__setattr__(self, "permitted", lambda name: {"сухой_прогон": True})
+        try:
+            for wave in sorted({row["волна"] for row in rows.values()}):
+                names = sorted(n for n, row in rows.items() if row["волна"] == wave)
+                for name in names:
+                    held = self.hold_reasons(name)
+                    if held:
+                        raise ContractError(
+                            f"исполнение: сухой прогон — {name} в волне {wave} "
+                            f"удержан: {'; '.join(held)}")
+                done |= set(names)
+        finally:
+            for attribute, value in zip(("closed", "permitted"), saved):
+                if value is None:
+                    self.__dict__.pop(attribute, None)
+                else:
+                    object.__setattr__(self, attribute, value)
 
     def isolation_ok(self, observed_versions: dict | None = None) -> bool:
         """Whether the isolation proof still describes the current command.
@@ -1240,6 +1306,11 @@ def write_scope_receipt(tables: "Tables") -> list[str]:
             parents = _git("rev-list", "--parents", "-n", "1", sha)
             if parents is None:
                 problems.append(f"{name}: коммита {sha[:7]} нет")
+                continue
+            # Ревью #34: коммит из ветки исполнителя, ещё не влитый, проходил.
+            # Засчитывается только то, что входит в историю проверяемой версии.
+            if _git("merge-base", "--is-ancestor", sha, "HEAD") is None:
+                problems.append(f"{name}: {sha[:7]} не входит в проверяемую ветку")
                 continue
             # корневой коммит — обычный: одна запись без родителя
             if len(parents.split()) > 2:

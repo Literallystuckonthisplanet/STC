@@ -1856,6 +1856,14 @@ def test_a_permission_artefact_lives_in_the_repository(tmp_path, monkeypatch):
     basis = {"вид": "план_артефакт", "путь": relative, "sha256": digest}
     assert module.resolve_basis(basis, tmp_path / "home") is None
 
+    # ярлык внутри репозитория, ведущий наружу, — то же «вне репозитория»
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.md"
+    outside.write_text("замысел", encoding="utf-8")
+    link = tmp_path / "deploy/tests/fixtures/roundtable/link.md"
+    link.symlink_to(outside)
+    escaped = {**basis, "путь": "deploy/tests/fixtures/roundtable/link.md"}
+    assert "вне репозитория" in (module.resolve_basis(escaped, tmp_path / "home") or "")
+
 
 def test_acceptance_ids_are_unique_across_the_whole_plan():
     module = import_tables_module()

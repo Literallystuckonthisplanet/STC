@@ -1424,6 +1424,10 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
                 else Path(raw) if Path(raw).is_absolute() else ROOT / raw)
         if not path.is_file():
             return f"артефакта нет: {path}"
+        # Путь от корня, но ярлык внутри может вести наружу — сверяем реальный.
+        if not (raw.startswith("~") or Path(raw).is_absolute()) \
+                and not path.resolve().is_relative_to(Path(ROOT).resolve()):
+            return f"артефакт вне репозитория: {raw} → {path.resolve()}"
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != basis["sha256"]:
             return f"sha256 не совпал: {digest[:12]}… против {basis['sha256'][:12]}…"

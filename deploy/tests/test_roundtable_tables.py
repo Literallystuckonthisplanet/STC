@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "bfe88fc37a11d02f1baa91334057b41cfd8f2619128c0c8645b40a03b233f75c", (
+    assert digest == "b87735b16a47ea426ddbe344ccbb3dcc0fd3a39700705dd913b6a6a466b00200", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -1774,6 +1774,87 @@ def test_absorbed_acceptance_is_compared_with_its_text():
         {"id": item["id"], "условие": "ПОДМЕНЕНО"} for item in blocks["БТ2"]["приёмка"]]
     with pytest.raises(module.ContractError, match="потеряна или подменена"):
         module.Tables.from_raw(raw).check()
+
+
+def test_every_absorption_formula_fires_on_its_own():
+    # БК-7. Приёмка сверялась по тексту, а зависимости и области — нет: поглотитель
+    # мог потерять ребро или файл поглощённого, и никто этого не видел.
+    module = import_tables_module()
+
+    def absorbed():
+        raw = copy.deepcopy(module.load().raw)
+        blocks = raw["blocks"]["блоки"]
+        blocks["БТ2"]["состояние"] = "объединён_с"
+        blocks["БТ2"]["объединён_с"] = "БИ"
+        blocks["БИ"]["поглощает"] = ["БТ2"]
+        blocks["БИ"]["зависит"] = ["Б2", "БТ"]
+        for field in ("пишет", "читает"):
+            blocks["БИ"][field] = sorted(set(blocks["БИ"][field]) | set(blocks["БТ2"][field]))
+        blocks["БИ"]["приёмка"] = blocks["БИ"]["приёмка"] + blocks["БТ2"]["приёмка"]
+        return raw, blocks
+
+    raw, blocks = absorbed()
+    module.Tables.from_raw(raw).check()          # положительный контроль
+
+    raw, blocks = absorbed()
+    blocks["БИ"]["зависит"] = ["Б2"]
+    with pytest.raises(module.ContractError, match="зависимости БТ2 потеряны"):
+        module.Tables.from_raw(raw).check()
+
+    for field in ("пишет", "читает"):
+        raw, blocks = absorbed()
+        blocks["БИ"][field] = [p for p in blocks["БИ"][field]
+                               if p not in blocks["БТ2"][field]]
+        with pytest.raises(module.ContractError, match=f"{field} блока БТ2 не покрыто"):
+            module.Tables.from_raw(raw).check()
+
+    raw, blocks = absorbed()
+    blocks["БИ"]["поглощает"] = []
+    with pytest.raises(module.ContractError, match="не объявил поглощение"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_a_gate_lets_its_own_preconditions_close():
+    # БК-6, вторая сторона. Шлюз, который держит и собственные предусловия,
+    # не откроется никогда — «блок из до_закрытия закрывается» проверяется
+    # закрытием, а не отсутствием пересечения множеств.
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    gate = raw["blocks"]["шлюзы"]["ремонт_после_ревью_12"]
+    precondition = next(n for n in gate["до_закрытия"] if n == "БТ2")
+    raw["blocks"]["блоки"][precondition].update(состояние="сделано", коммиты=["a" * 40])
+    raw["blocks"]["исполнение"]["блоки"].pop(precondition)   # закрытое не исполняется
+    tables = module.Tables.from_raw(raw)
+    tables.check()
+    assert not any("шлюзом" in r for r in tables.hold_reasons(precondition) or [])
+    assert tables.closed(precondition)
+
+
+def test_a_permission_artefact_lives_in_the_repository(tmp_path, monkeypatch):
+    # БК-17. 16.09 утверждённый план исчез из ~/.claude/plans, и заключение
+    # ревью указывало в пустоту. Основание-артефакт обязано лежать в
+    # репозитории и резолвиться от его корня, а не от текущего каталога.
+    module = import_tables_module()
+    for registry in ("заключения_ревью", "разрешения_исполнения", "история_разрешений"):
+        for entry in BLOCKS[registry]:
+            basis = entry["основание"]
+            if basis["вид"] == "план_артефакт":
+                assert (module.ROOT / basis["путь"]).is_file(), basis["путь"]
+
+    for outside in ("~/.claude/plans/plan.md", "/tmp/plan.md", "docs/../../plan.md"):
+        raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["заключения_ревью"][0]["основание"]["путь"] = outside
+        with pytest.raises(module.ContractError, match="вне репозитория"):
+            module.Tables.from_raw(raw).check()
+
+    relative = "deploy/tests/fixtures/roundtable/plan.md"
+    (tmp_path / relative).parent.mkdir(parents=True)
+    (tmp_path / relative).write_text("замысел", encoding="utf-8")
+    digest = hashlib.sha256((tmp_path / relative).read_bytes()).hexdigest()
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path.parent)
+    basis = {"вид": "план_артефакт", "путь": relative, "sha256": digest}
+    assert module.resolve_basis(basis, tmp_path / "home") is None
 
 
 def test_acceptance_ids_are_unique_across_the_whole_plan():

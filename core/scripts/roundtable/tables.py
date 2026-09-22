@@ -751,6 +751,14 @@ class Tables:
                         f"{registry}: основание вида {basis['вид']} без {sorted(missing)}")
                 if basis["вид"] == "план_артефакт" and not _is_sha256(basis["sha256"]):
                     raise ContractError(f"{registry}: sha256 не похож на sha256")
+                # 16.09 план исчез из ~/.claude/plans: основание вне репозитория
+                # может пропасть в любой день. Только путь от корня, без выхода вверх.
+                if basis["вид"] == "план_артефакт":
+                    raw_path = str(basis["путь"])
+                    if raw_path.startswith("~") or Path(raw_path).is_absolute() \
+                            or ".." in Path(raw_path).parts:
+                        raise ContractError(
+                            f"{registry}: артефакт-основание вне репозитория: {raw_path}")
                 if basis["вид"] == "событие_транскрипта" \
                         and not _is_uuid(basis["native_uuid"]):
                     raise ContractError(f"{registry}: native_uuid не похож на uuid")

@@ -705,6 +705,43 @@ class Tables:
                 return name
         return None
 
+    def gate_violations(self, is_closed, is_started) -> list[str]:
+        """Состояния, запрещённые шлюзами. Одно правило для плана и прогона.
+
+        Ревью #36: сухой прогон проверял, можно ли НАЧАТЬ следующую волну, а
+        обычная проверка — допустимо ли получившееся состояние, и они расходились.
+        Б3б правит код запуска, подтверждение изоляции отменяется — записать
+        закрытие Б3б по правилам плана было уже нельзя, хотя прогон шёл дальше.
+
+        Исключение ровно одно и узкое: единственное незакрытое предусловие —
+        доказывающий блок, и его повторный прогон СТОИТ В ПЛАНЕ после этого
+        блока. Работа, сделанная при действовавшем подтверждении, остаётся
+        историей; новую без повторного доказательства всё так же не начать.
+        """
+        prover = self.plan["отпечаток_изоляции"]["проверяет_блок"]
+        rows = self.plan["исполнение"]["блоки"]
+        out = []
+        for gate, spec in self.plan["шлюзы"].items():
+            open_ones = sorted(b for b in spec["до_закрытия"] if not is_closed(b))
+            if not open_ones:
+                continue
+            for name in sorted(spec["блокирует"]):
+                if not is_started(name):
+                    continue
+                if open_ones == [prover] and self._reproof_after(name, rows, prover):
+                    continue
+                out.append(f"шлюз {gate}: начат {name}, а не закрыты {open_ones}")
+        return out
+
+    def _reproof_after(self, name: str, rows: dict, prover: str) -> bool:
+        """Запланирован ли повторный прогон доказывающего блока после `name`."""
+        if prover not in rows or name not in rows:
+            return False
+        own = rows[name]["волна"]
+        waves = rows[prover]["волна"]
+        return max(waves if isinstance(waves, list) else [waves]) > (
+            max(own) if isinstance(own, list) else own)
+
     def _check_plan(self) -> list[str]:
         checked = []
         plan = self.plan
@@ -721,15 +758,11 @@ class Tables:
         checked.append(f"{len(self.blocks)} блоков: зависимости известны и без циклов")
 
         # gate: nothing downstream may be started while the repair is open
-        for gate, spec in plan["шлюзы"].items():
-            open_ones = [b for b in spec["до_закрытия"] if not self.closed(b)]
-            if not open_ones:
-                continue
-            started = [b for b in spec["блокирует"]
-                       if self.blocks[b].state in ("сделано", "неполный")]
-            if started:
-                raise ContractError(
-                    f"шлюз {gate}: начаты {sorted(started)}, а не закрыты {sorted(open_ones)}")
+        violations = self.gate_violations(
+            self.closed,
+            lambda name: self.blocks[name].state in ("сделано", "неполный"))
+        if violations:
+            raise ContractError(violations[0])
         checked.append(f"{len(plan['шлюзы'])} шлюзов: удерживаемое не начато")
 
         # authority: a permission must point somewhere resolvable
@@ -1138,6 +1171,15 @@ class Tables:
                 if writers & set(names):
                     state["подтверждено"] = False
                 done |= set(names) - {prover}
+                # Ревью #36: состояние ПОСЛЕ волны проверяется тем же правилом,
+                # которым оформляется настоящее закрытие блока. Иначе прогон
+                # разрешает то, что записать в таблицу уже нельзя.
+                illegal = self.gate_violations(
+                    closed, lambda n: n in done or self.blocks[n].state in ("сделано", "неполный"))
+                if illegal:
+                    raise ContractError(
+                        f"исполнение: сухой прогон — после волны {wave} состояние "
+                        f"запрещено: {illegal[0]}")
             if not state["подтверждено"]:
                 raise ContractError(
                     f"исполнение: сухой прогон — после последней волны подтверждение "

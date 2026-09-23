@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 115
+    assert len(findings) == 117
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "7ac3337f6e4b213453f1176786645ed7f23b2f2151060fecd011f30715363029", (
+    assert digest == "8fd5a2958e72fa8e02a17b403fe3d5a8141bb5ab40bb64c144b9dc7f973baafd", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "b87735b16a47ea426ddbe344ccbb3dcc0fd3a39700705dd913b6a6a466b00200", (
+    assert digest == "c92c72d78aabd767064286f336394e14e3332c8af25e4a48c028a49c064c6a3f", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -2131,9 +2131,16 @@ def test_the_execution_plan_is_checked_by_the_contract():
     tables = module.load()
     rows = BLOCKS["исполнение"]["блоки"]
     pending = {n for n, b in tables.blocks.items() if b.state != "сделано" and not b.outside_mvp}
-    if BLOCKS["отпечаток_изоляции"]["пока_не_вычисляется"]:
-        pending.add(BLOCKS["отпечаток_изоляции"]["проверяет_блок"])
+    # Ревью #36: здесь оставалось отменённое правило «Ш1 нужен, только пока есть
+    # несчитаемые поля». Нужность повторного прогона решают флаг подтверждения и
+    # блоки, пишущие во входы отпечатка, — то же, что в контракте.
+    fingerprint = BLOCKS["отпечаток_изоляции"]
+    writers = {n for n in pending
+               if module._overlaps(tables.blocks[n].writes, fingerprint["входы"])}
+    if not fingerprint["подтверждение_действует"] or writers:
+        pending.add(fingerprint["проверяет_блок"])
     assert set(rows) == pending
+    assert writers, "некому отменить подтверждение — проверка потеряла смысл"
     assert all("codex" in row["ревью"] for row in rows.values())
     assert any("scope" in step for step in BLOCKS["исполнение"]["шаги"]), (
         "сверка подготовленного выпала из шагов исполнения")
@@ -2255,7 +2262,7 @@ def test_completing_the_fingerprint_does_not_confirm_isolation():
     # правка входа отпечатка отменяет подтверждение: одного Ш1 до Б3б мало
     tables = after_sh2()
     tables.plan["исполнение"]["блоки"]["Ш1"]["волна"] = [8]
-    with pytest.raises(module.ContractError, match="удержан: удерживается шлюзом изоляция"):
+    with pytest.raises(module.ContractError, match="состояние запрещено"):
         tables._check_execution()
 
 
@@ -2270,3 +2277,39 @@ def test_the_confirmation_flag_is_checked_against_reality():
     assert set(spec["входы"]) == {
         "core/scripts/roundtable/adapters.py", "deploy/tests/isolation_probe.py",
         "core/scripts/roundtable/schemas/"}, "входы отпечатка сужены"
+
+
+def test_a_closed_block_under_an_open_gate_needs_a_scheduled_reproof():
+    """Ревью #36: прогон разрешал состояние, которое контракт запрещает.
+
+    Б3б правит код запуска, подтверждение изоляции отменяется — и закрытие Б3б
+    уже нельзя записать по правилам плана, хотя прогон шёл дальше. Правило
+    теперь одно: закрытый блок под открытым шлюзом допустим, только если не
+    закрыт ровно доказывающий блок и его повторный прогон стоит в плане позже.
+    Переходный случай «всё умеем считать, живого подтверждения нет» — здесь же.
+    """
+    import dataclasses
+    module = import_tables_module()
+
+    def after_sh2():
+        tables = module.load()
+        tables.blocks["Ш2"] = dataclasses.replace(tables.blocks["Ш2"], state="сделано")
+        tables.plan["отпечаток_изоляции"]["пока_не_вычисляется"] = {}
+        del tables.plan["исполнение"]["блоки"]["Ш2"]
+        return tables
+
+    # контроль: повторный Ш1 после Б3б и Б7 — план проходится
+    module.load().check()
+    after_sh2()._check_execution()
+
+    # один прогон Ш1 до правок кода запуска — состояние после волны 9 запрещено
+    for tables in (module.load(), after_sh2()):
+        tables.plan["исполнение"]["блоки"]["Ш1"]["волна"] = [8]
+        with pytest.raises(module.ContractError, match="состояние запрещено"):
+            tables._check_execution()
+
+    # исключение узкое: ремонтный шлюз им не пользуется
+    tables = module.load()
+    prover = tables.plan["отпечаток_изоляции"]["проверяет_блок"]
+    assert tables.gate_violations(lambda n: n == prover, lambda n: n == "Б15"), (
+        "закрытый блок под ремонтным шлюзом обязан оставаться нарушением")

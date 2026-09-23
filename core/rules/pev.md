@@ -96,7 +96,7 @@ Never claim done without evidence:
 
 L requires at least two kinds, including an independent check. A verification
 failure → diagnose, correct, rerun; after three failed repair iterations,
-surface the blocker. Report commands and observed results.
+surface the blocker. Report scenarios verified, not command dumps.
 
 ## No full Plan
 

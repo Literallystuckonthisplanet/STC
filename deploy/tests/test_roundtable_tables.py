@@ -981,9 +981,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 117
+    assert len(findings) == 118
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1021,7 +1021,7 @@ def test_the_text_of_every_finding_is_pinned():
     findings = _load("findings")["находки"]
     payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "8fd5a2958e72fa8e02a17b403fe3d5a8141bb5ab40bb64c144b9dc7f973baafd", (
+    assert digest == "4f4bfe229a7c996f31ad658c971ff04849be8ac1becec249323b0937968709ce", (
         "текст находки подменён или список изменён без обновления замка")
 
 
@@ -1044,7 +1044,7 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
                 f.get("критерий", "—")] for f in findings]
     digest = hashlib.sha256(
         json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "c92c72d78aabd767064286f336394e14e3332c8af25e4a48c028a49c064c6a3f", (
+    assert digest == "9287ea250dfcc956663071b2b0290a9b03acc364d1229cc46ae389479decd793", (
         "привязка находки к поломке или сторожу изменена без обновления замка")
 
 
@@ -2313,3 +2313,46 @@ def test_a_closed_block_under_an_open_gate_needs_a_scheduled_reproof():
     prover = tables.plan["отпечаток_изоляции"]["проверяет_блок"]
     assert tables.gate_violations(lambda n: n == prover, lambda n: n == "Б15"), (
         "закрытый блок под ремонтным шлюзом обязан оставаться нарушением")
+
+
+def test_a_really_closed_block_keeps_its_wave_in_the_record():
+    """Ревью #37: исключение исчезало ровно при настоящем закрытии блока.
+
+    Волна блока бралась из списка БУДУЩИХ работ, а закрытый блок оттуда
+    убирают — и запрет снова срабатывал на уже законно сделанной работе.
+    Сценарий критика воспроизведён целиком: Б3б закрыт, его строка удалена,
+    повторный прогон доказывающего блока ещё впереди.
+    """
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    plan = raw["blocks"]
+    closed_now = {"БК": 1, "Б1": 2, "БТ2": 2, "Б2": 3, "БИ": 4, "БУ": 5, "Б15": 5,
+                  "Б0б": 5, "Б4": 6, "Ш2": 7, "Б5": 7, "Б6": 8, "Б3б": 9, "Б9": 9}
+    for name, wave in closed_now.items():
+        plan["блоки"][name]["состояние"] = "сделано"
+        plan["блоки"][name]["коммиты"] = ["a" * 40]
+        plan["исполнение"]["выполнено"][name] = wave
+        del plan["исполнение"]["блоки"][name]
+    plan["отпечаток_изоляции"]["пока_не_вычисляется"] = {}
+    tables = module.Tables.from_raw(raw)
+    started = lambda n: plan["блоки"][n].get("состояние") == "сделано"
+    prover = plan["отпечаток_изоляции"]["проверяет_блок"]
+
+    assert tables.gate_violations(lambda n: n != prover, started) == [], (
+        "законно закрытый блок снова стал нарушением, когда ушёл из будущих работ")
+
+    # повторного прогона в плане нет — исключение не действует
+    without = copy.deepcopy(raw)
+    del without["blocks"]["исполнение"]["блоки"][prover]
+    assert module.Tables.from_raw(without).gate_violations(
+        lambda n: n != prover,
+        lambda n: without["blocks"]["блоки"][n].get("состояние") == "сделано"), (
+        "блок закрыт без запланированного повторного доказательства")
+
+    # блока нет ни в будущих работах, ни в выполненных — когда он закрылся, неизвестно
+    forgotten = copy.deepcopy(raw)
+    del forgotten["blocks"]["исполнение"]["выполнено"]["Б3б"]
+    assert module.Tables.from_raw(forgotten).gate_violations(
+        lambda n: n != prover,
+        lambda n: forgotten["blocks"]["блоки"][n].get("состояние") == "сделано"), (
+        "закрытие без записанной волны принято за законное")

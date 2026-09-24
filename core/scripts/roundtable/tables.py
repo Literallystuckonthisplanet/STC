@@ -705,7 +705,8 @@ class Tables:
                 return name
         return None
 
-    def gate_violations(self, is_closed, is_started) -> list[str]:
+    def gate_violations(self, is_closed, is_started, executed: dict | None = None,
+                        rows: dict | None = None) -> list[str]:
         """Состояния, запрещённые шлюзами. Одно правило для плана и прогона.
 
         Ревью #36: сухой прогон проверял, можно ли НАЧАТЬ следующую волну, а
@@ -719,7 +720,8 @@ class Tables:
         историей; новую без повторного доказательства всё так же не начать.
         """
         prover = self.plan["отпечаток_изоляции"]["проверяет_блок"]
-        rows = self.plan["исполнение"]["блоки"]
+        rows = self.plan["исполнение"]["блоки"] if rows is None else rows
+        executed = self.plan["исполнение"]["выполнено"] if executed is None else executed
         out = []
         for gate, spec in self.plan["шлюзы"].items():
             open_ones = sorted(b for b in spec["до_закрытия"] if not is_closed(b))
@@ -728,16 +730,26 @@ class Tables:
             for name in sorted(spec["блокирует"]):
                 if not is_started(name):
                     continue
-                if open_ones == [prover] and self._reproof_after(name, rows, prover):
+                if open_ones == [prover] and self._reproof_after(name, rows, prover, executed):
                     continue
                 out.append(f"шлюз {gate}: начат {name}, а не закрыты {open_ones}")
         return out
 
-    def _reproof_after(self, name: str, rows: dict, prover: str) -> bool:
-        """Запланирован ли повторный прогон доказывающего блока после `name`."""
-        if prover not in rows or name not in rows:
+    def _reproof_after(self, name: str, rows: dict, prover: str,
+                       executed: dict | None = None) -> bool:
+        """Запланирован ли повторный прогон доказывающего блока после `name`.
+
+        Ревью #37: волна блока бралась только из списка БУДУЩИХ работ, а при
+        настоящем закрытии строку блока оттуда убирают — исключение исчезало
+        ровно в тот момент, ради которого заводилось. Выполненные волны живут
+        отдельным списком `выполнено`, он и отвечает на вопрос «когда».
+        """
+        executed = self.plan["исполнение"]["выполнено"] if executed is None else executed
+        if prover not in rows:
             return False
-        own = rows[name]["волна"]
+        own = rows[name]["волна"] if name in rows else executed.get(name)
+        if own is None:
+            return False
         waves = rows[prover]["волна"]
         return max(waves if isinstance(waves, list) else [waves]) > (
             max(own) if isinstance(own, list) else own)
@@ -1040,7 +1052,8 @@ class Tables:
         стоящая раньше своей зависимости, — работа на несуществующем основании.
         """
         spec = self.plan["исполнение"]
-        _require(spec, {"роли", "проверки", "шаги", "блоки"}, set(), "blocks.исполнение")
+        _require(spec, {"роли", "проверки", "шаги", "блоки", "выполнено"}, set(),
+                 "blocks.исполнение")
         roles, checks = set(spec["роли"]), set(spec["проверки"])
         rows = spec["блоки"]
         pending = {name for name, block in self.blocks.items()
@@ -1062,6 +1075,20 @@ class Tables:
                 raise ContractError(
                     f"исполнение: подтверждение изоляции не действует или будет отменено "
                     f"{sorted(writers)}, а повторного {prover} в плане нет")
+        # Выполненные волны — отдельный список: он остаётся, когда строка блока
+        # уходит из будущих работ, и только по нему видно, ПРИ КАКОМ допуске
+        # блок был закрыт (ревью #37).
+        executed = spec["выполнено"]
+        for name, wave in executed.items():
+            if name not in self.blocks:
+                raise ContractError(f"исполнение: выполнено {name}, которого нет среди блоков")
+            if name in rows:
+                raise ContractError(f"исполнение: {name} и выполнен, и в будущих работах")
+            if self.blocks[name].state != "сделано":
+                raise ContractError(f"исполнение: {name} записан выполненным, а состояние "
+                                    f"{self.blocks[name].state!r}")
+            if not isinstance(wave, int) or isinstance(wave, bool):
+                raise ContractError(f"исполнение: волна выполненного {name} — не целое")
         listed = set(rows)
         if pending - listed:
             raise ContractError(f"исполнение: без исполнителя {sorted(pending - listed)}")
@@ -1116,14 +1143,14 @@ class Tables:
                 raise ContractError(f"исполнение: повторный {prover} не позже "
                                     f"{sorted(owners)}, чьи поля отпечатка он доказывает")
         self._dry_run(waves_of, by_wave, pending, prover, owners, writers,
-                      fingerprint["подтверждение_действует"])
+                      fingerprint["подтверждение_действует"], dict(executed))
 
     def _criterion_owner(self, criterion: str) -> str:
         return next(name for name, block in self.blocks.items()
                     if any(item.id == criterion for item in block.acceptance))
 
     def _dry_run(self, waves_of: dict, by_wave: dict, pending: set, prover: str,
-                 owners: set, writers: set, confirmed: bool) -> None:
+                 owners: set, writers: set, confirmed: bool, executed: dict) -> None:
         """Сквозной сухой прогон волн с меняющимся по ходу допуском.
 
         Ревью #34: правила по отдельности зелёные, а план не проходился.
@@ -1137,6 +1164,7 @@ class Tables:
         done = {name for name, block in self.blocks.items()
                 if block.state == "сделано" and name not in pending}
         state = {"подтверждено": confirmed}
+        future = dict(self.plan["исполнение"]["блоки"])
 
         def closed(name: str) -> bool:
             if name == prover:
@@ -1174,8 +1202,17 @@ class Tables:
                 # Ревью #36: состояние ПОСЛЕ волны проверяется тем же правилом,
                 # которым оформляется настоящее закрытие блока. Иначе прогон
                 # разрешает то, что записать в таблицу уже нельзя.
+                # Закрытый блок уходит из будущих работ в выполненные — так же,
+                # как это делает живая сессия. Иначе прогон проверял бы
+                # состояние, которого в таблице никогда не будет (ревью #37).
+                for name in names:
+                    if name != prover:
+                        executed[name] = wave
+                        future.pop(name, None)
                 illegal = self.gate_violations(
-                    closed, lambda n: n in done or self.blocks[n].state in ("сделано", "неполный"))
+                    closed,
+                    lambda n: n in done or self.blocks[n].state in ("сделано", "неполный"),
+                    executed, future)
                 if illegal:
                     raise ContractError(
                         f"исполнение: сухой прогон — после волны {wave} состояние "

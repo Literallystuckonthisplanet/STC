@@ -45,3 +45,17 @@ def test_the_templates_that_make_the_repo_usable_stay_tracked():
 def test_real_secrets_and_profile_never_slip_through():
     for path in ("user/secrets.env", "user/profile.md", "user/glossary.md"):
         assert _ignored(path)
+
+
+def test_the_live_private_sources_are_ignored_even_with_a_nested_history():
+    """REGRESSION 2026-09-24: user/ got its own local git history, and its
+    allowlist first lived in user/.gitignore. The outer repo reads nested
+    .gitignore files too, so «!profile.md» there cancelled `user/*` and put the
+    private profile among the outer repo's untracked files — one sweeping
+    `git add` from a push to GitHub. The allowlist belongs in
+    user/.git/info/exclude, which only the inner repo reads."""
+    for private in ("user/profile.md", "user/glossary.md", "user/secrets.env"):
+        assert _ignored(private), f"{private} is visible to the outer repository"
+    assert not (REPO / "user" / ".gitignore").exists(), (
+        "user/.gitignore is read by the outer repo; keep the inner allowlist in "
+        "user/.git/info/exclude")

@@ -155,4 +155,4 @@ def test_restore_does_not_dump_private_sources_into_the_harness_dir(tmp_path, ca
 
     assert (native / "settings.json").exists()
     assert not (native / "user").exists()
-    assert "kept user/" in capsys.readouterr().out
+    assert "kept user/" in capsys.readouterr().out   # и указатель на историю версий

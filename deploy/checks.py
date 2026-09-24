@@ -746,9 +746,13 @@ def restore(backup_id, native_dir, backups_root):
     for fname in os.listdir(dest):
         path = os.path.join(dest, fname)
         if os.path.isdir(path):
-            # Source snapshots (user/) are restored deliberately, by hand: they
-            # belong to the repo, not to the harness dir this restore targets.
-            print(f"   kept {fname}/ — private sources, copy back by hand if needed")
+            # Source snapshots (user/) are NOT the rollback path: they are taken
+            # at apply time, i.e. AFTER the sources were edited, so they hold the
+            # new version, not the old one (review 2026-09-24). Rollback of the
+            # private sources lives in their own local history, user/.git.
+            print(f"   kept {fname}/ — a copy of the CURRENT private sources. To roll "
+                  f"them back: git -C <repo>/user log, then checkout <rev> -- "
+                  f"profile.md glossary.md, then deploy.py apply")
             continue
         shutil.copy2(path, os.path.join(native_dir, fname))
         print(f"   restored {fname}")

@@ -60,6 +60,8 @@ DOCUMENT = HERE.parents[3] / "docs" / "roundtable.md"
 # executable content of every gate touching the block — both could be changed
 # before without disturbing the fingerprint.
 SCOPE_ALGORITHM = "scope/2"
+# Короткая цитата ничего не доказывает, пустая — «находится» в любой реплике.
+MIN_QUOTE = 12
 
 CONTRACT_VERSIONS = {
     "vocabulary": 1, "run": 1, "issues": 1, "framing": 1,
@@ -1361,6 +1363,10 @@ def memory_receipt(plan: dict, home: Path | None = None) -> list[str]:
     if expected is None:
         return ["не удалось спросить git, какой коммит трогал канон последним"]
     problems = []
+    # 🚩 Ревью #38: пустой список файлов выключал проверку целиком и при этом
+    # печатал «память актуальна». Проверка без предмета — не проверка.
+    if not plan["проверка_памяти"]["файлы"]:
+        return ["список файлов памяти пуст — проверять нечего"]
     for relative in plan["проверка_памяти"]["файлы"]:
         path = Path(str(relative).replace("~", str(home), 1))
         if not path.is_file():
@@ -1512,11 +1518,19 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
             return f"sha256 не совпал: {digest[:12]}… против {basis['sha256'][:12]}…"
         return None
 
-    session = basis["сессия"]
+    # 🚩 Ревью #38: идентификатор сессии подставлялся в путь как есть, и
+    # `../..` уводил чтение за пределы каталога переписок. Пустая цитата при
+    # этом «находилась» в любой реплике: `"" in text` — всегда истина.
+    session, wanted, quote = basis["сессия"], basis["native_uuid"], basis["цитата"]
+    if not _is_uuid(session):
+        return f"сессия не похожа на идентификатор: {session!r}"
+    if not _is_uuid(wanted):
+        return f"событие не похоже на идентификатор: {wanted!r}"
+    if len(str(quote).strip()) < MIN_QUOTE:
+        return f"цитата короче {MIN_QUOTE} знаков — доказывать ей нечего"
     candidates = list(home.glob(f".claude/projects/*/{session}.jsonl"))
     if not candidates:
         return f"сессии нет: {session}"
-    wanted, quote = basis["native_uuid"], basis["цитата"]
     for line in candidates[0].open(encoding="utf-8"):
         if wanted not in line:
             continue
@@ -1843,6 +1857,12 @@ def inject_sections(text: str, tables: Tables) -> str:
         stop = text.find(end)
         if start < 0 or stop < 0 or stop < start:
             raise ContractError(f"marker block {name!r} is missing from the document")
+        # 🚩 Ревью #38: второй такой же блок с противоположным выводом дописывался
+        # в документ, а генератор смотрел только на первое вхождение.
+        if text.count(begin) > 1 or text.count(end) > 1:
+            raise ContractError(
+                f"раздел {name!r} встречается в документе дважды: генератор обновит "
+                f"первый, читатель поверит любому")
         body = render_section(name, tables)
         text = text[:start + len(begin)] + "\n\n" + body + "\n" + text[stop:]
     return text

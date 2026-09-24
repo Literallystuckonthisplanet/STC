@@ -839,7 +839,13 @@ def test_a_basis_is_resolved_against_the_real_source(tmp_path):
              "native_uuid": uuid, "цитата": "делай дальше"}
     # the wrapper is exactly what a filtered search dropped last time
     assert module.resolve_basis(event, home) is None
-    assert "цитата не найдена" in module.resolve_basis({**event, "цитата": "не говорил"}, home)
+    assert "цитата не найдена" in module.resolve_basis(
+        {**event, "цитата": "этого я никогда не говорил"}, home)
+    # 🚩 Ревью #38: пустая цитата «находилась» в любой реплике, а `../..` в
+    # идентификаторе сессии уводил чтение за пределы каталога переписок.
+    assert "короче" in module.resolve_basis({**event, "цитата": "  "}, home)
+    assert "не похожа" in module.resolve_basis({**event, "сессия": "../../../tmp/x"}, home)
+    assert "не похоже" in module.resolve_basis({**event, "native_uuid": "не-uuid"}, home)
     assert "события нет" in module.resolve_basis(
         {**event, "native_uuid": "99999999-0000-0000-0000-000000000000"}, home)
     assert "не реплика пользователя" in module.resolve_basis(
@@ -981,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 118
+    assert len(findings) == 127
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1015,14 +1021,158 @@ def test_a_finding_may_only_be_assigned_to_a_block_still_open():
             f"а блок {block} уже закрыт")
 
 
+# Замки находок: id → (слепок текста, слепок привязки «поломка/сторож/критерий»).
+# 🚩 Ревью #38: один общий слепок на весь реестр падал одинаково и от подмены
+# текста, и от честного добавления находки — опыт «подменить текст» засчитывался
+# по чужой причине. Пофамильный замок называет ИМЕННО подменённую запись.
+FINDING_PINS = {
+    "R12-1": ("d42435e985cb", "47f0fb0e39bc"),
+    "R12-2": ("0564a10f5873", "69abc15709b7"),
+    "R12-3": ("dcf654104cbe", "49359eb63ad0"),
+    "R12-4": ("4d5e8e6c7b4f", "8203d1780a9c"),
+    "R12-5": ("88870441b246", "d2adb66fecfb"),
+    "R13-1": ("f4a1639d8eb9", "daac94d1a879"),
+    "R13-2": ("0d92d292b923", "87b917cdae7a"),
+    "R13-3": ("f8066d738986", "7020e9135d15"),
+    "R13-4": ("419f575afe06", "cc6a5fc005ff"),
+    "R13-5": ("9eafa61d5627", "4f88b03248cf"),
+    "R13-6": ("e6bb12ea053a", "7020e9135d15"),
+    "R13-7": ("e1796e50cb6a", "238c8bcb8020"),
+    "R13-8": ("9a8fea56b1ce", "ab7d603ae34c"),
+    "R14-1": ("23c0d8967e00", "bc0690af21eb"),
+    "R14-2": ("1f52fbec5228", "9c55c7378c55"),
+    "R14-3": ("32787caa1755", "a92948a682c7"),
+    "R14-4": ("ed5e8deb8117", "3cf57480d6e7"),
+    "R14-5": ("ac422876d92e", "4f88b03248cf"),
+    "R14-6": ("cb6dc064ffbd", "59ee143f6595"),
+    "R14-7": ("ccb9c39d9248", "130a30a902f7"),
+    "R14-8": ("5467b0850b03", "5caa504f9d55"),
+    "R14-9": ("e1366bbbbbbb", "7020e9135d15"),
+    "R14-10": ("f50bb3e9a008", "9512f329eb20"),
+    "R14-11": ("8180865842d5", "1c38a9362331"),
+    "R15-1": ("1c104b3fc7e7", "2ee762796553"),
+    "R15-2": ("9d98cc6bd966", "21fcaa3d3373"),
+    "R15-3": ("e01825a51396", "8a13d4a06981"),
+    "R15-4": ("db5173af613a", "9eb37aef1baf"),
+    "R15-5": ("0737cccb138c", "616b705cc1de"),
+    "R15-6": ("07ec9b9f9bed", "9a4caf58c3dc"),
+    "R15-7": ("92450cbbfbdd", "874dfc52afb1"),
+    "R15-8": ("47885c40a92b", "8696927d13fa"),
+    "R15-9": ("2fe280ccf96d", "130a30a902f7"),
+    "R15-10": ("38b913648760", "1760c70038c6"),
+    "R16-1": ("a1d424315908", "bc0690af21eb"),
+    "R16-2": ("cea556de1fbc", "9ae5c4dd83a4"),
+    "R16-3": ("1bd741f174cb", "e12c610faf33"),
+    "R16-4": ("0b8e109c78c0", "4a92fa7800dc"),
+    "R16-5": ("9bf55e10b199", "ffaecc1dd0d3"),
+    "R16-6": ("944e866fbb12", "e47ebbc027c1"),
+    "R16-7": ("9db50d82952b", "5caa504f9d55"),
+    "R16-8": ("7d5aceae7883", "e14e5061d017"),
+    "R17-1": ("cb5780caccf1", "4545c8a3af83"),
+    "R17-2": ("c0aab0411a78", "042a0b8ab63d"),
+    "R17-3": ("1bba815466bd", "9ae5c4dd83a4"),
+    "R17-4": ("a0f59d2f458d", "b40e3f3db766"),
+    "R17-5": ("7ecf5768210f", "639003c64aa8"),
+    "R17-6": ("cef11703a077", "942ab7451e81"),
+    "R17-7": ("71592858481f", "9a4caf58c3dc"),
+    "R17-8": ("71739bc8db4f", "ef35dadd5758"),
+    "R17-9": ("1899aac7bced", "e47ebbc027c1"),
+    "R19-1": ("2435387d4f38", "0e91c4863728"),
+    "R19-2": ("67e0592b0d42", "f5d66a1c863c"),
+    "R19-3": ("d68c3419c54c", "9eb37aef1baf"),
+    "R19-4": ("984607a8b8de", "942ab7451e81"),
+    "R19-5": ("8f23ef086ef6", "bc68a2fedc3d"),
+    "R19-6": ("bab1914bd7e7", "4a92fa7800dc"),
+    "R19-7": ("b45323d1dc8d", "70004e5011fe"),
+    "R20-1": ("8dcb4985bc98", "ab7d603ae34c"),
+    "R20-2": ("db5deb721868", "238c8bcb8020"),
+    "R20-3": ("df6c21e99d57", "3f8359c2198f"),
+    "R20-4": ("ea5bb429f8cd", "1c38a9362331"),
+    "R20-5": ("97767c4744d1", "254da468c88e"),
+    "R21-1": ("697e5326bf9e", "53b44945d9f4"),
+    "R21-2": ("9374a33f13e2", "5af7747f5f79"),
+    "R21-3": ("423e84c75283", "ab7d603ae34c"),
+    "R21-4": ("a716e3ecc86b", "30119aa7f3ab"),
+    "R21-5": ("3bf8811d6d49", "7628650c351d"),
+    "R22-1": ("e6d64e6d4e48", "53b44945d9f4"),
+    "R22-2": ("a6bfae47ddbb", "30119aa7f3ab"),
+    "R22-3": ("71cb12d78bf4", "d6ffad4b2500"),
+    "R23-1": ("7e861b64e208", "aec37d45c1fb"),
+    "R23-2": ("34280630bd43", "53b44945d9f4"),
+    "R23-3": ("f35869380d4c", "cc6a5fc005ff"),
+    "R24-1": ("a694ca063639", "ae557c6966cb"),
+    "R24-2": ("945fbd19db58", "1640b0a651d7"),
+    "R24-3": ("3a8e7ca36453", "23eae7d0475f"),
+    "R24-4": ("b1af8f4b4155", "9dd5d0828467"),
+    "R24-5": ("759811342653", "9bfc9bcf799e"),
+    "R25-1": ("de91281f1e9c", "bfe633052095"),
+    "R25-2": ("350cf56aacce", "ae1f849438b7"),
+    "R25-3": ("950bc8f39d06", "5d3042f89fcf"),
+    "R25-4": ("aa8f894cc09c", "c817ad2289e9"),
+    "R25-5": ("86f9eed4daf2", "2447e9cf3b0f"),
+    "R25-6": ("ee166703f0ca", "aa36a6d54968"),
+    "R25-7": ("5910bba6201c", "9dd5d0828467"),
+    "R25-8": ("7d791e5b64bb", "e1bb7c7b25de"),
+    "R26-1": ("9950f98d68a8", "2b72b62b2f23"),
+    "R26-2": ("156d59b72fa1", "9f1a184c1a32"),
+    "R26-3": ("61236a6512ac", "5fc2391698e1"),
+    "R26-4": ("a9447ca8b7b8", "92747f60cd6e"),
+    "R26-5": ("9f6cf5c4af28", "92747f60cd6e"),
+    "R26-6": ("8e23fb8815df", "a92948a682c7"),
+    "R27-1": ("d9189328c2be", "53c980f9fb85"),
+    "R27-2": ("953c38908491", "18677725582b"),
+    "R27-3": ("f4df0ca3a0a2", "2eec6c296f37"),
+    "R27-4": ("9bebcf6c8f17", "7825db2be5fe"),
+    "R28-1": ("d571190fde10", "48f73092b0f6"),
+    "R28-2": ("6f431e024e37", "18677725582b"),
+    "R29-1": ("02a6a3004349", "74a234fd8e39"),
+    "R30-1": ("98599398f960", "e3f3027abd50"),
+    "R30-2": ("9cb3ccea900c", "66254a190734"),
+    "R31-1": ("f9fcee077e41", "f8a5c2bd7179"),
+    "R31-2": ("b92ca1a0e7fc", "f8a5c2bd7179"),
+    "R31-3": ("ac97255021f8", "717872dd8acb"),
+    "R32-1": ("69c10618ad8d", "6f6a602f6678"),
+    "R33-1": ("993cea2ecfe2", "55b739124fa1"),
+    "R33-2": ("fb17eb6ae416", "3ef1250b6cb6"),
+    "R33-3": ("19b18287247a", "5d0ee2db039d"),
+    "R33-4": ("9b260b0f97f4", "1b62207271ec"),
+    "R34-1": ("a82f78a5db09", "c984092de990"),
+    "R34-2": ("c7aefff882ce", "fbe5d6a70e4b"),
+    "R34-3": ("aac2be7f0b44", "d4cc6846859a"),
+    "R35-1": ("2541c4ec0653", "c4e6c76728f6"),
+    "R35-2": ("61ae7c4dba61", "0a2c20839104"),
+    "R36-1": ("e51874bf555a", "00ab4cc5c291"),
+    "R36-2": ("9beb9a5355bc", "1e04f13cac09"),
+    "R37-1": ("178324d8fe37", "b14772569e28"),
+    "R38-1": ("3e90660040df", "fb37793fb35f"),
+    "R38-2": ("0ac4670cb9ca", "7bc2e2942921"),
+    "R38-3": ("a72104d51f6b", "16728a3e8010"),
+    "R38-4": ("cae4f38aa023", "65d27aecfb31"),
+    "R38-5": ("42f18f906d96", "53d263c8eff8"),
+    "R38-6": ("5911649beacc", "63bec5b2d7bf"),
+    "R38-7": ("d03eabfe8ec0", "f4aa85503842"),
+    "R38-8": ("8e481468c39f", "eac22f0fedd8"),
+    "R38-9": ("d4385f6c9ac4", "53343132d309"),
+}
+
+
+def _finding_digest(value) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
+
+
 def test_the_text_of_every_finding_is_pinned():
     # ID можно сохранить, а текст заменить — тогда находка «есть», но говорит
-    # уже о другом. Отпечаток по парам (id, что) это ловит.
+    # уже о другом.
     findings = _load("findings")["находки"]
-    payload = json.dumps([[f["id"], f["что"]] for f in findings], ensure_ascii=False)
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    assert digest == "4f4bfe229a7c996f31ad658c971ff04849be8ac1becec249323b0937968709ce", (
-        "текст находки подменён или список изменён без обновления замка")
+    known = {f["id"] for f in findings}
+    lost = sorted(set(FINDING_PINS) - known)
+    assert not lost, f"замок есть, находки нет: {lost}"
+    for finding in findings:
+        pinned = FINDING_PINS.get(finding["id"])
+        assert pinned, f"{finding['id']}: находка без замка"
+        assert _finding_digest(finding["что"]) == pinned[0], (
+            f"{finding['id']}: текст находки подменён — «{finding['что'][:60]}»")
 
 
 def test_the_binding_between_a_finding_and_its_break_is_pinned():
@@ -1033,19 +1183,19 @@ def test_the_binding_between_a_finding_and_its_break_is_pinned():
     переписать следом — и ложная «устранена» возвращалась при зелёных тестах.
 
     Смысловую связь «эта поломка проверяет ИМЕННО этот дефект» программа не
-    выведет. Её устанавливают один раз при ревью и дальше защищают отпечатком:
-    любая перепривязка меняет хеш.
+    выведет. Её устанавливают один раз при ревью и дальше защищают замком:
+    любая перепривязка меняет слепок. Критерий входит наравне с поломкой и
+    сторожем: ревью #28 вернуло R23-1 с положительной приёмки на отрицательную,
+    и прежний замок этого не заметил.
     """
-    # Критерий входит в отпечаток наравне с поломкой и сторожем: ревью #28
-    # вернуло R23-1 с положительной приёмки БУ-10 на отрицательный БИ-13, и
-    # прежний замок этого не заметил — БИ открыт, назначение формально годное.
-    findings = _load("findings")["находки"]
-    triples = [[f["id"], f.get("поломка", "—"), f.get("тест", "—"),
-                f.get("критерий", "—")] for f in findings]
-    digest = hashlib.sha256(
-        json.dumps(triples, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "9287ea250dfcc956663071b2b0290a9b03acc364d1229cc46ae389479decd793", (
-        "привязка находки к поломке или сторожу изменена без обновления замка")
+    for finding in _load("findings")["находки"]:
+        pinned = FINDING_PINS.get(finding["id"])
+        assert pinned, f"{finding['id']}: находка без замка"
+        binding = [finding.get("поломка", "—"), finding.get("тест", "—"),
+                   finding.get("критерий", "—")]
+        assert _finding_digest(binding) == pinned[1], (
+            f"{finding['id']}: привязка изменена — поломка {binding[0]}, "
+            f"сторож {binding[1]}, критерий {binding[2]}")
 
 
 def test_a_fixed_finding_names_a_guard_that_actually_guards_it():
@@ -1499,9 +1649,11 @@ def test_the_review_protocol_is_written_down_not_remembered():
     # Шесть кругов чтения прозы стоили больше, чем весь блок БК. Порядок
     # критики — такое же правило, как остальные, и живёт в таблице.
     protocol = BLOCKS["порядок_критики"]
-    assert "зелёной контрольной базе" in protocol["правило"], (
-        "без зелёной базы мёртвый мутант ничего не значит — это и был дефект 02.09")
-    assert "временной копии" in protocol["правило"]
+    # 🚩 Ревью #38: правило переписывалось на «годится любое падение», а слова,
+    # которые искал этот сторож, сохранялись. Текст закреплён целиком.
+    digest = hashlib.sha256(protocol["правило"].encode("utf-8")).hexdigest()
+    assert digest == "262849a1734552184bde1b75c4919efb458b9bb717d4c3e230196c2901a4af44", (
+        "правило критики переписано: " + protocol["правило"][:120])
     assert len(protocol["классы_мутаций"]) >= 7
     steps = [next(iter(step)) for step in protocol["шаги"]]
     assert steps == ["прогнать_имеющееся", "ломать_на_временной_копии",
@@ -1891,9 +2043,15 @@ def test_the_isolation_fingerprint_is_more_than_a_version_string():
 def test_a_negative_claim_about_an_event_needs_the_raw_source():
     # Cost a whole round: a filtered search dropped a message that existed, and
     # I reported "не нашёл" as "не существует".
+    # 🚩 Ревью #38: запрет на вывод по обрезанному поиску можно было удалить —
+    # этот сторож смотрел только на два поля, а замер полноты исключал раздел
+    # целиком. Правило закреплено целиком и в знаменателе замера.
     rule = BLOCKS["проверки_источников"]["отрицательное_утверждение_о_событии"]
     assert rule["источник"] == "сырой_JSONL"
-    assert "отфильтрованный_корпус" in rule["запрещено"]
+    assert sorted(rule["запрещено"]) == ["отфильтрованный_корпус",
+                                         "поиск_с_ограничением_длины"], (
+        f"запрет ослаблен: {rule['запрещено']}")
+    assert rule["почему"].strip()
 
 
 def test_an_unfinished_block_states_what_blocks_it():
@@ -2356,3 +2514,78 @@ def test_a_really_closed_block_keeps_its_wave_in_the_record():
         lambda n: n != prover,
         lambda n: forgotten["blocks"]["блоки"][n].get("состояние") == "сделано"), (
         "закрытие без записанной волны принято за законное")
+
+
+def test_a_permission_cannot_be_rewritten_in_place():
+    """Разрешение — запись, а не переменная.
+
+    🚩 Ревью #38: расширить себе объём можно было, пересчитав хеш в той же
+    таблице: сравнивались два значения, оба правимые. Настоящая независимая
+    сторона — реплика Антона в транскрипте, её подделать нельзя (это проверяет
+    `authority`). Здесь закрепляется вторая половина: выданные разрешения
+    неизменяемы, новое можно только ДОБАВИТЬ, и это видно в изменениях.
+    """
+    grants = [[g["кем"], sorted(g["блоки"]), str(g["дата"]), g["scope_sha256"],
+               {k: str(v) for k, v in g["основание"].items()}]
+              for g in BLOCKS["разрешения_исполнения"]]
+    digest = hashlib.sha256(
+        json.dumps(grants, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    assert digest == "3c2d4ec98b41a2ac36d35befbb245664322fec647a36fc819b3c1f930f3991d0", (
+        "выданное разрешение переписано: хеш объёма, список блоков или основание")
+
+
+def test_the_memory_receipt_cannot_be_switched_off():
+    # 🚩 Ревью #38: пустой список файлов выключал проверку памяти, а отчёт
+    # при этом сообщал, что память актуальна.
+    module = import_tables_module()
+    files = BLOCKS["проверка_памяти"]["файлы"]
+    assert set(files) == {"~/Work/memory/project_roundtable.md",
+                          "~/Work/memory/MEMORY.md"}, f"список файлов памяти изменён: {files}"
+    empty = copy.deepcopy(module.load().plan)
+    empty["проверка_памяти"]["файлы"] = []
+    assert module.memory_receipt(empty), "пустой список принят за пройденную проверку"
+
+
+def test_the_document_header_counts_the_real_tables():
+    # 🚩 Ревью #38: в шапке документа стояло «7 таблиц», в каноне их восемь.
+    module = import_tables_module()
+    text = (module.ROOT / "docs/roundtable.md").read_text(encoding="utf-8")
+    declared = len(BLOCKS["списки"]["таблицы"])
+    assert declared == len(module.TABLE_NAMES)
+    assert f"**{declared} таблиц**" in text, (
+        f"шапка документа называет не {declared} таблиц")
+
+
+def test_the_break_list_itself_is_pinned():
+    """Опыт нельзя тихо удалить из списка поломок.
+
+    🚩 Ревью #38: список опытов правится как обычный файл — вычеркнул строку,
+    и «замечено 100 %» считается по оставшимся. Список закреплён поимённо.
+    """
+    import importlib.util
+    path = Path(__file__).with_name("test_roundtable_mutations.py")
+    spec = importlib.util.spec_from_file_location("rt_mutations", path)
+    mutations = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mutations)
+    ids = [case[0] for case in mutations.CASES]
+    assert len(ids) == len(set(ids)), "повторяющийся ID опыта"
+    digest = hashlib.sha256(
+        json.dumps(sorted(ids), ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert digest == "15bbaad3e9a4543774566337eb01fba635bde292c6ba88ce24440963d00a6af2", f"список опытов изменён: сейчас {len(ids)}"
+    for case in mutations.CASES:
+        assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
+
+
+def test_a_second_copy_of_a_generated_section_is_rejected(tmp_path):
+    """🚩 Ревью #38: второй такой же блок с противоположным выводом дописывался
+    в документ, а генератор обновлял только первое вхождение — читатель верил
+    любому из двух."""
+    module = import_tables_module()
+    tables = module.load()
+    document = (module.ROOT / "docs/roundtable.md").read_text(encoding="utf-8")
+    assert module.inject_sections(document, tables), "контроль: обычный документ проходит"
+    begin = module.BEGIN.format(name="status")
+    end = module.END.format(name="status")
+    forged = document + f"\n{begin}\nMVP завершён, идите дальше\n{end}\n"
+    with pytest.raises(module.ContractError, match="дважды"):
+        module.inject_sections(forged, tables)

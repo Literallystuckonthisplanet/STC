@@ -11,6 +11,104 @@ release notes.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-24
+
+The first tagged release since 0.1.2 (July). STC grew from a deploy pipeline
+for one harness into a two-harness setup that measures its own behaviour.
+
+**Highlights**
+
+- **Codex is a native peer of Claude Code** — typed agents, native hooks,
+  `config.toml` merge, and a monthly live canary on both harnesses.
+- **Memory lives outside the session.** Raw transcripts from every harness
+  feed an offline ingest and a monthly review in Obsidian; nothing rewrites
+  canonical memory automatically.
+- **Measured, not assumed.** Answer clarity, the decision journal for resolved
+  forks, and hook firing health are counted from real transcripts, each with a
+  recorded baseline.
+- **New hooks:** plan recall (H19 — past decisions on the plan's topic are
+  served when leaving plan mode), decision record (H23), prompt lens (H22).
+  22 hooks in total.
+- **Roundtable** (multi-vendor plan review, in development): its rules are
+  machine-checked tables, and its gates no longer read missing data as
+  agreement.
+- **Safer deploy:** the backup covers every file `apply` changes, `user/` is
+  deny-by-default, and startup context has a hard 10 KB gate.
+- **Relicensed** MIT → AGPL-3.0 + commercial.
+
+### Added — answer clarity is measured from outside, not self-assessed
+- `core/scripts/answer_health.py` counts four shares over Claude and Codex
+  transcripts: the user's "didn't understand / repeat" replies, answers longer
+  than 2000 characters, answers carrying internal codes, and forks that do not
+  follow the fork card (fewer than two distinct options, a back-reference to an
+  earlier message instead of the options). Copies of one conversation are
+  collapsed by record id — the raw archive held 71,535 records for 42,334
+  distinct ones — machine recaps are not counted as the user's words, and a
+  fork's options are cut at the next section. Baseline: re-asks 3%, long
+  answers 9%, answers with codes 8%.
+- A fork is recognised by its card, not by numbering: at least two distinct
+  options, every fork in an answer checked separately, a question line is not an
+  option. A mention of the marker is excluded by the same `fork_positions()`
+  rule the decision-record hook uses. A manual check on three samples agreed on
+  68 of 75; the reference set is `deploy/tests/fixtures/answer_forks`.
+- `core/scripts/answer_probe.py` is a behavioural probe: it gives the agent a
+  task that pulls toward the violation (a report with counts and codes; a lost
+  fork) and judges the answer itself — Codex restated the rule correctly and
+  broke it in the working answer. A failed call, including a subscription
+  limit, is reported as "not verified", never as a failure.
+- `core/rules/pev.md`: Verify reports end-to-end and negative scenarios to the
+  user; test counts, commands and hashes go to the protocol. `behavior.md` no
+  longer allows internal codes "with an explanation" — it contradicted the
+  profile, and Codex reproduced exactly the permissive version.
+
+### Changed — Roundtable: no gate reads missing data as agreement
+Roundtable (multi-vendor plan review, `docs/roundtable.md`) went through review
+rounds #28–#38. Most findings were one class: an absence treated as consent.
+- "Could not ask" and "field missing from the report" were both `None` and
+  compared equal, which opened the isolation gate; a missing required file
+  hashed to an empty string and matched an empty report. Both are now refusals
+  before any comparison.
+- The composition of a rule is protected, not only its contents: a mandatory
+  core cannot be dropped from the artifact list, and the critique rule is
+  pinned by its full text.
+- Live calls require a complete isolation fingerprint. Every uncomputable field
+  counts as a mismatch and has an owning block; "isolation confirmed" is an
+  explicit flag that an edit of any fingerprint input cancels.
+- A block's commits are checked against its write scope (`Roundtable-Block`
+  trailer, no merges, no file outside the declared scope);
+  `tables.py scope <block>` checks prepared work before the commit.
+- The execution plan is dry-run to the end with the same gate rule the live
+  session applies after every wave; completed waves live in their own section.
+- Permissions: the basis must be a real user reply in the transcript (an empty
+  quote no longer "matches", a session id cannot escape the transcript
+  directory, a symlink inside the repo cannot point outside). Issued
+  permissions are append-only, so a scope hash cannot be recomputed in place.
+
+### Fixed — Codex never received the user profile or glossary
+- A live check on 2026-09-23 showed `codex exec` sees the
+  `@/…/AGENTS.stc.md` reference but not its contents. H06 injects only the
+  three rule files, so the profile and glossary — every rule about how to talk
+  to the user — had not reached Codex since the switch to `@import`. Where
+  reference expansion is not proven (codex, zcode) the bundle is now inlined
+  into `AGENTS.md`; codex `supports_native_import` moved from `unverified` to
+  `false` on that evidence.
+
+### Fixed — the deploy backup did not cover what `apply` changes
+- The one-command rollback snapshotted only JSON/TOML. The user's
+  always-context file (`CLAUDE.md` / `AGENTS.md`), where `apply` writes the
+  managed block, was not saved, and private `user/*.md` sources had no history
+  anywhere. The snapshot now includes both; `secrets.env` is never copied, and
+  `restore` does not copy `user/` into the harness.
+
+### Fixed — private rules could surface in the public repository
+- `user/profile.md` and `user/glossary.md` have a local version history
+  (`user/.git`, no remote) — the honest rollback, since the deploy snapshot is
+  taken after the edit. Its first tracked-file list lived in `user/.gitignore`,
+  which the outer repository reads too: `!profile.md` lifted the `user/*` deny
+  and surfaced the profile as an untracked file of a repo with a GitHub remote.
+  The guard test now covers the live files as well, and the restore hint points
+  at that history instead of "copy by hand".
+
 ### Fixed — both new tools were broken in production while green in tests
 - `H23` read `STC_CORE` from the environment, but the variable is substituted
   into the script TEXT at render time and is not in the environment. The

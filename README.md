@@ -26,10 +26,13 @@
   - [Capability ≠ realisation](#capability--realisation)
   - [Always-context vs on-demand](#always-context-vs-on-demand)
 - [Third-party tools and credits](#third-party-tools-and-credits)
-- [The 21 hooks](#the-21-hooks)
+- [The 22 hooks](#the-22-hooks)
 - [The rules (always-context)](#the-rules-always-context)
 - [Memory structure](#memory-structure)
 - [Offline transcript memory pipeline](#offline-transcript-memory-pipeline)
+- [Project status and code navigation](#project-status-and-code-navigation)
+- [Measuring the agent's behaviour](#measuring-the-agents-behaviour)
+- [Roundtable: multi-vendor plan review](#roundtable-multi-vendor-plan-review)
 - [Skills, agents, commands](#skills-agents-commands)
 - [The deployer and the renderer](#the-deployer-and-the-renderer)
   - [CLI commands](#cli-commands)
@@ -57,7 +60,7 @@ Every token that goes into the model's context window costs money and attention 
 
 STC attacks this on several fronts:
 
-- **Always-context is loaded once per session.** The three firing rules (`behavior.md`, `pev.md`, `session.md`) plus the user profile enter context a single time and are never re-read; delivery is per-harness (on Claude the **H06** hook injects them, the bundle `@import` staying a pointer so nothing is delivered twice; a harness whose plugin hooks don't fire gets them inlined into the bundle). Everything else — the memory index, playbook, code standard, reference catalogs, `project_docs.md` — is **on-demand**, read only when a rule or hook references it.
+- **Always-context is loaded once per session.** The three firing rules (`behavior.md`, `pev.md`, `session.md`) plus the user profile enter context a single time and are never re-read; delivery is per-harness (on Claude the **H06** hook injects them, the bundle `@import` staying a pointer so nothing is delivered twice; a harness whose plugin hooks don't fire gets them inlined into the bundle; Codex does not expand the bundle's `@import`, so the bundle itself is inlined into `AGENTS.md`). Everything else — the memory index, playbook, code standard, reference catalogs, `project_docs.md` — is **on-demand**, read only when a rule or hook references it.
 - **Caveman compression** only where context loss is cheap. The `research`, `docs`, and `harness-docs` read-only agents return terse evidence-preserving results. Builders, reviewers, QA, security, and e2e keep full context; the final answer to the user is always normal prose.
 - **Output hygiene hook (H11)** blocks raw-output dumps (`cat`/`sed`/`head`/`tail`/`git diff`/`find`/`grep -r` without redirection). Output goes to a file; only the summary reaches the model.
 - **Exec-offload hook (H15)** blocks expensive data scripts (import/seed/publish/scrape/sync, audits without `--json`) in the main thread and routes them to an ephemeral sub-agent, so the main context stays lean.
@@ -93,7 +96,7 @@ STC encodes a software development lifecycle that goes from **Spec-Driven Develo
 
 1. **Minimal third-party tools. Maximal use of the harness's own capabilities.** STC uses the harness's native hook system, native `@import`, native typed sub-agents (where they exist), native MCP config. It does not ship a runtime daemon, a database, or a framework. The only language besides the harness's native format is Python — and only for the deploy pipeline itself, which runs outside the agent loop.
 2. **One source of truth, many realisations.** A capability (a rule, a hook, a skill, an agent) is written **once**, in a harness-neutral form, in `core/`. Each adapter declares how a harness realises it. You never edit `~/.claude` or `~/.zcode` directly — you edit `core/` and deploy.
-3. **Non-destructive by construction.** Every artifact carries a `.stc.md` / `.stc.sh` suffix (collision-proof). JSON merges happen under a namespace (`_stc_managed` / `stc-`) and refuse by default on genuine conflicts. A backup snapshot is taken before any JSON write. The only user-owned file ever touched is the always-context file, and only via one managed marker `@import` line.
+3. **Non-destructive by construction.** Every artifact carries a `.stc.md` / `.stc.sh` suffix (collision-proof). JSON merges happen under a namespace (`_stc_managed` / `stc-`) and refuse by default on genuine conflicts. A backup snapshot is taken before any write — JSON/TOML, the always-context file, and the private `user/*.md` sources (never `secrets.env`). The only user-owned file ever touched is the always-context file, and only via one managed marker block: an `@import` line where the harness expands it, the inlined bundle where it does not (Codex).
 4. **Degrade gracefully, never lose the capability.** A harness that lacks typed sub-agents (ZCode) does not lose the review pipeline — the methodology travels via the skill, and the agent dispatches as `general-purpose` carrying that skill. Only the native *form* is absent; the *capability* is intact.
 5. **Edit once, deploy to any target.** Drift is impossible by construction: `core/` is the source, the live harness directory is a render. Re-deploy is idempotent.
 
@@ -110,7 +113,7 @@ STC/
 ```
 
 - **`core/`** is harness-agnostic and public. This is what you publish and contribute to. The capability bodies (the prompt text, the hook script, the rule text) live here, once.
-- **`user/`** is private (gitignored). Templates use the `.example.` suffix and ARE committed (`profile.example.md`, `secrets.env.example`, `projects/example.example.md`); the real files they spawn are ignored.
+- **`user/`** is private and **deny-by-default**: anything new in it is ignored unless it is a template. Templates use the `.example.` suffix and ARE committed (`profile.example.md`, `glossary.example.md`, `secrets.env.example`, `projects/example.example.md`); the real files they spawn are ignored. Your profile and glossary can keep a local version history in `user/.git` (no remote), and a guard test fails if a live private file ever becomes visible to the outer repository.
 - **`adapters/`** is declarative. Each `adapter.yaml` states, per layer, how a harness realises the capability, with no deploy-time behaviour of its own.
 - **`deploy/`** is the pipeline. `render.py` is a pure function (no disk writes); `deploy.py` owns the write step; `checks.py` validates and backs up.
 
@@ -153,7 +156,7 @@ The principle: a capability is know-how written once (neutral); a harness realis
 
 ### Always-context vs on-demand
 
-- **Always-context** (Layer 1) is loaded every session: the three firing rules (`behavior.md`, `pev.md`, `session.md`) + the user profile. Delivery is per-harness — on Claude Code the **H06** session-start hook injects the rules (the bundle `@import` stays a pointer, so rules are not delivered twice); a harness whose plugin hooks don't fire (ZCode) gets them inlined into the bundle. The profile is inlined everywhere. H06 owns initial delivery and the infra-audit cadence nudge.
+- **Always-context** (Layer 1) is loaded every session: the three firing rules (`behavior.md`, `pev.md`, `session.md`) + the user profile. Delivery is per-harness — on Claude Code the **H06** session-start hook injects the rules (the bundle `@import` stays a pointer, so rules are not delivered twice); a harness whose plugin hooks don't fire (ZCode) gets them inlined into the bundle. The profile and glossary are inlined into the bundle everywhere; where the harness does not expand `@import` (Codex — disproven by a live check), the bundle itself is inlined into `AGENTS.md`. H06 owns initial delivery and the infra-audit cadence nudge.
 - **On-demand** is everything else: the memory index (`MEMORY.md`), `playbook.md`, `code_standard.md`, `project_docs.md`, the reference catalogs, and every skill/command/agent — read by anchor (`[[link]]`) or on invocation, only when needed.
 
 ## Third-party tools and credits
@@ -174,12 +177,15 @@ STC is deliberately light on dependencies, but a few external tools are load-bea
 | **GLM** | Zhipu / BigModel | [open.bigmodel.cn](https://open.bigmodel.cn/api/anthropic) | Model provider (`core/models/glm.yaml`). Anthropic-compatible Messages endpoint, mounts into any harness speaking the Anthropic protocol. |
 | **Claude** | Anthropic | [anthropic.com](https://api.anthropic.com) | Model provider (`core/models/claude.yaml`). The natural pairing with the claude harness but not bound to it. |
 
-## The 20 hooks
+## The 22 hooks
 
 Hooks are the **enforcement layer** (ADR-001: a rule in always-text recidivs; a rule in a hook does not). A hook reads tool-call JSON from stdin and either **hard-blocks** (`exit 2`), **JIT-injects** context (`hookSpecificOutput.additionalContext`), or **passes** (`exit 0`). They are the guarantee behind the rules — the rule states the intent, the hook enforces it.
 
-The active source catalog contains H01–H18, H21 and H22. H19 is historical
-and appears only in the retired-code register; H20 was never assigned.
+The catalog contains H01–H19 and H21–H23; H20 was never assigned. H19 was
+reused for plan recall after the old pre-compact memory hook was retired.
+Active per harness: **21 on Claude Code** (H11 is off — the harness already
+collapses tool output) and **17 on Codex** (H08, H11, H13, H19 and H23 are off
+or replaced by instructions; see `adapters/codex/adapter.yaml`).
 
 | ID | Event | What it does | Type |
 |---|---|---|---|
@@ -200,9 +206,11 @@ and appears only in the retired-code register; H20 was never assigned.
 | **H15** exec-offload-guard | PreToolUse(Bash) | Blocks expensive data-scripts (import/seed/publish/scrape/sync; audits without `--json`) → must offload to an ephemeral agent. | guard |
 | **H16** integration-docs-gate | PreToolUse(Write\|Edit\|MultiEdit) | Blocks editing a named integration's code without saved research (failure-modes catalog or notes/research). Lifted by a research save or a `// docs-checked:` marker. | guard |
 | **H17** secret-read-guard | PreToolUse(Read\|Glob\|Grep) | Blocks reading secret files (`.env`/`.pem`/`id_rsa`). Harness-neutral equivalent of Claude's `permissions.deny` (ZCode has no perms engine). Override via `// secret-exception:`. | guard |
-| **H18** graphify-first | PreToolUse(Grep\|Bash) | In a repo with a built code-graph (`graphify-out/graph.json`), blocks the first grep-style search once → nudges `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; exact-string lookups pass). When the graph is absent, gives a nonblocking pointer to `graphify_on_demand.py`; exact lookups never build it. | guard |
+| **H18** graphify-first | PreToolUse(Grep\|Bash\|Read\|Glob) | Project-first: the first touch of a registered project points to its generated `SNAPSHOT.md` and code graph. In a repo with a built graph (`graphify-out/graph.json`), blocks the first grep-style search once → nudges `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; exact-string lookups pass). When the graph is absent, gives a nonblocking pointer to `graphify_on_demand.py`; exact lookups never build it. | guard |
+| **H19** plan-recall | PreToolUse(ExitPlanMode) | On leaving plan mode, searches the distilled layer — research notes, specs, ADRs, tasks — for the plan's topic and serves what it finds. Not a reminder (reminders recidivate) and not a block (a plan may have no past). Keyed by the plan's text hash, so re-exiting after an H21 block does not repeat the hint. Search: `core/scripts/memory_graph.py`. | inject |
 | **H21** exit-plan-grill | PreToolUse(ExitPlanMode) | Leaving plan mode blocks once unless the plan carries AC/DoD, a block→executor decomposition and an explicit forks-resolved line — the plan is the dispatch artifact for the cheap executor tier, so it has to be executable by someone other than the expensive model. | guard |
 | **H22** prompt-lens | UserPromptSubmit | Appends a short hint to the message — **it never rewrites it**, the user's text reaches the model intact. Flags a degree word with no measure, a dangling reference, ≥3 tasks in one message, and project nicks from the private dictionary. A fifth rule (open verb with neither criterion nor object) was retired on measurement — 78 firings in 42 days, none followed by a rollback or a clarifying question. Deterministic (no model in the path, so errors cannot multiply). Rules live in ONE module shared by the hook, the monthly audit and the guard test; every rule and every alias must clear a hit threshold against your own transcript corpus, or the guard test fails. | inject |
+| **H23** decision-record | UserPromptSubmit | When the user answers a fork that the previous reply marked `🗳️`, appends a note asking for a short `decision` code block — what was kept and one `отклонено:` line per rejected option. A silently rejected option otherwise leaves no trace and gets proposed again a month later. Not a gate: compliance is measured by `core/scripts/decision_health.py`. | inject |
 
 On ZCode, where there is no `permissions.deny` engine, **H17 is the only read-guard** for secrets. On Claude Code, both run (deny is faster when it short-circuits; the hook covers any harness gap).
 
@@ -302,6 +310,48 @@ matching Calendar schedule can be generated with
 `core/scripts/schedule_calendar.py`, so wake/login jobs are visible without a
 terminal UI.
 
+## Measuring the agent's behaviour
+
+A rule that looks right is not evidence that it works. STC counts its own
+behaviour from the raw transcripts of both harnesses, outside any session, and
+records a baseline before a change so the effect can be checked later. Every
+script is read-only, deterministic, and supports `--json`:
+
+| Script | What it counts |
+|---|---|
+| `core/scripts/answer_health.py` | How clear the answers are to the user: the share of "didn't understand / repeat" replies, answers over 2000 characters, answers carrying internal codes, and forks that do not follow the fork card (fewer than two distinct options, or a pointer to "the earlier message" instead of the options); forks that offer options without a recommendation are counted separately. Duplicate transcript copies are collapsed by record id. |
+| `core/scripts/answer_probe.py` | The same format, tested by behaviour: the agent gets a task that pulls toward the violation (a report full of counts and codes, a lost fork) and the answer itself is judged. A failed call — including a subscription limit — is "not verified", never a pass or a fail. |
+| `core/scripts/decision_health.py` | The decision journal (H23): the share of resolved forks that recorded what was kept and what was rejected, and rejections recorded without a reason. `--extract` prints the records with their session and timestamp. |
+| `core/scripts/hook_health.py` | How often each declared hook actually fired — blocks, end-of-reply objections and prompt-time injections — keyed by the adapter registry. A hook that can block and never fired in the window is reported as dead; when the registry cannot be found, it says so instead of reporting a clean bill. |
+| `core/scripts/prompt-audit.py` | Monthly health of the prompt lens (H22): rollback register, dictionary candidates, dead and noisy rules. |
+
+A measure that has never been seen to fail is treated as unproven. Two of
+these tools were green in tests and dead in production, so their tests now also
+run in the shape production has — a relocated `$HOME`, without the variables
+the tests used to set for themselves.
+
+## Roundtable: multi-vendor plan review
+
+_In development._ Roundtable reviews a plan with critics from more than one
+vendor (Claude and Codex) before it is executed. Its rules — vocabularies, the
+state machine, verdicts, stages, the block plan and its permissions — live as
+eight YAML tables in `core/scripts/roundtable/tables/`; one strict loader in
+`core/scripts/roundtable/tables.py` serves both the engine and the tests, and
+the normative sections of [`docs/roundtable.md`](docs/roundtable.md) are
+generated from those tables.
+
+```bash
+python3 core/scripts/roundtable/tables.py check            # contract invariants
+python3 core/scripts/roundtable/tables.py render --check   # generated docs in sync?
+python3 deploy/tests/mutate_roundtable_tables.py           # do the tests notice a removed rule?
+```
+
+The gates are built so that missing data is never read as agreement: an
+unanswered question, an absent report field, or a missing file is a refusal
+before any comparison. Live calls require a complete isolation fingerprint; a
+block's commits are checked against its declared write scope; permissions are
+backed by a real user reply in the transcript and are append-only.
+
 ## Skills, agents, commands
 
 **16 active skills** (each is a self-contained `SKILL.md`):
@@ -349,7 +399,7 @@ The deployer is built to be safe to re-run on a live harness. Every scenario bel
 - **`$NATIVE_DIR` resolution.** Render emits the placeholder (disk-agnostic, testable); the orchestrator substitutes the absolute `native_dir` during merge so the harness finds the hook script.
 - **Per-harness model provider.** `provider_for` follows the harness so Claude Code gets Anthropic aliases and ZCode gets GLM ids (prevents silently-failing typed sub-agents).
 - **Plugin visibility.** For plugin-delivery harnesses, `_register_plugin` enables the plugin in `cli/config.json` and adds the filesystem marketplace to `known_marketplaces.json` (the cache dir alone is not discovered).
-- **Rollback.** Before any JSON write, `backup_snapshot` copies each existing JSON to `~/.stc/backups/<timestamp>/`; `_record_backup` ties the id to target + native_dir in `_ledger.json`. `restore <id>` looks up the native_dir and copies files back. User content and backup snapshots are retained on uninstall.
+- **Rollback.** Before any write, `backup_snapshot` copies each existing JSON/TOML file and the always-context file to `~/.stc/backups/<timestamp>/`, and `backup_private_sources` saves the private `user/*.md` next to it (`secrets.env` is never copied; `restore` never copies `user/` into the harness); `_record_backup` ties the id to target + native_dir in `_ledger.json`. `restore <id>` looks up the native_dir and copies files back. User content and backup snapshots are retained on uninstall.
 - **Partial uninstall.** `~/.stc/core/` is shared across harnesses; removed only when the last harness is uninstalled.
 
 ### The renderer pipeline
@@ -466,7 +516,7 @@ load/wake and once per day. The applicability bundle additionally compares the
 source Snapshot with `~/.stc/core/memory/SNAPSHOT.md` when `--live` is used and
 reports a stale deployment as `WARN`.
 
-The suite covers renderer/deployer regressions, adapter contracts, collision handling, idempotent re-deploy, orphan pruning, provider selection, native hook behavior, always-context size and content, transcript corpus import, Graphify/Snapshot ordering, weekly audits, AgentShield orchestration, launchd/calendar generation, the Codex and Claude live canaries, and the offline memory pipeline.
+The suite covers renderer/deployer regressions, adapter contracts, collision handling, idempotent re-deploy, orphan pruning, provider selection, native hook behavior, always-context size and content, transcript corpus import, Graphify/Snapshot ordering, weekly audits, AgentShield orchestration, launchd/calendar generation, the Codex and Claude live canaries, the offline memory pipeline, the answer/decision/hook health measures, and the Roundtable tables (with a mutation check that the tests notice a removed rule).
 
 ## Repository layout
 
@@ -475,13 +525,14 @@ STC/
 ├── core/
 │   ├── rules/          # 3 always-context firing rules + lazy project-doc rules
 │   ├── memory/         # MEMORY.md + playbook + code_standard + 4 reference catalogs + skills_triggers
-│   ├── hooks/          # H01–H18, H21, H22 source hooks + README
+│   ├── hooks/          # H01–H19, H21–H23 source hooks + README
 │   ├── skills/         # methodology/utility skills
 │   ├── agents/         # registry.yaml + 10 agent prompt bodies
 │   ├── commands/       # 8 slash commands
 │   ├── models/         # claude.yaml, codex.yaml, glm.yaml (the MODEL axis providers)
 │   ├── templates/      # design-system, new-project, vault
-│   └── scripts/        # corpus/memory, Graphify/Snapshot, audits, canary, calendar
+│   └── scripts/        # corpus/memory, Graphify/Snapshot, audits, canary, calendar,
+│                       #   answer/decision/hook health, roundtable/
 ├── deploy/launchd/      # macOS background jobs for memory, maps, snapshots, audits, canary
 ├── adapters/
 │   ├── claude/         # the REFERENCE realisation (files-delivery)
@@ -494,7 +545,7 @@ STC/
 │   ├── checks.py       # precheck, collision detection, backup/restore
 │   ├── stc_block.py    # STC_BEGIN/STC_END marker mechanism
 │   └── tests/          # regression test suite
-├── docs/               # PROGRESS.md — the build log + design decisions
+├── docs/               # PROGRESS.md — the build log; roundtable.md — Roundtable design
 ├── stc.example.yaml    # the public config template
 ├── user/               # private (gitignored) — profile, secrets, projects
 ├── README.md
@@ -506,7 +557,7 @@ See [`docs/PROGRESS.md`](docs/PROGRESS.md) for the full build log and design dec
 
 ## Status
 
-Early beta — the `0.1.x` line (current release in the badge above) carries the deploy pipeline and 21 hooks; breaking changes can happen between minor bumps until `1.0.0`. Contributions and ideas welcome.
+Early beta — the `0.2.x` line (current release in the badge above) carries the deploy pipeline for Claude Code and Codex, 22 hooks, and self-measurement from transcripts; breaking changes can happen between minor bumps until `1.0.0`. Contributions and ideas welcome.
 
 Development currently focuses on **`claude`** and **`codex`**. Claude remains the reference files-delivery realisation; Codex is a native peer with typed sub-agents (`*.stc.toml`), native hook envelopes, sandbox declarations, and Luna Max as the default main/agent route. A monthly read-only live canary verifies the deployed Codex behavior rather than only checking file syntax. The **`zcode`** adapter is **frozen** — it stays in-tree as the reference degrade realisation, but default deploys skip it; deploy it explicitly with `--target zcode` if needed.
 

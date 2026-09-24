@@ -28,6 +28,33 @@ def _anton(text: str, stamp: str = "2026-09-23T10:01:00Z") -> dict:
             "message": {"content": text}}
 
 
+FORKS = ROOT / "deploy" / "tests" / "fixtures" / "answer_forks"
+
+
+def test_labelled_forks_are_classified_as_labelled():
+    """Эталонный набор: имя файла — ожидаемый вердикт.
+
+    Два «clear_*» взяты из живых ответов Claude и Codex, которые ревью 24.09
+    назвало полноценными, а прежняя версия счётчика — слепыми.
+    """
+    cases = sorted(FORKS.glob("*.md"))
+    assert len(cases) >= 10
+    for case in cases:
+        text = case.read_text(encoding="utf-8")
+        if case.name.startswith("notfork_"):
+            assert not AH.fork_blocks(text), f"{case.name}: упоминание значка засчитано развилкой"
+            continue
+        blind = AH.is_blind_fork(text)
+        if case.name.startswith("blind_"):
+            assert blind, f"{case.name}: слепая развилка засчитана как понятная"
+        else:
+            assert not blind, f"{case.name}: понятная развилка засчитана как слепая"
+        if case.name.startswith("noadvice_"):
+            assert AH.lacks_advice(text), f"{case.name}: не замечено отсутствие совета"
+        if case.name.startswith("clear_"):
+            assert not AH.lacks_advice(text), f"{case.name}: совет есть, но не распознан"
+
+
 def test_fork_with_options_is_not_blind_and_backref_is():
     assert AH.is_blind_fork("🗳️ Как идём?\n1. (советую) так\n2. иначе") is False
     assert AH.is_blind_fork("🗳️ Прежняя развилка всё ещё за тобой:\n1. так\n2. иначе") is True

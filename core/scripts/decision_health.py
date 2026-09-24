@@ -74,6 +74,21 @@ FORK_MARK = "🗳"          # без вариационного селектор
 # после «## », и после «**Шаг 3.** », так что якорь на начало строки выбросил
 # бы 87 настоящих развилок из 264.
 MENTION = re.compile(r"(?:маркер\w*|значк\w*|значок|символ\w*|эмодзи)\s*\*{0,2}\s*$", re.I)
+# Та же порода, но слово-отсылка ПОСЛЕ маркера: «🗳️ — мой собственный явный
+# маркер развилки, 229 раз» (живая реплика, найдена ручной сверкой 24.09).
+MENTION_AFTER = re.compile(
+    r"^️?\s*[—–-]\s*(?:(?:\S+\s+){0,3}(?:маркер\w*|значк\w*|значок|символ\w*|эмодзи)"
+    r"|развилк\w*\s*,)", re.I)
+# Вторая ветка — легенда набора значков: «🗳️ — развилка, выбери вариант»
+# (ручная сверка 24.09). Живая развилка так не пишется: «🗳️ **Развилка:**».
+# Значок в перечислении через запятую: «🙋 нужен ты, 🗳️ выбор, ⚠️ важно».
+# Живая развилка после запятой не начинается никогда.
+IN_ENUMERATION = re.compile(r",\s*$")
+# И перечень значков подряд: «🗳️ ✍️ | ⚠️ 🚩» — за маркером сразу другой значок
+# или разделитель таблицы.
+ENUMERATION_AFTER = re.compile(r"^\uFE0F?\s*(?:\||[\U0001F300-\U0001FAFF\u2600-\u27BF])")
+# Образец внутри блока кода — текст о развилке, а не сама развилка.
+CODE_FENCE = re.compile(r"```.*?(?:```|$)", re.S)
 FENCE = re.compile(r"```decision\s*\n(.*?)```", re.S)
 KEY_KEPT = "принято"
 KEY_DROPPED = "отклонено"
@@ -94,14 +109,28 @@ def presents_fork(text: str) -> bool:
     же. Разведённые копии одного правила уже расходились — в линзе аудит
     считал не то, что срабатывало (см. шапку lens_rules.py).
     """
-    start = 0
-    while True:
-        i = text.find(FORK_MARK, start)
-        if i < 0:
-            return False
-        if not MENTION.search(text[max(0, i - 40):i]):
-            return True          # хотя бы одно настоящее предъявление
+    return bool(fork_positions(text))
+
+
+def fork_positions(text: str) -> list[int]:
+    """Где в реплике стоят НАСТОЯЩИЕ предъявления выбора, без упоминаний.
+
+    Отдельной функцией для замера понятности ответов (`answer_health.py`):
+    ему нужна каждая развилка, а не только факт, что она есть.
+    """
+    fences = [m.span() for m in CODE_FENCE.finditer(text)]
+    found, start = [], 0
+    while (i := text.find(FORK_MARK, start)) >= 0:
         start = i + 1
+        if any(a <= i < b for a, b in fences):
+            continue                 # значок в образце кода, а не в ответе
+        before = text[max(0, i - 40):i]
+        after = text[i + len(FORK_MARK):i + len(FORK_MARK) + 60]
+        if (MENTION.search(before) or IN_ENUMERATION.search(before)
+                or MENTION_AFTER.search(after) or ENUMERATION_AFTER.search(after)):
+            continue
+        found.append(i)
+    return found
 
 
 def _text(content) -> str:

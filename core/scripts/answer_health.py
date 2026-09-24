@@ -18,10 +18,19 @@
 * **внутренние коды** — доля ответов, где встречается код правила или этапа
   (H14, FR-26, R19-7, Ш2, Б3б). По профилю их в ответе быть не должно вообще,
   так что честная цель здесь — ноль;
-* **слепые развилки** — доля развилок (маркер `🗳`), где нет ни одного
-  пронумерованного варианта ЛИБО есть отсылка к прошлым сообщениям
-  («прежняя развилка», «как писал выше»). Ровно тот дефект, из-за которого
-  Антон дважды просил «повтори что за развилка».
+* **развилки не по карточке** — доля ответов с развилкой (маркер `🗳`), где
+  хоть одна развилка предъявлена меньше чем с двумя отдельными вариантами ЛИБО
+  с отсылкой к прошлым сообщениям («прежняя развилка», «как писал выше»). Это
+  соответствие карточке развилки из профиля, а НЕ доказанная доля развилок, по
+  которым Антон не может ответить: на «так или иначе?» прозой ответить можно,
+  но это ровно тот вид, из-за которого он просил «повтори что за развилка».
+  До 24.09 показатель назывался «слепые развилки» и обещал больше, чем мерил;
+* **без совета** — доля ответов, где варианты есть, а рекомендации нет.
+
+ГРАНИЦА ТОЧНОСТИ. «Последствия у каждого варианта» программа НЕ проверяет: по
+тексту их надёжно не отличить от описания варианта. Это проверяется глазами на
+выборке — см. `deploy/tests/fixtures/answer_forks/` и ручную сверку в
+заметке `2026-09-22-answer-format-for-anton.md`.
 
 ЧЕЙ ЭТО ГОЛОС. Реплика Антона — `origin.kind == "human"`, структурное поле
 харнесса. Оно появилось только в свежих версиях, поэтому для старых сессий
@@ -54,6 +63,11 @@ import re
 import sys
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import decision_health  # noqa: E402  единственный источник «что считать развилкой»
+
 RAW_ROOT = Path.home() / "Work" / "transcripts" / "raw"
 RAW_DEFAULT = RAW_ROOT / "claude"
 HARNESSES = ("claude", "codex")
@@ -65,23 +79,44 @@ CONFUSED = re.compile(
     r"объясни проще|я ничего не понимаю)",
     re.I,
 )
-# Коды правил и этапов: H06, FR-26, I17, S01, R19-7, Ш2, Б3б, П53, БК, БИ.
+# Коды правил и этапов: H06, FR-26, I17, S01, R19-7, Ш2, Б3б, П53. Буквенные
+# коды без цифр (БК, БИ) НЕ ловятся сознательно: тот же вид у обычных слов
+# («ПО», «ИП», «РФ»), и замер начал бы считать речь, а не коды.
 CODE = re.compile(r"(?<![\w-])(?:H\d{2}|FR-\d+|I\d{2}|S\d{2}|R\d+-\d+|[ШБП]\d+[а-я]?)(?![\w-])")
 FORK_MARK = "🗳"
-# Вариант выбора: «1.» / «1)» / «- **A —» в начале строки либо «(а)» в строку.
-# Считается ТОЛЬКО после маркера развилки: нумерация в других частях ответа к
-# выбору отношения не имеет. Без этой привязки замер 22.09 засчитал как
-# размеченные две развилки, где нумерованным был соседний список находок.
-OPTION = re.compile(r"^\s*(?:\d+[.)]|[-*]\s+\*{0,2}(?:[A-DА-Г]\s*[—–:-]|\(?[абв]\)))|\([абвA-C]\)",
-                    re.M)
+# Строка-вариант: после необязательных маркера списка, жирного и эмодзи идёт
+# метка варианта — «1.», «1)», «A —», «А:», «(а)», «Вариант 1», «Вариант А».
+# Ревью 24.09 на свежих ответах: «- **Вариант 1 — …**» и строка без маркера
+# списка «**Вариант 2 — …**» не распознавались, и обе полноценные развилки
+# уходили в слепые.
+OPTION_LINE = re.compile(
+    r"^[\s>*_-]*(?:🗳️?\s*)?\*{0,2}\s*"
+    r"(?:(\d{1,2})[.)]\s"
+    r"|([A-DА-Г])\s*[—–:.)-]\s"
+    r"|\(([абвгA-D])\)"
+    r"|вариант\s+(\d{1,2}|[A-DА-Г])\b)",
+    re.I | re.M,
+)
+# Варианты жирными пунктами без номеров: «- **Влить сейчас (советую).** …».
+# Считаются, только если таких пунктов хотя бы два: одиночный жирный пункт —
+# это акцент, а не выбор. Ручная сверка 24.09: карточка из двух таких пунктов
+# с советом считалась слепой.
+BOLD_BULLET = re.compile(r"^\s*[-*•]\s+\*\*([^*\n]{3,80})\*\*", re.M)
+# Варианты в одну строку: «(а) делаю сейчас; (б) держим план».
+INLINE_OPTION = re.compile(r"\(([абвгA-D])\)")
+# Варианты строками таблицы: «| **ещё круг** | … |». Заголовок и разделитель
+# не варианты. Ручная сверка 24.09: развилка из трёх строк таблицы с советом
+# считалась слепой.
+TABLE_ROW = re.compile(r"^\s*\|(?!\s*:?-{3})\s*([^|]+?)\s*\|", re.M)
+RECOMMEND = re.compile(r"(советую|рекоменд|я за\b|я бы взял|предлагаю|склоняюсь)", re.I)
 # Развилка кончается там, где начинается другой раздел ответа: заголовок или
 # строка с другим маркером профиля. Без этой границы «🙋 нужно твоё решение»,
 # за которым идёт раздел «✅ Сделано» с нумерацией, засчитывался как развилка с
 # вариантами — ошибка, найденная внешним ревью 23.09.
 SECTION = re.compile(r"^\s*(?:#{1,4}\s|\*{0,2}(?:✅|📚|📊|🎯|🔬|🧠|📌|⏳|🔎|🚩|⚠️)\s)", re.M)
 FORK_TAIL = 1200
-BACKREF = re.compile(r"(прежн\w+ развилк|как писал выше|развилка (?:всё ещё|по-прежнему)|"
-                     r"та же развилка|ранее предлагал)", re.I)
+BACKREF = re.compile(r"(прежн\w+ развилк|вопрос за тобой прежний|как писал выше|"
+                     r"развилка (?:всё ещё|по-прежнему)|та же развилка|ранее предлагал)", re.I)
 # Служебные вставки харнесса приезжают в роли user, но пишет их не Антон.
 SERVICE = ("<task-notification>", "<system-reminder>", "<command-name>",
            "Caveat: The messages below", "<local-command-stdout>")
@@ -90,23 +125,68 @@ CODEX_SERVICE = ("<recommended", "<user_instructions", "<environment_context",
                  "## Hook output", "<hook", "=== ОБЯЗАТЕЛЬНЫЙ КОНТЕКСТ СТАРТА")
 
 
-def is_blind_fork(text: str) -> bool:
-    """Развилка предъявлена так, что по ней нельзя ответить.
+def fork_blocks(text: str) -> list[str]:
+    """Каждая предъявленная развилка ответа — отдельным куском текста.
 
-    Слепая = после маркера нет ни одного варианта выбора ЛИБО есть отсылка к
-    прошлым сообщениям. Хватает одной внятной развилки в ответе: считается
-    лучшая из предъявленных, иначе длинный отчёт с двумя маркерами штрафуется
-    дважды за один и тот же дефект.
+    Упоминание значка («развилка без маркера 🗳 не попадает») развилкой не
+    считается; правило общее с хуком записи решений.
     """
-    start = 0
-    while True:
-        i = text.find(FORK_MARK, start)
-        if i < 0:
-            return True
-        block = _fork_block(text, i)
-        if OPTION.search(block) and not BACKREF.search(block):
-            return False
-        start = i + 1
+    return [_fork_block(text, i) for i in decision_health.fork_positions(text)]
+
+
+def count_options(block: str) -> int:
+    """Сколько РАЗНЫХ вариантов предъявлено в куске развилки.
+
+    Строка с вопросительным знаком — отдельный вопрос, а не вариант: «Два
+    решения за тобой: 1. Делаем дубль? 2. Спека сначала?» — это две развилки
+    без вариантов, а не одна с двумя (ручная сверка 24.09).
+    """
+    labels = set()
+    for m in OPTION_LINE.finditer(block):
+        if "?" in _line_at(block, m.start()):
+            continue
+        labels.add(next(g for g in m.groups() if g).lower())
+    bold = [m.group(1).lower() for m in BOLD_BULLET.finditer(block)
+            if "?" not in _line_at(block, m.start())]
+    if len(bold) >= 2:
+        labels.update(f"bullet:{b}" for b in bold)
+    for m in INLINE_OPTION.finditer(block):
+        labels.add(m.group(1).lower())
+    rows = [m.group(1).strip("* ").lower() for m in TABLE_ROW.finditer(block)]
+    if len(rows) >= 3:                    # заголовок + хотя бы два варианта
+        labels.update(f"table:{row}" for row in rows[1:])
+    return len(labels)
+
+
+def _line_at(text: str, pos: int) -> str:
+    end = text.find("\n", pos)
+    return text[text.rfind("\n", 0, pos) + 1:end if end >= 0 else len(text)]
+
+
+def is_blind_block(block: str) -> bool:
+    """Слепая развилка: меньше двух вариантов либо отсылка к прошлому.
+
+    Выбор из одного варианта — не выбор: «🗳️ Что выбираешь? 1. Сделать»
+    прежде засчитывался как понятный (ревью 24.09).
+    """
+    return count_options(block) < 2 or bool(BACKREF.search(block))
+
+
+def is_blind_fork(text: str) -> bool:
+    """В ответе есть хоть одна развилка, по которой нельзя ответить.
+
+    Раньше считалась лучшая из развилок ответа, и одна полная прятала вторую
+    пустую (ревью 24.09). Показатель — доля ОТВЕТОВ, поэтому ответ с двумя
+    слепыми развилками штрафуется один раз, а не дважды.
+    """
+    blocks = fork_blocks(text)
+    return not blocks or any(is_blind_block(b) for b in blocks)
+
+
+def lacks_advice(text: str) -> bool:
+    """Развилка с вариантами, но без совета, какой брать."""
+    return any(not is_blind_block(b) and not RECOMMEND.search(b)
+               for b in fork_blocks(text))
 
 
 def _fork_block(text: str, at: int) -> str:
@@ -139,7 +219,7 @@ def _is_anton(rec: dict, strict: bool) -> bool:
 
 def _empty_row() -> dict[str, int]:
     return {"anton_msgs": 0, "confused": 0, "answers": 0, "long": 0,
-            "with_code": 0, "forks": 0, "blind_forks": 0}
+            "with_code": 0, "forks": 0, "blind_forks": 0, "no_advice": 0}
 
 
 def _read_claude(rec: dict, strict: bool):
@@ -187,6 +267,7 @@ def scan(raw_dir: Path, since: str | None, strict: bool,
     months = {} if months is None else months
     read = READERS[harness]
     seen: set = set()
+    newest = months.setdefault("_newest", {})
 
     for path in sorted(raw_dir.glob("*.jsonl")):
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -195,7 +276,11 @@ def scan(raw_dir: Path, since: str | None, strict: bool,
             except ValueError:
                 continue
             stamp = rec.get("timestamp") or ""
-            if not stamp or (since and stamp[:10] < since):
+            if not stamp:
+                continue
+            if stamp > newest.get(harness, ""):
+                newest[harness] = stamp
+            if since and stamp[:10] < since:
                 continue
             parsed = read(rec, strict)
             if parsed is None:
@@ -220,10 +305,12 @@ def scan(raw_dir: Path, since: str | None, strict: bool,
                 row["long"] += 1
             if CODE.search(text):
                 row["with_code"] += 1
-            if FORK_MARK in text:
+            if fork_blocks(text):
                 row["forks"] += 1
                 if is_blind_fork(text):
                     row["blind_forks"] += 1
+                if lacks_advice(text):
+                    row["no_advice"] += 1
     return months
 
 
@@ -256,13 +343,15 @@ def main() -> int:
     if not scanned:
         print(f"нет каталогов транскриптов в {args.raw_root}", file=sys.stderr)
         return 2
+    newest = months.pop("_newest", {})
     if args.json:
-        print(json.dumps(months, ensure_ascii=False, indent=2, sort_keys=True))
+        print(json.dumps({"months": months, "newest": newest},
+                         ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
-    print(f"{'месяц':8} {'переспросы':>12} {'длинные':>9} {'с кодами':>10} {'слепые развилки':>17}")
-    total = {k: 0 for k in ("anton_msgs", "confused", "answers", "long",
-                            "with_code", "forks", "blind_forks")}
+    print(f"{'месяц':8} {'переспросы':>12} {'длинные':>9} {'с кодами':>10} "
+          f"{'не по карточке':>17} {'без совета':>11}")
+    total = dict.fromkeys(_empty_row(), 0)
     for month in sorted(months):
         row = months[month]
         for key in total:
@@ -271,14 +360,20 @@ def main() -> int:
               f"{_pct(row['confused'], row['anton_msgs']):>12} "
               f"{_pct(row['long'], row['answers']):>9} "
               f"{_pct(row['with_code'], row['answers']):>10} "
-              f"{_pct(row['blind_forks'], row['forks']):>17}")
+              f"{_pct(row['blind_forks'], row['forks']):>17} "
+              f"{_pct(row['no_advice'], row['forks']):>11}")
     print(f"{'ИТОГО':8} "
           f"{_pct(total['confused'], total['anton_msgs']):>12} "
           f"{_pct(total['long'], total['answers']):>9} "
           f"{_pct(total['with_code'], total['answers']):>10} "
-          f"{_pct(total['blind_forks'], total['forks']):>17}")
+          f"{_pct(total['blind_forks'], total['forks']):>17} "
+          f"{_pct(total['no_advice'], total['forks']):>11}")
     print(f"\nхарнессы: {', '.join(scanned)}; реплик Антона {total['anton_msgs']}, "
           f"ответов {total['answers']}, развилок {total['forks']}")
+    # Архив пополняется раз в сутки. Сравнение «после» по архиву, который
+    # кончается раньше внедрения, молча вернёт пустоту (ревью 24.09).
+    print("последняя запись в архиве: " + ", ".join(
+        f"{h} {newest.get(h, 'нет')[:16].replace('T', ' ')} UTC" for h in scanned))
     return 0
 
 

@@ -590,10 +590,17 @@ def cmd_apply(args):
         if collisions and not args.overwrite and not args.skip_collisions:
             C.report_collisions(collisions); return 1
 
-        # backup files we are about to touch (JSON patches + TOML patches)
+        # Backup what we are about to touch: JSON/TOML patches, the user's
+        # always-context file (apply injects the managed block into it — since
+        # 2026-09-23 that block carries the whole bundle, not a one-line
+        # pointer), and the private sources behind it.
         touch_files = list(rr.json_patches.keys()) + list(rr.toml_patches.keys())
+        ac_file = next(iter(rr.marker), None)
+        if ac_file:
+            touch_files.append(ac_file)
         if touch_files and os.path.isdir(native_dir):
             ts, dest, saved = C.backup_snapshot(native_dir, touch_files, BACKUPS)
+            saved += C.backup_private_sources(REPO, BACKUPS, ts)
             if saved:
                 _record_backup(ts, t, native_dir, saved)
                 print(f"✓ backup {ts} → {dest}/ (target={t}; restore: deploy.py restore {ts})")

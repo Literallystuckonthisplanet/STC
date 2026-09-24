@@ -716,12 +716,41 @@ def backup_snapshot(native_dir, files_to_touch, backups_root):
     return ts, dest, saved
 
 
+def backup_private_sources(repo, backups_root, ts):
+    """Snapshot the private always-context sources (user/*.md) next to a backup.
+
+    `user/` is gitignored on purpose (it sits beside secrets.env), so the
+    profile and the glossary have NO version history anywhere: an edit to them
+    is unrecoverable, and `restore` used to bring back only settings JSON. An
+    external review on 2026-09-23 called out exactly that gap after we promised
+    the user a one-command rollback. Secrets are never copied.
+    """
+    src_dir = os.path.join(repo, "user")
+    if not os.path.isdir(src_dir):
+        return []
+    dest = os.path.join(backups_root, ts, "user")
+    saved = []
+    for fname in sorted(os.listdir(src_dir)):
+        if not fname.endswith(".md"):
+            continue                      # .env and friends stay out, always
+        os.makedirs(dest, exist_ok=True)
+        shutil.copy2(os.path.join(src_dir, fname), os.path.join(dest, fname))
+        saved.append(f"user/{fname}")
+    return saved
+
+
 def restore(backup_id, native_dir, backups_root):
     dest = os.path.join(backups_root, backup_id)
     if not os.path.isdir(dest):
         raise FileNotFoundError(f"no backup: {dest}")
     for fname in os.listdir(dest):
-        shutil.copy2(os.path.join(dest, fname), os.path.join(native_dir, fname))
+        path = os.path.join(dest, fname)
+        if os.path.isdir(path):
+            # Source snapshots (user/) are restored deliberately, by hand: they
+            # belong to the repo, not to the harness dir this restore targets.
+            print(f"   kept {fname}/ — private sources, copy back by hand if needed")
+            continue
+        shutil.copy2(path, os.path.join(native_dir, fname))
         print(f"   restored {fname}")
 
 

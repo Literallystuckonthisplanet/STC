@@ -11,6 +11,16 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — Context7 could keep running a stale cached copy
+- Every adapter launched Context7 as a bare `npx -y @upstash/context7-mcp`;
+  without a tag npx may reuse a cached copy instead of asking the registry. A
+  dependency audit on 2026-09-24 flagged CVE-2026-75130 (fixed in 4.0.6), so
+  an old cache could outlive the patch. The command is now
+  `@upstash/context7-mcp@latest`, like Playwright, and a test keeps the tag in
+  every adapter, the template included. Claude and ZCode pick it up on the
+  next `apply`; Codex merges `config.toml` add-only, so an existing
+  `[mcp_servers.stc-context7]` changes only with `apply --overwrite`.
+
 ## [0.2.0] — 2026-09-24
 
 The first tagged release since 0.1.2 (July). STC grew from a deploy pipeline

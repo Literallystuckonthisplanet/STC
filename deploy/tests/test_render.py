@@ -561,6 +561,30 @@ def test_claude_render_keeps_mcp_in_json_patches():
         f"claude files delivery must not write a plugin-root .mcp.json: {plugin_mcp}")
 
 
+def test_context7_mcp_command_is_tagged_in_every_adapter():
+    """REGRESSION (2026-09-24, CVE-2026-75130 fixed in context7-mcp 4.0.6):
+    context7 shipped as a bare `npx -y @upstash/context7-mcp`. Without a tag
+    npx may reuse a stale cached copy instead of asking the registry, so a
+    patched release never reaches the user. Every adapter (the template too,
+    since new adapters are copied from it) must carry the @latest tag.
+    Scanned as text: _template/adapter.yaml holds `a|b` placeholders and is
+    not valid YAML."""
+    line_re = re.compile(r'^\s*context7:.*\bcommand:\s*"([^"]+)"', re.M)
+    checked = 0
+    for name in sorted(os.listdir(os.path.join(REPO, "adapters"))):
+        path = os.path.join(REPO, "adapters", name, "adapter.yaml")
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            for cmd in line_re.findall(fh.read()):
+                pkg = [p for p in cmd.split() if "context7-mcp" in p]
+                assert pkg == ["@upstash/context7-mcp@latest"], (
+                    f"adapters/{name}: context7 command {cmd!r} must use "
+                    f"@upstash/context7-mcp@latest")
+                checked += 1
+    assert checked, "no adapter declares a context7 command — test is vacuous"
+
+
 def test_register_plugin_writes_installed_plugins_json():
     """REGRESSION (zcode plugin visibility): ZCode's plugin discovery enumerates
     candidates from cache/zcode-plugins-official/ (hardcoded) AND from

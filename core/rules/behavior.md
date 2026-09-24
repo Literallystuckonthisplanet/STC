@@ -91,8 +91,7 @@ the reminder; examples → playbook § SELF-EXEC.
   index; one-off lookup stays in the transcript.
 - Tool output → request the smallest useful slice; preserve exact errors,
   paths, commands, security findings, and caveats.
-- Mention an internal code to the user → add its human name, for example
-  `H01 (git safety)`, never a bare code.
+- Internal codes never reach a user answer: use the human name alone.
 - Use `python3`; downloads go to `~/Downloads/`.
 
 ## Token economy

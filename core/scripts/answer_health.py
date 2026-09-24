@@ -26,12 +26,23 @@
 ЧЕЙ ЭТО ГОЛОС. Реплика Антона — `origin.kind == "human"`, структурное поле
 харнесса. Оно появилось только в свежих версиях, поэтому для старых сессий
 работает запасное правило: не сайдчейн, не промпт субагенту (`promptSource`),
-без служебных вставок харнесса. Запасное правило ЗАВЫШАЕТ знаменатель, и на
-границе версий доли чуть занижены; --strict считает только по `origin`.
+не машинный пересказ истории (`isCompactSummary`), без служебных вставок
+харнесса. Запасное правило ЗАВЫШАЕТ знаменатель, и на границе версий доли чуть
+занижены; --strict считает только по `origin`.
+
+ОДНА РЕПЛИКА — ОДИН РАЗ. Каталог сырья хранит несколько копий одного разговора
+(517 файлов, 71 535 записей ответов, 42 334 разных). Без сведения по `uuid`
+доли считались по копиям: первый замер 23.09 объявил 10 995 ответов там, где
+их вдвое меньше. Ключ — `uuid` записи, запасной — сессия плюс отпечаток текста.
+
+ДВА ХАРНЕССА. Claude и Codex пишут сырьё по-разному, поэтому читателя два, а
+показатели общие: Антон разговаривает с обоими, и улучшение только в одном —
+не улучшение.
 
 Использование:
     python3 core/scripts/answer_health.py                  # всё время, по месяцам
     python3 core/scripts/answer_health.py --since 2026-09-23   # после внедрения
+    python3 core/scripts/answer_health.py --harness claude      # только один
     python3 core/scripts/answer_health.py --json
 """
 
@@ -43,7 +54,9 @@ import re
 import sys
 from pathlib import Path
 
-RAW_DEFAULT = Path.home() / "Work" / "transcripts" / "raw" / "claude"
+RAW_ROOT = Path.home() / "Work" / "transcripts" / "raw"
+RAW_DEFAULT = RAW_ROOT / "claude"
+HARNESSES = ("claude", "codex")
 
 LONG_ANSWER = 2000
 
@@ -59,14 +72,22 @@ FORK_MARK = "🗳"
 # Считается ТОЛЬКО после маркера развилки: нумерация в других частях ответа к
 # выбору отношения не имеет. Без этой привязки замер 22.09 засчитал как
 # размеченные две развилки, где нумерованным был соседний список находок.
-OPTION = re.compile(r"^\s*(?:\d+[.)]|[-*]\s*\*{0,2}[A-DА-Г]\s*[—–-])|\([абвA-C]\)", re.M)
-# Сколько текста после маркера считается самой развилкой.
+OPTION = re.compile(r"^\s*(?:\d+[.)]|[-*]\s+\*{0,2}(?:[A-DА-Г]\s*[—–:-]|\(?[абв]\)))|\([абвA-C]\)",
+                    re.M)
+# Развилка кончается там, где начинается другой раздел ответа: заголовок или
+# строка с другим маркером профиля. Без этой границы «🙋 нужно твоё решение»,
+# за которым идёт раздел «✅ Сделано» с нумерацией, засчитывался как развилка с
+# вариантами — ошибка, найденная внешним ревью 23.09.
+SECTION = re.compile(r"^\s*(?:#{1,4}\s|\*{0,2}(?:✅|📚|📊|🎯|🔬|🧠|📌|⏳|🔎|🚩|⚠️)\s)", re.M)
 FORK_TAIL = 1200
 BACKREF = re.compile(r"(прежн\w+ развилк|как писал выше|развилка (?:всё ещё|по-прежнему)|"
                      r"та же развилка|ранее предлагал)", re.I)
 # Служебные вставки харнесса приезжают в роли user, но пишет их не Антон.
 SERVICE = ("<task-notification>", "<system-reminder>", "<command-name>",
            "Caveat: The messages below", "<local-command-stdout>")
+# То же у Codex: подсказки харнесса и результаты хуков приезжают ролью user.
+CODEX_SERVICE = ("<recommended", "<user_instructions", "<environment_context",
+                 "## Hook output", "<hook", "=== ОБЯЗАТЕЛЬНЫЙ КОНТЕКСТ СТАРТА")
 
 
 def is_blind_fork(text: str) -> bool:
@@ -82,10 +103,17 @@ def is_blind_fork(text: str) -> bool:
         i = text.find(FORK_MARK, start)
         if i < 0:
             return True
-        tail = text[i:i + FORK_TAIL]
-        if OPTION.search(tail) and not BACKREF.search(tail):
+        block = _fork_block(text, i)
+        if OPTION.search(block) and not BACKREF.search(block):
             return False
         start = i + 1
+
+
+def _fork_block(text: str, at: int) -> str:
+    """Текст самой развилки: от маркера до следующего раздела ответа."""
+    tail = text[at:at + FORK_TAIL]
+    end = SECTION.search(tail, 1)
+    return tail[:end.start()] if end else tail
 
 
 def _text(content) -> str:
@@ -103,22 +131,62 @@ def _is_anton(rec: dict, strict: bool) -> bool:
         return origin.get("kind") == "human"
     if strict:
         return False
-    if rec.get("isSidechain") or rec.get("promptSource"):
+    if rec.get("isSidechain") or rec.get("promptSource") or rec.get("isCompactSummary"):
         return False
     text = _text((rec.get("message") or {}).get("content"))
     return bool(text.strip()) and not any(mark in text for mark in SERVICE)
 
 
-def scan(raw_dir: Path, since: str | None, strict: bool) -> dict:
-    months: dict[str, dict[str, int]] = {}
+def _empty_row() -> dict[str, int]:
+    return {"anton_msgs": 0, "confused": 0, "answers": 0, "long": 0,
+            "with_code": 0, "forks": 0, "blind_forks": 0}
 
-    def bucket(stamp: str) -> dict[str, int]:
-        key = stamp[:7]
-        return months.setdefault(key, {
-            "anton_msgs": 0, "confused": 0,
-            "answers": 0, "long": 0, "with_code": 0,
-            "forks": 0, "blind_forks": 0,
-        })
+
+def _read_claude(rec: dict, strict: bool):
+    """(роль, текст, ключ) из записи Claude, либо None — если это не реплика."""
+    kind = rec.get("type")
+    if kind == "user" and _is_anton(rec, strict):
+        role = "anton"
+    elif kind == "assistant" and not rec.get("isSidechain"):
+        role = "agent"
+    else:
+        return None
+    text = _text((rec.get("message") or {}).get("content")).strip()
+    key = rec.get("uuid") or (rec.get("message") or {}).get("id")
+    return role, text, key
+
+
+def _read_codex(rec: dict, strict: bool):
+    """То же для Codex: разговор лежит в `response_item` → `payload.message`.
+
+    `origin` у Codex нет вовсе, поэтому --strict его реплики Антона не считает
+    (знаменатель честнее пустого). Промпты субагентам приезжают ролью
+    `developer`, а не `user`, и отсекаются сами.
+    """
+    if rec.get("type") != "response_item":
+        return None
+    payload = rec.get("payload") or {}
+    if payload.get("type") != "message":
+        return None
+    role = {"assistant": "agent", "user": "anton"}.get(payload.get("role"))
+    if role is None or (role == "anton" and strict):
+        return None
+    text = "\n".join(p.get("text", "") for p in payload.get("content") or []
+                     if isinstance(p, dict) and p.get("type", "").endswith("text")).strip()
+    if role == "anton" and any(mark in text for mark in SERVICE + CODEX_SERVICE):
+        return None
+    return role, text, payload.get("id")
+
+
+READERS = {"claude": _read_claude, "codex": _read_codex}
+
+
+def scan(raw_dir: Path, since: str | None, strict: bool,
+         harness: str = "claude", months: dict | None = None) -> dict:
+    """Доли по месяцам. `months` можно передать, чтобы слить два харнесса."""
+    months = {} if months is None else months
+    read = READERS[harness]
+    seen: set = set()
 
     for path in sorted(raw_dir.glob("*.jsonl")):
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -129,26 +197,33 @@ def scan(raw_dir: Path, since: str | None, strict: bool) -> dict:
             stamp = rec.get("timestamp") or ""
             if not stamp or (since and stamp[:10] < since):
                 continue
-            kind = rec.get("type")
-            if kind == "user" and _is_anton(rec, strict):
-                row = bucket(stamp)
+            parsed = read(rec, strict)
+            if parsed is None:
+                continue
+            role, text, key = parsed
+            if not text:
+                continue              # шаг с одними вызовами инструментов — не ответ
+            # Одна реплика — один раз: каталог хранит копии одних разговоров.
+            fingerprint = key or (stamp, role, hash(text))
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+
+            row = months.setdefault(stamp[:7], _empty_row())
+            if role == "anton":
                 row["anton_msgs"] += 1
-                if CONFUSED.search(_text((rec.get("message") or {}).get("content"))):
+                if CONFUSED.search(text):
                     row["confused"] += 1
-            elif kind == "assistant" and not rec.get("isSidechain"):
-                text = _text((rec.get("message") or {}).get("content")).strip()
-                if not text:
-                    continue          # шаг с одними вызовами инструментов — не ответ
-                row = bucket(stamp)
-                row["answers"] += 1
-                if len(text) > LONG_ANSWER:
-                    row["long"] += 1
-                if CODE.search(text):
-                    row["with_code"] += 1
-                if FORK_MARK in text:
-                    row["forks"] += 1
-                    if is_blind_fork(text):
-                        row["blind_forks"] += 1
+                continue
+            row["answers"] += 1
+            if len(text) > LONG_ANSWER:
+                row["long"] += 1
+            if CODE.search(text):
+                row["with_code"] += 1
+            if FORK_MARK in text:
+                row["forks"] += 1
+                if is_blind_fork(text):
+                    row["blind_forks"] += 1
     return months
 
 
@@ -158,18 +233,29 @@ def _pct(part: int, whole: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--raw", type=Path, default=RAW_DEFAULT)
+    parser.add_argument("--raw-root", type=Path, default=RAW_ROOT,
+                        help="каталог сырья: <root>/claude, <root>/codex")
+    parser.add_argument("--harness", choices=HARNESSES, action="append",
+                        help="по умолчанию оба")
     parser.add_argument("--since", help="YYYY-MM-DD, включительно")
     parser.add_argument("--strict", action="store_true",
-                        help="только реплики с origin.kind=human (свежие сессии)")
+                        help="только реплики с origin.kind=human (свежие сессии Claude)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    if not args.raw.is_dir():
-        print(f"нет каталога транскриптов: {args.raw}", file=sys.stderr)
+    wanted = args.harness or list(HARNESSES)
+    months: dict = {}
+    scanned = []
+    for harness in wanted:
+        raw = args.raw_root / harness
+        if not raw.is_dir():
+            print(f"пропущен {harness}: нет каталога {raw}", file=sys.stderr)
+            continue
+        scan(raw, args.since, args.strict, harness=harness, months=months)
+        scanned.append(harness)
+    if not scanned:
+        print(f"нет каталогов транскриптов в {args.raw_root}", file=sys.stderr)
         return 2
-
-    months = scan(args.raw, args.since, args.strict)
     if args.json:
         print(json.dumps(months, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
@@ -191,8 +277,8 @@ def main() -> int:
           f"{_pct(total['long'], total['answers']):>9} "
           f"{_pct(total['with_code'], total['answers']):>10} "
           f"{_pct(total['blind_forks'], total['forks']):>17}")
-    print(f"\nреплик Антона {total['anton_msgs']}, ответов {total['answers']}, "
-          f"развилок {total['forks']}")
+    print(f"\nхарнессы: {', '.join(scanned)}; реплик Антона {total['anton_msgs']}, "
+          f"ответов {total['answers']}, развилок {total['forks']}")
     return 0
 
 

@@ -975,6 +975,34 @@ def test_bundle_inlines_glossary_when_present():
         assert len(inlined.strip()) > 200, f"{t} bundle: glossary inlined but empty"
 
 
+def test_marker_inlines_the_bundle_where_imports_are_not_expanded():
+    """REGRESSION (Codex delivery, found by external review 2026-09-23).
+
+    The marker block used to be a bare `@<path>` line for every harness. Codex
+    does not expand it: a live `codex exec` probe answered «вижу ссылку
+    @/…/AGENTS.stc.md; содержимого файла в контексте нет», and its own
+    world_state recorded the same single line. H06 injects only the three rule
+    files, so the profile and the glossary — every rule about how to talk to
+    the user — had been missing from Codex entirely. Where
+    supports_native_import is not proven True, the bundle is inlined instead.
+    """
+    stc, registry, adapters, _ = D._gather()
+
+    for target, expect_pointer in (("claude", True), ("codex", False), ("zcode", False)):
+        provider = R.provider_for(stc, target, REPO)
+        rr = R.render_harness(stc, registry, provider, adapters[target], D.CORE, REPO)
+        ac_file, marker = next(iter(rr.marker.items()))
+        bundle = rr.files["CLAUDE.stc.md" if target == "claude" else "AGENTS.stc.md"]
+
+        if expect_pointer:
+            assert marker.startswith("@"), f"{target}: expected a pointer marker"
+            assert "\n" not in marker.strip(), f"{target}: pointer must stay one line"
+        else:
+            assert "## Always-context rules" in marker, (
+                f"{target} ({ac_file}): marker must carry the bundle, not a pointer")
+            assert bundle in marker, f"{target}: inlined marker must match the bundle"
+
+
 def test_h06_injects_rules_via_stc_core():
     """REGRESSION (H06 injection — the original pre-@import mechanism): H06
     must `cat` the always-context rule files from ${STC_CORE} (resolved to

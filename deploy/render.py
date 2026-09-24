@@ -903,8 +903,23 @@ def _render_always_context(core_dir, adapter, result, native_dir, harness):
                             "source": ("h06-pointer+inline-profile+glossary" if rules_delivery == "hook"
                                        else "inline-rules+inline-profile+glossary")})
 
-    # the single marker block injected into the USER's always-context file.
-    result.marker[ac_file] = f"@{_native_root(adapter, bundle_name)}"
+    # The single marker block injected into the USER's always-context file.
+    #
+    # A pointer only works where the harness expands `@path` itself. Codex does
+    # not: a live probe on 2026-09-23 (`codex exec` from an unrelated directory,
+    # with and without hooks) answered «Вижу ссылку @/…/AGENTS.stc.md; содержимого
+    # файла в контексте нет», and had never seen the profile — so every profile
+    # and glossary rule had been silently absent from Codex since the @import
+    # refactor. H06 covers only the three rule files, which is why the gap stayed
+    # invisible. Where expansion is not proven, the bundle is inlined instead.
+    if facts.get("supports_native_import") is True:
+        result.marker[ac_file] = f"@{_native_root(adapter, bundle_name)}"
+    else:
+        result.marker[ac_file] = (
+            f"<!-- inlined: this harness does not expand @-imports; "
+            f"source of truth is {_native_root(adapter, bundle_name)} -->\n"
+            + result.files[bundle_rel]
+        )
 
 
 def _native_root(adapter, rel):

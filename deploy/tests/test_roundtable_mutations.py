@@ -364,6 +364,12 @@ CASES = [
     ("П80", "молча вывести раздел из-под замера полноты",
      lambda r: _blocks(r)["порядок_критики"]["вне_замера"].pop("issues.yaml:обязательства"),
      "test_what_the_ratchet_does_not_measure_is_named", "разошёлся с храповиком"),
+    ("П81", "снять с файла памяти требование записи с датой",
+     lambda r: _blocks(r)["проверка_памяти"]["ведутся_записями"].clear(),
+     "test_memory_is_not_fresh_just_because_a_hash_was_pasted_in", "принято за обновление"),
+    ("П82", "подсунуть блоку пустую приёмку",
+     lambda r: _blocks(r)["блоки"]["Б9"].__setitem__("приёмка", None),
+     "загрузчик", "приёмка: ожидался непустой список"),
     ("П69", "выкинуть код запуска из входов отпечатка",
      lambda r: _blocks(r)["отпечаток_изоляции"]["входы"].remove("core/scripts/roundtable/adapters.py"),
      "контракт", "не во входах"),
@@ -431,8 +437,8 @@ def _pytest_one(name, directory):
     return done.returncode == 0, done.stdout
 
 
-@pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
-def test_the_break_list_is_measured_and_not_promised(case, scratch):
+def run_case(case, scratch):
+    """Один опыт целиком: положительный контроль, мутация, назначенный отказ."""
     identifier, what, mutate, guard, fragment = case
     assert fragment, (
         f"{identifier}: у опыта нет ожидаемой причины. Без неё «упал нужный тест» "
@@ -467,3 +473,8 @@ def test_the_break_list_is_measured_and_not_promised(case, scratch):
         assert not passed, f"{identifier}: {what} — сторож {guard} не заметил"
         assert fragment, f"{identifier}: ожидаемая причина не задана — опыт ничего не различает"
         assert fragment in output, f"{identifier}: упал по чужой причине\n{output[-500:]}"
+
+
+@pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
+def test_the_break_list_is_measured_and_not_promised(case, scratch):
+    run_case(case, scratch)

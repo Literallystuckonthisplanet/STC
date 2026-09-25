@@ -314,7 +314,14 @@ class Block:
                 raise ContractError(f"{where}.внешние_действия: {sorted(unknown)} нет в словаре")
         items = []
         seen = set()
+        # 🚩 Ревью #40: `приёмка: null` роняла загрузчик сырым TypeError —
+        # повреждённая запись обязана приходить как названный отказ.
+        if not isinstance(row["приёмка"], list) or not row["приёмка"]:
+            raise ContractError(f"{where}.приёмка: ожидался непустой список, "
+                                f"получено {type(row['приёмка']).__name__}")
         for entry in row["приёмка"]:
+            if not isinstance(entry, dict):
+                raise ContractError(f"{where}.приёмка: элемент {entry!r} — не запись")
             _require(entry, {"id", "условие"}, set(), f"{where}.приёмка")
             _nonempty_string(entry["id"], f"{where}.приёмка.id")
             _nonempty_string(entry["условие"], f"{where}.приёмка.условие")
@@ -1378,7 +1385,33 @@ def memory_receipt(plan: dict, home: Path | None = None) -> list[str]:
         if not any(expected.startswith(sha)
                    for sha in re.findall(r"\b[0-9a-f]{7,40}\b", text)):
             problems.append(f"{path.name}: не называет текущий канон {expected[:7]}")
+            continue
+        # 🚩 Ревью #40: дописать текущий хеш в старый текст — и «память
+        # актуальна». Хеш доказывает только, что его дописали. Поэтому файлы,
+        # которые ведутся записями, обязаны иметь запись с датой не раньше
+        # даты текущего канона: старый текст с новым хешем её не даёт.
+        #
+        # Граница названа честно (R40-1): сфабриковать строку с датой можно,
+        # как и любой замок в репозитории. Проверка ловит забывчивость и
+        # «подправил хеш, содержимое не трогал», а не сознательную подделку.
+        if str(relative) not in plan["проверка_памяти"]["ведутся_записями"]:
+            continue
+        day = canon_date(plan)
+        if day is None:
+            problems.append("не удалось спросить git о дате канона")
+            continue
+        dates = re.findall(r"\b(20\d\d-\d\d-\d\d)\b", text)
+        if not any(found >= day for found in dates):
+            problems.append(f"{path.name}: нет записи с датой не раньше {day} — "
+                            f"назван новый канон, а содержимое не менялось")
     return problems
+
+
+def canon_date(plan: dict) -> str | None:
+    """Дата последнего изменения канона, YYYY-MM-DD."""
+    out = _git("log", "-1", "--date=format:%Y-%m-%d", "--format=%ad", "--",
+               *plan["проверка_памяти"]["канон"])
+    return (out or "").strip() or None
 
 
 def canon_commit(plan: dict) -> str | None:

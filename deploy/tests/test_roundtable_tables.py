@@ -987,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 130
+    assert len(findings) == 134
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1156,6 +1156,10 @@ FINDING_PINS = {
     "R39-1": ("211df7dee553", "fb37793fb35f"),
     "R39-2": ("17c3c7892981", "70d53e7f5525"),
     "R39-3": ("81a50cb0dbf3", "1760c70038c6"),
+    "R40-1": ("9c50696680e3", "e6558ba600c2"),
+    "R40-2": ("2f0eb56853fc", "6f2c03db38a0"),
+    "R40-3": ("2d680a75656d", "53d263c8eff8"),
+    "R40-4": ("6738249749a3", "4cfa9fff251f"),
 }
 
 
@@ -1717,7 +1721,8 @@ def test_the_memory_receipt_names_the_current_canon_and_not_any_old_one(tmp_path
     note = home / "memory" / "project.md"
     note.parent.mkdir(parents=True)
     plan["проверка_памяти"] = {"файлы": [str(note)],
-                               "канон": plan["проверка_памяти"]["канон"]}
+                               "канон": plan["проверка_памяти"]["канон"],
+                               "ведутся_записями": []}
 
     note.write_text(f"канон на коммите `{current[:7]}`", encoding="utf-8")
     assert module.memory_receipt(plan, home) == []
@@ -2572,9 +2577,13 @@ def test_the_break_list_itself_is_pinned():
     spec.loader.exec_module(mutations)
     ids = [case[0] for case in mutations.CASES]
     assert len(ids) == len(set(ids)), "повторяющийся ID опыта"
+    # 🚩 Ревью #40: точную ожидаемую причину можно было заменить общим словом —
+    # и опыт переставал отличать настоящую поимку от случайного падения.
+    # Закрепляется вся запись: опыт, назначенный сторож и текст причины.
+    records = sorted([case[0], case[3], case[4]] for case in mutations.CASES)
     digest = hashlib.sha256(
-        json.dumps(sorted(ids), ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "cbcd6d5a88ae031c9fdcd05b1efb4f2cdf4e8614a8886c563397561986a1b53d", f"список опытов изменён: сейчас {len(ids)}"
+        json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert digest == "e961a271fedf0a404df3676c6fdcf122daa225dc498acab8ab1aad3c50cfcde3", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 
@@ -2615,3 +2624,84 @@ def test_what_the_ratchet_does_not_measure_is_named():
         f"лишние {sorted(set(named) - real)}, необъявленные {sorted(real - set(named))}")
     for section, why in named.items():
         assert why.strip(), f"{section}: исключено из замера без причины"
+
+
+def test_the_ratchet_refuses_an_experiment_without_a_green_control(monkeypatch, tmp_path):
+    """Храповик обязан отказаться, когда сторож красный ДО мутации.
+
+    🚩 Ревью #40: положительный контроль можно было удалить из храповика, и
+    мёртвый сторож считался бы рабочим — измеритель переставал измерять, а
+    отчёт оставался зелёным. Здесь подставляется заведомо красный сторож.
+    """
+    import importlib.util
+    path = Path(__file__).with_name("test_roundtable_mutations.py")
+    spec = importlib.util.spec_from_file_location("rt_mutations_meta", path)
+    mutations = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mutations)
+
+    module = import_tables_module()
+    scratch = tmp_path / "tables"
+    scratch.mkdir()
+    for name in module.TABLE_NAMES:
+        source = module.TABLES_DIR / f"{name}.yaml"
+        (scratch / f"{name}.yaml").write_bytes(source.read_bytes())
+
+    case = ("МЕТА", "мутация, до которой сторож уже красный",
+            lambda raw: raw["blocks"]["блоки"]["Б5"].update(состояние="сделано"),
+            "test_a_deliberately_red_guard", "нарочно красный")
+    monkeypatch.setenv("ROUNDTABLE_META_FAIL", "1")
+    with pytest.raises(AssertionError, match="падает ДО мутации"):
+        mutations.run_case(case, scratch)
+
+
+def test_a_deliberately_red_guard():
+    """Красный сторож по требованию — предмет метапроверки храповика выше.
+
+    🚩 Ревью #40: положительный контроль можно было просто удалить из
+    храповика, и мёртвый сторож считался бы рабочим. Без включённой
+    переменной этот тест пропускается и на обычный прогон не влияет.
+    """
+    if os.environ.get("ROUNDTABLE_META_FAIL") != "1":
+        pytest.skip("включается только метапроверкой храповика")
+    assert False, "нарочно красный сторож"
+
+
+def test_memory_is_not_fresh_just_because_a_hash_was_pasted_in(tmp_path, monkeypatch):
+    """🚩 Ревью #40: старый текст с дописанным текущим хешем проходил как
+    обновлённая память. Файл, который ведётся записями, обязан нести запись
+    с датой не раньше даты канона."""
+    module = import_tables_module()
+    tables = module.load()
+    plan = copy.deepcopy(tables.plan)
+    canon = module.canon_commit(plan)
+    day = module.canon_date(plan)
+    assert canon and day, "git не ответил о каноне"
+
+    home = tmp_path
+    for relative in plan["проверка_памяти"]["файлы"]:
+        path = home / str(relative).replace("~/", "")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"память\n- {day}, свежая запись\nканон {canon}\n", encoding="utf-8")
+    assert module.memory_receipt(plan, home) == [], "контроль: свежая память проходит"
+
+    kept = plan["проверка_памяти"]["ведутся_записями"]
+    assert kept, "ни один файл памяти не ведётся записями — принято за обновление"
+    stale = home / kept[0].replace("~/", "")
+    stale.write_text(f"память\n- 2026-01-01, старая запись\nканон {canon}\n", encoding="utf-8")
+    problems = module.memory_receipt(plan, home)
+    assert any("не раньше" in p for p in problems), (
+        f"хеш дописан в старый текст — принято за обновление: {problems}")
+
+
+def test_a_block_row_with_a_broken_acceptance_list_is_refused():
+    """🚩 Ревью #40: `приёмка: null` роняла загрузчик сырым TypeError.
+
+    Повреждённая запись обязана приходить как названный отказ с путём поля,
+    иначе непонятная ошибка выглядит поломкой движка, а не порчей данных.
+    """
+    module = import_tables_module()
+    for broken in (None, [], "строка", [None], ["не запись"]):
+        raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["блоки"]["Б9"]["приёмка"] = broken
+        with pytest.raises(module.ContractError, match="приёмка"):
+            module.Tables.from_raw(raw)

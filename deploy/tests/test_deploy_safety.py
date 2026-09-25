@@ -156,3 +156,21 @@ def test_restore_does_not_dump_private_sources_into_the_harness_dir(tmp_path, ca
     assert (native / "settings.json").exists()
     assert not (native / "user").exists()
     assert "kept user/" in capsys.readouterr().out   # и указатель на историю версий
+
+
+def test_backup_skips_a_markdown_note_that_carries_a_key(tmp_path, capsys):
+    """Review 2026-09-24: only the NAME secrets.env was excluded — a key pasted
+    into any user/*.md would have multiplied into every backup. The content is
+    checked with the same patterns as the public-leak guard."""
+    import checks as C
+
+    repo = tmp_path / "repo"
+    (repo / "user").mkdir(parents=True)
+    (repo / "user" / "profile.md").write_text("обычный профиль", encoding="utf-8")
+    fake_key = "ghp_" + "A1b2C3d4E5f6G7h8I9j0" * 2
+    (repo / "user" / "draft.md").write_text(f"токен {fake_key[:40]}", encoding="utf-8")
+
+    saved = C.backup_private_sources(str(repo), str(tmp_path / "b"), "20260925-000000")
+
+    assert saved == ["user/profile.md"]
+    assert "skipped user/draft.md" in capsys.readouterr().out

@@ -3,14 +3,15 @@
 #
 # The live form of Codex as observed in ~/.codex (read-only). STC's neutral
 # core/ is realised here by:
-#   - native @import in ~/.codex/AGENTS.md          (always_context)
+#   - the always-context bundle INLINED into ~/.codex/AGENTS.md (always_context;
+#     Codex does not expand @-imports — disproven live 2026-09-23)
 #   - typed sub-agent files in ~/.codex/agents/*.toml (subagents — TOML form)
 #   - hooks wired in ~/.codex/hooks.json              (hooks — standalone JSON)
 #   - MCP servers in ~/.codex/config.toml             (mcp — [mcp_servers.stc-*])
 #   - skills in ~/.agents/skills/                     (skills — Codex global path)
 #
 # Codex supports MORE of STC natively than zcode: typed subagents (TOML),
-# a full hook event set (incl. PreCompact), and @import in AGENTS.md. The
+# a full hook event set (incl. PreCompact). The
 # contracts are Claude-close (same stdin fields, hookSpecificOutput.additionalContext
 # inject, exit 2+stderr block) so the neutral hook scripts port nearly verbatim —
 # the one sharp edge is apply_patch (edits carry the file path inside the patch
@@ -68,14 +69,14 @@ vars:
 # LAYER 1 — always_context
 # ============================================================
 always_context:
-  realization: "AGENTS.md with native @import of the STC always-context bundle (AGENTS.stc.md). H06 injects the 3 firing rules on SessionStart."
+  realization: "AGENTS.md carries the STC always-context bundle inlined inside the managed block (source of truth: AGENTS.stc.md). H06 injects the 3 firing rules on SessionStart."
   native_path: "${native_dir}/AGENTS.md"
   import_syntax: "@<path>"
   capabilities:
     memory:
       supported: true
-      native: "@${native_dir}/AGENTS.stc.md  (the bundle: rule pointers + inlined profile + lazy memory map)"
-      fallback: "H06 session-start-context.sh JIT-inject on initial SessionStart if native import is unsupported."
+      native: "bundle inlined into ${native_dir}/AGENTS.md (rule pointers + profile + glossary + lazy memory map)"
+      fallback: "H06 session-start-context.sh injects the 3 rule files on SessionStart; the profile rides in the inlined bundle."
       binding:
         files: [core/memory/MEMORY.md, core/memory/playbook.md, core/memory/code_standard.md]
 
@@ -84,7 +85,7 @@ always_context:
 # ============================================================
 rules:
   realization: "rules migrate to hooks at their flow point (ADR-001); only session/behavior keepers stay in always_context"
-  native_path: "inlined into AGENTS.md via @import, or JIT-injected by a hook"
+  native_path: "JIT-injected by H06 on SessionStart (Codex does not expand @-imports)"
   capabilities:
     behavior:
       supported: true

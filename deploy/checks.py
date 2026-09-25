@@ -192,21 +192,8 @@ def _no_personal_data_in_core(core_dir):
     errs = []
     email_re = re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.I)
     ipv4_re = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
-    key_re = re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY")
-    # API-key / token formats (minimum lengths so placeholders like `sk-...`,
-    # `ghp_...`, `${TOKEN}` do not trip it — only a real key's length matches).
-    # Mirrors the proven patterns in core/hooks/secret-scan-memory.sh; core/ is
-    # public so a real key pasted into a doc example must fail the deploy.
-    token_res = [
-        (re.compile(r"\bghp_[A-Za-z0-9]{36}\b"), "GitHub PAT"),
-        (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{60,}\b"), "GitHub fine-grained PAT"),
-        (re.compile(r"\bntn_[A-Za-z0-9]{40,}\b"), "Notion token"),
-        (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{40,}\b"), "Anthropic API key"),
-        (re.compile(r"\bsk-[A-Za-z0-9]{40,}\b"), "sk-prefixed vendor key"),
-        (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key id"),
-        (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"), "Slack token"),
-        (re.compile(r"\bre_[A-Za-z0-9]{30,}\b"), "Resend API key"),
-    ]
+    key_re = PRIVATE_KEY_RE
+    token_res = TOKEN_PATTERNS
     # placeholder / doc emails that are fine to appear in generic prose
     email_allow = ("example.com", "example.org", "you@", "user@", "name@")
 
@@ -716,6 +703,33 @@ def backup_snapshot(native_dir, files_to_touch, backups_root):
     return ts, dest, saved
 
 
+# API-key / token formats (minimum lengths so placeholders like `sk-...`,
+# `ghp_...`, `${TOKEN}` do not trip it — only a real key's length matches).
+# Mirrors the proven patterns in core/hooks/secret-scan-memory.sh. Shared by
+# the public-leak guard (core/ is published) and the private-source backup.
+PRIVATE_KEY_RE = re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY")
+TOKEN_PATTERNS = [
+    (re.compile(r"\bghp_[A-Za-z0-9]{36}\b"), "GitHub PAT"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{60,}\b"), "GitHub fine-grained PAT"),
+    (re.compile(r"\bntn_[A-Za-z0-9]{40,}\b"), "Notion token"),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{40,}\b"), "Anthropic API key"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{40,}\b"), "sk-prefixed vendor key"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key id"),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"), "Slack token"),
+    (re.compile(r"\bre_[A-Za-z0-9]{30,}\b"), "Resend API key"),
+]
+
+
+def secret_kind(text):
+    """Name of the first secret format found in text, or None."""
+    if PRIVATE_KEY_RE.search(text):
+        return "private key"
+    for pattern, label in TOKEN_PATTERNS:
+        if pattern.search(text):
+            return label
+    return None
+
+
 def backup_private_sources(repo, backups_root, ts):
     """Snapshot the private always-context sources (user/*.md) next to a backup.
 
@@ -733,8 +747,16 @@ def backup_private_sources(repo, backups_root, ts):
     for fname in sorted(os.listdir(src_dir)):
         if not fname.endswith(".md"):
             continue                      # .env and friends stay out, always
+        src = os.path.join(src_dir, fname)
+        # A key pasted into a markdown note must not multiply into backups
+        # (review 2026-09-24: only the name secrets.env was excluded).
+        kind = secret_kind(open(src, encoding="utf-8", errors="replace").read())
+        if kind:
+            print(f"   ⚠ skipped user/{fname} in backup: looks like a {kind}; "
+                  f"move the value to secrets.env")
+            continue
         os.makedirs(dest, exist_ok=True)
-        shutil.copy2(os.path.join(src_dir, fname), os.path.join(dest, fname))
+        shutil.copy2(src, os.path.join(dest, fname))
         saved.append(f"user/{fname}")
     return saved
 

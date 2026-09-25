@@ -2008,6 +2008,22 @@ def main(argv: list[str] | None = None) -> int:
             problems += [f"сверка записи: {problem}" for problem in scope_problems]
             if not scope_problems:
                 print("✓ коммиты закрытых блоков не выходят за объявленное")
+            # 🚩 R39-3, частично: самовыдача расширенного объёма требует НОВОГО
+            # основания. Одну и ту же реплику нельзя переиспользовать под второе
+            # разрешение, и дата каждого следующего обязана быть позже — иначе
+            # «ОК» из прошлого месяца покрывал бы любой сегодняшний объём.
+            seen, previous = {}, None
+            for grant in plan["разрешения_исполнения"]:
+                basis = grant["основание"]
+                key = basis.get("native_uuid") or basis.get("sha256")
+                if key in seen:
+                    problems.append(f"разрешение {grant['блоки']}: то же основание, "
+                                    f"что у {seen[key]} — одна реплика, два разрешения")
+                seen[key] = grant["блоки"]
+                if previous is not None and str(grant["дата"]) <= str(previous):
+                    problems.append(f"разрешение {grant['блоки']}: дата не позже "
+                                    f"предыдущего — порядок выдачи не восстановить")
+                previous = grant["дата"]
             for problem in memory_receipt(plan):
                 problems.append(f"память: {problem}")
             else:

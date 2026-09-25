@@ -987,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 134
+    assert len(findings) == 135
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1160,6 +1160,7 @@ FINDING_PINS = {
     "R40-2": ("2f0eb56853fc", "6f2c03db38a0"),
     "R40-3": ("2d680a75656d", "53d263c8eff8"),
     "R40-4": ("6738249749a3", "4cfa9fff251f"),
+    "R41-1": ("1ad0290b689c", "1760c70038c6"),
 }
 
 
@@ -2233,6 +2234,7 @@ def test_commits_of_a_closed_block_are_checked_against_its_scope(tmp_path, monke
 
     def tables_with(commits):
         raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["блоки"]["БК"]["коммиты"] = []
         raw["blocks"]["блоки"]["БТ2"]["состояние"] = "сделано"
         raw["blocks"]["блоки"]["БТ2"]["коммиты"] = commits
         return module.Tables.from_raw(raw)
@@ -2326,6 +2328,7 @@ def test_the_write_scope_check_fails_closed(tmp_path, monkeypatch):
 
     def tables_with(commits):
         raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["блоки"]["БК"]["коммиты"] = []
         raw["blocks"]["блоки"]["БТ2"]["состояние"] = "сделано"
         raw["blocks"]["блоки"]["БТ2"]["коммиты"] = commits
         raw["blocks"]["блоки"]["БТ2"]["пишет"].append("deploy/tests/fixtures/roundtable/")
@@ -2362,6 +2365,7 @@ def test_a_commit_from_an_unmerged_branch_does_not_count(tmp_path, monkeypatch):
 
     def tables_with(commits):
         raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["блоки"]["БК"]["коммиты"] = []
         raw["blocks"]["блоки"]["БТ2"]["состояние"] = "сделано"
         raw["blocks"]["блоки"]["БТ2"]["коммиты"] = commits
         return module.Tables.from_raw(raw)
@@ -2492,13 +2496,13 @@ def test_a_really_closed_block_keeps_its_wave_in_the_record():
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
     plan = raw["blocks"]
-    closed_now = {"БК": 1, "Б1": 2, "БТ2": 2, "Б2": 3, "БИ": 4, "БУ": 5, "Б15": 5,
+    closed_now = {"Б1": 2, "БТ2": 2, "Б2": 3, "БИ": 4, "БУ": 5, "Б15": 5,
                   "Б0б": 5, "Б4": 6, "Ш2": 7, "Б5": 7, "Б6": 8, "Б3б": 9, "Б9": 9}
     for name, wave in closed_now.items():
         plan["блоки"][name]["состояние"] = "сделано"
         plan["блоки"][name]["коммиты"] = ["a" * 40]
         plan["исполнение"]["выполнено"][name] = wave
-        del plan["исполнение"]["блоки"][name]
+        plan["исполнение"]["блоки"].pop(name, None)
     plan["отпечаток_изоляции"]["пока_не_вычисляется"] = {}
     tables = module.Tables.from_raw(raw)
     started = lambda n: plan["блоки"][n].get("состояние") == "сделано"
@@ -2583,7 +2587,7 @@ def test_the_break_list_itself_is_pinned():
     records = sorted([case[0], case[3], case[4]] for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "e961a271fedf0a404df3676c6fdcf122daa225dc498acab8ab1aad3c50cfcde3", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "d89bceae3dbff2b255f3defbdedff31250fb921d4317725ec68549ab20a24f6a", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 
@@ -2705,3 +2709,19 @@ def test_a_block_row_with_a_broken_acceptance_list_is_refused():
         raw["blocks"]["блоки"]["Б9"]["приёмка"] = broken
         with pytest.raises(module.ContractError, match="приёмка"):
             module.Tables.from_raw(raw)
+
+
+def test_one_reply_cannot_back_two_permissions():
+    """🚩 R39-3, частично: расширить себе объём можно было, сославшись на ту же
+    реплику Антона второй раз. Основание — однократное: одна реплика, одно
+    разрешение, и каждое следующее выдано позже предыдущего."""
+    module = import_tables_module()
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert "одна реплика, два разрешения" in source, (
+        "проверка повторного использования основания выпала из authority")
+    grants = BLOCKS["разрешения_исполнения"]
+    keys = [g["основание"].get("native_uuid") or g["основание"].get("sha256")
+            for g in grants]
+    assert len(keys) == len(set(keys)), "одно основание под двумя разрешениями"
+    dates = [str(g["дата"]) for g in grants]
+    assert dates == sorted(dates), "разрешения записаны не по порядку выдачи"

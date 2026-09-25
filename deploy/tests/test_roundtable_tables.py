@@ -987,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 127
+    assert len(findings) == 130
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1147,12 +1147,15 @@ FINDING_PINS = {
     "R38-1": ("3e90660040df", "fb37793fb35f"),
     "R38-2": ("0ac4670cb9ca", "7bc2e2942921"),
     "R38-3": ("a72104d51f6b", "16728a3e8010"),
-    "R38-4": ("cae4f38aa023", "65d27aecfb31"),
+    "R38-4": ("09005f6f02ce", "65d27aecfb31"),
     "R38-5": ("42f18f906d96", "53d263c8eff8"),
     "R38-6": ("5911649beacc", "63bec5b2d7bf"),
     "R38-7": ("d03eabfe8ec0", "f4aa85503842"),
     "R38-8": ("8e481468c39f", "eac22f0fedd8"),
     "R38-9": ("d4385f6c9ac4", "53343132d309"),
+    "R39-1": ("211df7dee553", "fb37793fb35f"),
+    "R39-2": ("17c3c7892981", "70d53e7f5525"),
+    "R39-3": ("81a50cb0dbf3", "1760c70038c6"),
 }
 
 
@@ -2571,7 +2574,7 @@ def test_the_break_list_itself_is_pinned():
     assert len(ids) == len(set(ids)), "повторяющийся ID опыта"
     digest = hashlib.sha256(
         json.dumps(sorted(ids), ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "15bbaad3e9a4543774566337eb01fba635bde292c6ba88ce24440963d00a6af2", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "cbcd6d5a88ae031c9fdcd05b1efb4f2cdf4e8614a8886c563397561986a1b53d", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 
@@ -2589,3 +2592,26 @@ def test_a_second_copy_of_a_generated_section_is_rejected(tmp_path):
     forged = document + f"\n{begin}\nMVP завершён, идите дальше\n{end}\n"
     with pytest.raises(module.ContractError, match="дважды"):
         module.inject_sections(forged, tables)
+
+
+def test_what_the_ratchet_does_not_measure_is_named():
+    """Замер защищает ИЗМЕРЯЕМЫЕ строки, а не «каждую строку правил».
+
+    🚩 Ревью #39: критик подменил смысловой критерий годности решения на
+    «годится любое», и замер всё равно отчитался о полном результате — раздел
+    исключён из знаменателя. Исключения теперь названы в таблице с причиной,
+    и этот сторож сверяет список с настоящими исключениями: вывести раздел
+    из-под замера молча нельзя.
+    """
+    import importlib.util
+    path = Path(__file__).with_name("mutate_roundtable_tables.py")
+    spec = importlib.util.spec_from_file_location("rt_ratchet", path)
+    ratchet = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ratchet)
+    real = {f"{table}:{section}" for table, section in ratchet.NOTES}
+    named = BLOCKS["порядок_критики"]["вне_замера"]
+    assert set(named) == real, (
+        f"список вне замера разошёлся с храповиком: "
+        f"лишние {sorted(set(named) - real)}, необъявленные {sorted(real - set(named))}")
+    for section, why in named.items():
+        assert why.strip(), f"{section}: исключено из замера без причины"

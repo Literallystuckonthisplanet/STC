@@ -1493,6 +1493,21 @@ def staged_outside_scope(tables: "Tables", name: str) -> list[str]:
     return [path for path in _paths(staged) if not within(path, tables.blocks[name].writes)]
 
 
+# Обвязка, попадающая в реплику пользователя не от него: напоминания среды,
+# вывод локальных команд и вставленный чужой текст. Разрешение — слова человека,
+# поэтому цитата ищется в остатке (ревью #39).
+INJECTED = ("system-reminder", "command-name", "command-message", "command-args",
+            "local-command-stdout", "local-command-caveat", "pasted_content")
+
+
+def own_words(text: str) -> str:
+    """Реплика без служебных вставок и вставленного чужого текста."""
+    for tag in INJECTED:
+        text = re.sub(rf"<{tag}\b.*?</{tag}>", " ", text, flags=re.S)
+        text = re.sub(rf"<{tag}\b[^>]*>", " ", text)
+    return text
+
+
 def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
     """Actually open what the permission points at. Returns the failure, or None.
 
@@ -1531,7 +1546,13 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
     candidates = list(home.glob(f".claude/projects/*/{session}.jsonl"))
     if not candidates:
         return f"сессии нет: {session}"
-    for line in candidates[0].open(encoding="utf-8"):
+    # 🚩 Ревью #39: файл переписки мог оказаться ярлыком наружу — и «основание»
+    # читалось из чего угодно.
+    transcript = candidates[0]
+    projects = (home / ".claude/projects").resolve()
+    if not transcript.resolve().is_relative_to(projects):
+        return f"запись сессии ведёт наружу: {transcript.resolve()}"
+    for line in transcript.open(encoding="utf-8"):
         if wanted not in line:
             continue
         record = json.loads(line)
@@ -1541,7 +1562,14 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
             return f"{wanted}: не реплика пользователя"
         content = record.get("message", {}).get("content")
         text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
-        return None if quote in text else f"{wanted}: цитата не найдена в реплике"
+        # 🚩 Ревью #39: «разрешаю» засчитывалось, даже когда стояло в служебной
+        # вставке или в чужом тексте, вставленном в реплику, — а собственные
+        # слова Антона говорили обратное. Разрешение даёт человек, а не обвязка.
+        own = own_words(text)
+        if quote in own:
+            return None
+        return (f"{wanted}: цитата есть только в служебной вставке, не в словах человека"
+                if quote in text else f"{wanted}: цитата не найдена в реплике")
     return f"{wanted}: события нет в сессии"
 
 

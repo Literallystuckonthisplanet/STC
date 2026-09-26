@@ -217,3 +217,34 @@ def test_json_output_says_unverified_when_the_registry_is_missing(tmp_path):
     out = json.loads(res.stdout)
     assert res.returncode == 3
     assert out["dead"] is None and "реестр" in out["unverified"]
+
+
+def test_text_output_without_registry_says_unknown_and_exits_3(tmp_path):
+    """Ревью 26.09: без реестра текстовый вывод всё ещё печатал «невидимы: нет» —
+    та же «пустая правда», что уже была убрана из машинного вывода."""
+    import shutil
+    import subprocess
+    deployed = tmp_path / "stc" / "core" / "scripts"
+    deployed.mkdir(parents=True)
+    shutil.copy(REPO / "core" / "scripts" / "hook_health.py", deployed)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+    res = subprocess.run(["python3", str(deployed / "hook_health.py"), "--raw", str(raw)],
+                         capture_output=True, text=True, env=env)
+    assert res.returncode == 3
+    invisible = res.stdout.split("невидимы", 1)[1].splitlines()[1]
+    assert "нет" != invisible.strip() and "не проверено" in invisible
+
+
+def test_copies_without_uuid_are_matched_by_session_and_time(tmp_path):
+    """Запасной ключ «сессия+время» — для записей без uuid (старые выгрузки)."""
+    def rec(line):
+        obj = json.loads(line)
+        obj["sessionId"] = "s1"
+        return json.dumps(obj, ensure_ascii=False)
+    lines = [rec(_call("ls")), rec(_block()), rec(_call("ls"))]
+    _write(tmp_path, "original.jsonl", lines)
+    _write(tmp_path, "copy.jsonl", lines)
+    res = hook_health.health(tmp_path, None, {"graphify-first": "H18"})
+    assert res["fired"] == {"graphify-first (H18)": 1}

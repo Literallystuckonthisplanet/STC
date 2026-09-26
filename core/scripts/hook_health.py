@@ -346,7 +346,10 @@ def main() -> int:
     else:
         print("  " + (", ".join(dead) if dead else "нет"))
     print("\nневидимы этим методом (тихие, без exit 2) — молчание ничего не доказывает:")
-    print("  " + (", ".join(invisible) if invisible else "нет"))
+    if not blocking:
+        print("  ⚠ не проверено: без реестра список тихих хуков неизвестен")
+    else:
+        print("  " + (", ".join(invisible) if invisible else "нет"))
     print("\nОговорка: «повтор» — это тот же вызов после блокировки. Для "
           "acknowledge-once хуков осознанный повтор штатен и правилу не "
           "противоречит; сигналом считается слепой — когда агент повторил, не "

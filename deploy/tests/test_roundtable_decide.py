@@ -345,3 +345,284 @@ def test_the_cli_answers_check_render_and_decide(capsys=None):
                    "--condition", "decision=принять_риск",
                    "--condition", "all_verdict_blocking_resolved=true"]) == 0
     assert T.main(["decide", "--state", "ждёт_Антона", "--event", "submit-decision"]) == 1
+
+
+# ==========================================================================
+# БТ2 — доисполнение таблиц: закрытые коды для issue и возражений, пятый
+# вход автомата возражений, честный храповик мутаций. Каждый критерий
+# БТ2-1…БТ2-9 (blocks.yaml → блоки.БТ2.приёмка) держится своим тестом ниже.
+#
+# DECIDED: «пять входов» (БТ2-2) — пять мест, где закрытый код человеческого
+# решения входит в автоматы этого модуля и обязан развести «легитимный, но
+# возможно отказанный, исход» (данные — Outcome, никогда исключение) от
+# «сломанного вызова или таблицы» (T.ContractError). Ни один из пяти не
+# документирован по номерам где-либо ещё, поэтому нумерация — техническое
+# решение исполнителя этого блока, а не цитата из спецификации:
+#   1. run-автомат, событие submit-decision (контракт E на прогоне);
+#   2. run-автомат, событие submit-framing-decision (эффект возражения на прогон);
+#   3. decide_issue_transition, событие anton-decision (контракт E на issue);
+#   4. decide_framing_transition, событие anton-decision (решение по возражению);
+#   5. decide_issue_transition, события lead-response и critic-outcome
+#      (ответы ведущего и поднявшего критика).
+# Вход 5 — «пятый» из R16-3/R21-5 в блоке — decide_framing_transition; здесь
+# он занимает позицию 4, поскольку входы 1 и 2 существовали до БТ2 (БТ, round 8/11).
+# ==========================================================================
+
+def test_input_1_run_decide_on_issue_decisions_separates_refusal_from_breakage():
+    refused = TABLES.decide("ждёт_Антона", "submit-decision",
+                            {"decision": "запросить_ещё_правку", "budget_fits_quorum": False})
+    assert refused.refusal == "БЮДЖЕТ_НЕ_ВМЕЩАЕТ_КВОРУМ", "легитимный отказ — данные, не исключение"
+    assert refused.to == "ждёт_Антона"
+    _raises(T.ContractError, TABLES.decide, "ждёт_Антона", "submit-decision",
+            {"decision": "передумать"})
+
+
+def test_input_2_run_decide_on_framing_decisions_separates_refusal_from_breakage():
+    outcome = TABLES.decide("идёт_круг", "submit-framing-decision",
+                            {"framing_decision": "подтвердить_постановку", "round_running": True})
+    assert outcome.to == "идёт_круг" and outcome.refusal is None
+    _raises(T.ContractError, TABLES.decide, "идёт_круг", "submit-framing-decision",
+            {"framing_decision": "передумать"})
+
+
+def test_input_3_issue_anton_decision_separates_refusal_from_breakage():
+    outcome = TABLES.decide_issue_transition(
+        "вынесен_Антону", "anton-decision",
+        {"decision": "принять_риск", "блокер": "сменой_решения"})
+    assert outcome.to == "риск_принят" and outcome.refusal is None
+
+    # контракт E: решение вне списка допустимых для типа issue — легитимный
+    # отказ пользователя (Outcome.refusal), не падение движка (БТ2-2, БТ2-3).
+    refused = TABLES.decide_issue_transition(
+        "вынесен_Антону", "anton-decision",
+        {"decision": "изменить_цель", "блокер": "сменой_решения"})
+    assert refused.refusal == "РЕШЕНИЕ_ВНЕ_ТИПА"
+    assert refused.to == "вынесен_Антону", "отказ не двигает issue"
+
+    _raises(T.ContractError, TABLES.decide_issue_transition,
+            "вынесен_Антону", "anton-decision", {"decision": "передумать"})
+
+
+def test_input_4_framing_anton_decision_separates_refusal_from_breakage():
+    outcome = TABLES.decide_framing_transition(
+        "открыто", "anton-decision", {"framing_decision": "подтвердить_постановку"})
+    assert outcome.to == "подтверждено"
+    _raises(T.ContractError, TABLES.decide_framing_transition,
+            "открыто", "anton-decision", {"framing_decision": "передумать"})
+    _raises(T.ContractError, TABLES.decide_framing_transition,
+            "подтверждено", "anton-decision", {"framing_decision": "остановить"})
+
+
+def test_input_5_issue_lead_and_critic_responses_separate_refusal_from_breakage():
+    lead = TABLES.decide_issue_transition("открыт", "lead-response",
+                                          {"ответ_ведущего": "оспорил"})
+    assert lead.to == "оспорен_автором"
+    _raises(T.ContractError, TABLES.decide_issue_transition, "открыт", "lead-response",
+            {"ответ_ведущего": "промолчал"})
+
+    critic = TABLES.decide_issue_transition("принят_автором", "critic-outcome",
+                                            {"итог_критика": "осталось"})
+    assert critic.to == "остался"
+    _raises(T.ContractError, TABLES.decide_issue_transition, "принят_автором", "critic-outcome",
+            {"итог_критика": "передумал"})
+
+
+# --------------------------------------------------------------------------
+# БТ2-1 — no free-text `условие` is consulted by anything executable
+# --------------------------------------------------------------------------
+
+def test_the_prose_condition_text_is_never_consulted_by_either_automaton(tmp_path):
+    before_issue = TABLES.decide_issue_transition(
+        "открыт", "escalate", {"блокер": "сменой_решения"})
+    before_framing = TABLES.decide_framing_transition(
+        "открыто", "anton-decision", {"framing_decision": "остановить"})
+
+    directory = _copy(tmp_path)
+
+    def mangle(data):
+        for row in data["переходы"]:
+            row["условие"] = "бессмысленная строка, не код"
+
+    _edit(directory, "issues", mangle)
+    _edit(directory, "framing", mangle)
+    mutated = T.load(directory)
+
+    after_issue = mutated.decide_issue_transition(
+        "открыт", "escalate", {"блокер": "сменой_решения"})
+    after_framing = mutated.decide_framing_transition(
+        "открыто", "anton-decision", {"framing_decision": "остановить"})
+    assert after_issue == before_issue
+    assert after_framing == before_framing
+
+
+# --------------------------------------------------------------------------
+# БТ2-3 — a framing (objection) transition through the ISSUE decider is refused
+# --------------------------------------------------------------------------
+
+def test_a_framing_channel_code_routed_through_the_issue_decider_is_refused():
+    # `framing_decision` is a closed code of a DIFFERENT automaton (framing.yaml)
+    # — feeding it to decide_issue_transition must not be quietly accepted as
+    # if it were an issue `decision`.
+    _raises(T.ContractError, TABLES.decide_issue_transition,
+            "вынесен_Антону", "anton-decision", {"framing_decision": "остановить"})
+    # the framing STATUS itself is foreign to the issue automaton
+    _raises(T.ContractError, TABLES.decide_issue_transition,
+            "открыто", "anton-decision", {"decision": "остановить"})
+
+
+# --------------------------------------------------------------------------
+# БТ2-4 (closing R12-5) — load() itself refuses a typo'd condition code
+# --------------------------------------------------------------------------
+
+def test_load_refuses_a_typo_in_a_condition_code_with_no_explicit_check_call(tmp_path):
+    directory = _copy(tmp_path)
+
+    def typo(data):
+        for row in data["переходы"]:
+            if row.get("условия", {}).get("блокер") == "сменой_решения":
+                row["условия"] = {"блокер": "сменой_решениа"}  # опечатка
+
+    _edit(directory, "issues", typo)
+    # This is `T.load`, not `T.load(...).check()` — R12-5 was exactly a typo
+    # that loaded silently and only showed up if someone remembered `check()`.
+    error = _raises(T.ContractError, T.load, directory)
+    assert "сменой_решениа" in str(error)
+
+
+# --------------------------------------------------------------------------
+# БТ2-5 — strict nesting: a fabricated nested field is refused
+# --------------------------------------------------------------------------
+
+def test_a_fabricated_field_inside_an_outcome_entry_is_refused(tmp_path):
+    directory = _copy(tmp_path)
+
+    def add_ghost_field(data):
+        row = next(r for r in data["переходы"] if r.get("событие") == "lead-response")
+        row["исходы"][0]["призрак"] = True
+
+    _edit(directory, "issues", add_ghost_field)
+    error = _raises(T.ContractError, T.load, directory)
+    assert "призрак" in str(error)
+
+
+def test_a_fabricated_blocker_code_desynced_from_allowed_decisions_is_refused(tmp_path):
+    directory = _copy(tmp_path)
+
+    def add_ghost_blocker(data):
+        data["коды_условий"]["блокер"] = list(data["коды_условий"]["блокер"]) + ["выдуманный"]
+
+    _edit(directory, "issues", add_ghost_blocker)
+    error = _raises(T.ContractError, T.load, directory)
+    assert "расходятся" in str(error)
+
+
+# --------------------------------------------------------------------------
+# БТ2-6 — the ratchet mutates a TEMPORARY copy, never the canon
+# --------------------------------------------------------------------------
+
+def _load_ratchet():
+    path = ROOT / "deploy" / "tests" / "mutate_roundtable_tables.py"
+    spec = importlib.util.spec_from_file_location("rt_ratchet_bt2", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_ratchet_loads_its_mutant_from_a_temporary_directory_not_the_canon(tmp_path):
+    ratchet = _load_ratchet()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    for source in ratchet.CANON.glob("*.yaml"):
+        shutil.copy(source, scratch / source.name)
+
+    victim = scratch / "framing.yaml"
+    data = yaml.safe_load(victim.read_text(encoding="utf-8"))
+    for row in data["переходы"]:
+        if row.get("условия", {}).get("framing_decision") == "остановить":
+            row["условия"]["framing_decision"] = "передумать"  # опечатка, не код
+    victim.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    _raises(T.ContractError, T.load, scratch)
+    T.load(ratchet.CANON)  # the canon is untouched and loads exactly as before
+
+
+# --------------------------------------------------------------------------
+# БТ2-7 (closing R15-8) — the ratchet runs tables, decide AND idea-stage tests
+# --------------------------------------------------------------------------
+
+def test_the_ratchet_runs_all_three_suites_not_one():
+    ratchet = _load_ratchet()
+    names = {path.name for path in ratchet.SUITES}
+    assert names == {"test_roundtable_tables.py", "test_roundtable_decide.py",
+                     "test_roundtable_context.py"}, (
+        "R15-8: a row guarded only by one of the other two files must be "
+        "counted — running one file alone leaves it out of the denominator")
+
+
+# --------------------------------------------------------------------------
+# БТ2-8 — four independent mutation classes, each its own generator
+# --------------------------------------------------------------------------
+
+def test_the_ratchet_has_four_independent_mutation_class_generators():
+    ratchet = _load_ratchet()
+    assert set(ratchet.CLASSES) == {
+        "убрать_правило", "подменить_значение_на_допустимое",
+        "подменить_текст_сохранив_ID", "подсунуть_недопустимое",
+    }
+
+    assert ratchet.CLASSES["убрать_правило"]({"id": "X-1", "условие": "т"}) is ratchet._Deleted
+
+    assert ratchet.CLASSES["подменить_значение_на_допустимое"]({"a": True}) == {"a": False}
+    assert ratchet.CLASSES["подменить_значение_на_допустимое"]({"a": "текст"}) is None, (
+        "a row with no boolean anywhere is not eligible for this class")
+
+    kept_id = ratchet.CLASSES["подменить_текст_сохранив_ID"]({"id": "X-1", "условие": "т"})
+    assert kept_id["id"] == "X-1" and kept_id["условие"] != "т"
+    assert ratchet.CLASSES["подменить_текст_сохранив_ID"]({"a": "текст"}) is None, (
+        "a row with no id is not eligible for this class"
+    )
+
+    assert ratchet.CLASSES["подсунуть_недопустимое"]({"a": "текст"}) == {
+        "a": "текст", ratchet.UNKNOWN_FIELD: True}
+    assert ratchet.CLASSES["подсунуть_недопустимое"]("проза") == ratchet.MUTATION_SENTINEL
+    assert ratchet.CLASSES["подсунуть_недопустимое"](True) is None, (
+        "every bool is a valid bool — there is no generic invalid substitute")
+
+
+# --------------------------------------------------------------------------
+# БТ2-9 — an admissible value substitution changes the outcome, and only a
+# behavioural pin catches it (never the loader or the full `check()`)
+# --------------------------------------------------------------------------
+
+def test_admissible_decision_code_swap_changes_the_route_and_only_a_pin_catches_it(tmp_path):
+    pinned = {
+        "принять_риск": "риск_принят", "остановить": "остановлено",
+        "изменить_цель": "цель_изменена", "сменить_решение": "решение_изменено",
+        "запросить_ещё_правку": "открыт",
+    }
+    actual = {o.conditions["decision"]: o.target
+              for t in TABLES.issue_transitions if t.event == "anton-decision"
+              for o in t.outcomes}
+    assert actual == pinned, "if this line changes, the swap below stops proving anything"
+
+    directory = _copy(tmp_path)
+
+    def swap_two_admissible_values(data):
+        row = next(r for r in data["переходы"] if r.get("событие") == "anton-decision")
+        by_decision = {o["условия"]["decision"]: o for o in row["исходы"]}
+        by_decision["принять_риск"]["условия"]["decision"] = "остановить"
+        by_decision["остановить"]["условия"]["decision"] = "принять_риск"
+
+    _edit(directory, "issues", swap_two_admissible_values)
+    mutated = T.load(directory)
+    mutated.check()  # the loader AND the full check stay silent: every code is
+                     # still declared and coverage is still exhaustive — this
+                     # IS "an admissible substitution", by construction
+
+    swapped = mutated.decide_issue_transition(
+        "вынесен_Антону", "anton-decision", {"decision": "принять_риск"})
+    assert swapped.to == "остановлено", "the swap moved silently until this pin"
+
+    after = {o.conditions["decision"]: o.target for t in mutated.issue_transitions
+            if t.event == "anton-decision" for o in t.outcomes}
+    assert after != pinned

@@ -93,6 +93,10 @@ TOP_LEVEL = {
     "issues": {
         "переходы", "кто_завершает", "допустимые_решения", "вердикт",
         "вердикт_вне_таблицы", "обязательства", "валидация",
+        # БТ2: закрытые коды-различители ЭТОГО автомата (R21-5 → БТ2-1). Не в
+        # vocabulary.yaml — эти значения не статус, не класс и не решение
+        # общего канала, а ответ конкретной роли в конкретном переходе.
+        "коды_условий",
     },
     "framing": {
         "операция", "цель", "переходы", "влияние_по_стадиям", "флаг_прогона",
@@ -204,18 +208,103 @@ class Transition:
 
 
 @dataclass(frozen=True)
+class IssueOutcome:
+    """One discriminated outcome of a multi-target issue row — closed codes only."""
+
+    conditions: dict
+    target: str
+
+
+@dataclass(frozen=True)
 class IssueTransition:
-    """One row of the issue transition table (issues.yaml)."""
+    """One row of the issue transition table (issues.yaml).
+
+    `условие` is prose for humans and for the generated document — pinned by
+    `test_every_route_to_anton_exists_from_both_author_statuses` in the
+    read-only suite, so it is kept byte-for-byte and never consulted by
+    `decide_issue_transition`. `событие` + `условия`/`исходы` is the actual
+    executable rule (БТ2-1, closing R21-5): closed condition codes only,
+    declared in issues.коды_условий or the `decision` code already closed in
+    vocabulary.решения_по_issue.
+    """
 
     source: str | None
     targets: tuple[str, ...]
     who: str
     condition: str
+    event: str
+    outcomes: tuple[IssueOutcome, ...]
 
     @classmethod
     def parse(cls, row: dict) -> "IssueTransition":
-        _require(row, {"из", "в", "кто", "условие"}, set(), "issues.переходы")
-        return cls(row["из"], tuple(row["в"]), row["кто"], row["условие"])
+        _require(row, {"из", "в", "кто", "условие", "событие"},
+                 {"условия", "исходы"}, "issues.переходы")
+        if "условия" in row and "исходы" in row:
+            raise ContractError(f"issues.переходы: и условия, и исходы разом — {row}")
+        _string_list(row["в"], "issues.переходы.в")
+        targets = tuple(row["в"])
+        if "исходы" in row:
+            outcomes = []
+            for entry in row["исходы"]:
+                _require(entry, {"условия", "в"}, set(), "issues.переходы.исходы")
+                outcomes.append(IssueOutcome(dict(entry["условия"]), entry["в"]))
+            outcomes = tuple(outcomes)
+        else:
+            outcomes = (IssueOutcome(dict(row.get("условия") or {}), targets[0]),)
+        unknown_targets = {o.target for o in outcomes} - set(targets)
+        if unknown_targets:
+            raise ContractError(
+                f"issues.переходы: исход ведёт куда не объявлено в `в`: "
+                f"{sorted(unknown_targets)} — {row}")
+        return cls(row["из"], targets, row["кто"], row["условие"], row["событие"], outcomes)
+
+
+@dataclass(frozen=True)
+class FramingOutcome:
+    """One discriminated outcome of a framing row — closed codes only."""
+
+    conditions: dict
+    target: str
+
+
+@dataclass(frozen=True)
+class FramingTransition:
+    """One row of the objection-to-framing automaton (framing.yaml).
+
+    Same split as `IssueTransition`: `условие` is prose, pinned by
+    `test_framing_automaton_is_closed_and_reachable` (reads the raw dict,
+    untouched) and by the generated document. `событие` + `условия`/`исходы`
+    is what `decide_framing_transition` executes — closing R16-3 (the
+    automaton's fifth input) and R21-5 for this table, built entirely on
+    `framing_decision`, already closed in vocabulary.решения_по_возражению.
+    """
+
+    source: str | None
+    target: str
+    who: str
+    condition: str
+    event: str
+    outcomes: tuple[FramingOutcome, ...]
+
+    @classmethod
+    def parse(cls, row: dict) -> "FramingTransition":
+        _require(row, {"из", "в", "кто", "условие", "событие"},
+                 {"условия", "исходы"}, "framing.переходы")
+        if "условия" in row and "исходы" in row:
+            raise ContractError(f"framing.переходы: и условия, и исходы разом — {row}")
+        if "исходы" in row:
+            outcomes = []
+            for entry in row["исходы"]:
+                _require(entry, {"условия", "в"}, set(), "framing.переходы.исходы")
+                outcomes.append(FramingOutcome(dict(entry["условия"]), entry["в"]))
+            outcomes = tuple(outcomes)
+        else:
+            outcomes = (FramingOutcome(dict(row.get("условия") or {}), row["в"]),)
+        wrong = [o for o in outcomes if o.target != row["в"]]
+        if wrong:
+            raise ContractError(
+                f"framing.переходы: исход ведёт не туда, куда объявлено в `в`: {row}")
+        return cls(row["из"], row["в"], row["кто"], row["условие"], row["событие"], outcomes)
 
 
 @dataclass(frozen=True)
@@ -304,8 +393,13 @@ class Block:
                 raise ContractError(f"{where}.объявленное_количество.{key}: "
                                     f"ожидалось положительное целое")
         if vocabulary is not None:
-            states = (set(vocabulary["состояния_блока"]["рабочие"])
-                      | set(vocabulary["состояния_блока"]["терминальные"]))
+            block_states = vocabulary["состояния_блока"]
+            missing = {"рабочие", "терминальные"} - set(block_states)
+            if missing:
+                raise ContractError(
+                    f"vocabulary.состояния_блока: отсутствует {sorted(missing)}")
+            states = (set(block_states["рабочие"])
+                      | set(block_states["терминальные"]))
             if row.get("состояние") is not None and row["состояние"] not in states:
                 raise ContractError(
                     f"{where}.состояние: {row['состояние']!r} нет в словаре")
@@ -473,9 +567,22 @@ class Tables:
     raw: dict
     transitions: tuple[Transition, ...]
     issue_transitions: tuple[IssueTransition, ...]
+    framing_transitions: tuple[FramingTransition, ...]
     verdict: tuple[VerdictRow, ...]
     precheck_codes: tuple[PrecheckCode, ...]
     blocks: dict
+
+    # БТ2: тип issue по коду блокера — какой столбец `допустимые_решения`
+    # открывает эта эскалация. Локальная таблица кода в коде (не «условие»
+    # строкой): различитель `блокер` объявлен в issues.коды_условий, и
+    # соответствие типам проверяется `_check_issue_codes` при каждом `load()`,
+    # так что расхождение — падение загрузки, а не тихая дыра.
+    ISSUE_TYPE_BY_BLOCKER = {
+        "сменой_решения": "блокер_сменой_решения",
+        "только_сменой_цели": "блокер_только_сменой_цели",
+        "правкой_круги_исчерпаны": "блокер_правкой_круги_исчерпаны",
+        "неизвестное_высокой_существенности": "неизвестное_высокой_существенности",
+    }
 
     @classmethod
     def from_raw(cls, raw: dict) -> "Tables":
@@ -489,6 +596,8 @@ class Tables:
             transitions=tuple(Transition.parse(row) for row in raw["run"]["переходы"]),
             issue_transitions=tuple(
                 IssueTransition.parse(row) for row in raw["issues"]["переходы"]),
+            framing_transitions=tuple(
+                FramingTransition.parse(row) for row in raw["framing"]["переходы"]),
             verdict=tuple(VerdictRow.parse(row) for row in raw["issues"]["вердикт"]),
             precheck_codes=tuple(
                 PrecheckCode.parse(row) for row in raw["precheck"]["коды"]),
@@ -583,9 +692,180 @@ class Tables:
                 seen.append(pair)
         return tuple(seen)
 
+    # -- БТ2: the issue automaton (issues.yaml) ------------------------------
+    # A second `decide`-shaped input (БТ2-3), same "exactly one outcome, never
+    # first-match-wins" discipline as the run automaton — but reading a
+    # DIFFERENT registry (issue status, not run state). `decision` and
+    # `framing_decision` are separate closed lists (vocabulary.yaml), so the
+    # two channels cannot be crossed here: feeding a framing code in is
+    # refused as an unknown condition code.
+    def decide_issue_transition(self, status: str | None, event: str,
+                                conditions: dict | None = None) -> Outcome:
+        conditions = dict(conditions or {})
+        self._validate_issue_conditions(conditions)
+        statuses = self._issue_statuses()
+        if status is not None and status not in statuses:
+            raise ContractError(f"unknown issue status {status!r}")
+        events = {t.event for t in self.issue_transitions}
+        if event not in events:
+            raise ContractError(f"unknown issue event {event!r}")
+
+        matched = [(t, o) for t in self.issue_transitions
+                  if t.source == status and t.event == event
+                  for o in t.outcomes
+                  if all(conditions.get(k, _MISSING) == v for k, v in o.conditions.items())]
+        if not matched:
+            raise ContractError(
+                f"no outcome for issue ({status!r}, {event!r}) with {conditions!r}")
+        if len(matched) > 1:
+            raise ContractError(
+                f"{len(matched)} outcomes for issue ({status!r}, {event!r}) with {conditions!r}")
+        _, outcome = matched[0]
+
+        # Контракт E / БТ2-2: "решение Антона вне списка допустимых для типа
+        # issue" — это отказ пользователя (Outcome.refusal), не поломка
+        # движка. `блокер` необязателен структурно, но реальный вызов на
+        # `вынесен_Антону` обязан его передать; иначе решение не той формы
+        # молча проходит бы дальше (БТ2-3).
+        if event == "anton-decision" and "блокер" in conditions:
+            issue_type = self.ISSUE_TYPE_BY_BLOCKER[conditions["блокер"]]
+            allowed = self.issues["допустимые_решения"][issue_type]
+            if conditions.get("decision") not in allowed:
+                return Outcome(to=status, refusal="РЕШЕНИЕ_ВНЕ_ТИПА")
+        return Outcome(to=outcome.target)
+
+    def _issue_pairs(self) -> tuple[tuple[str | None, str], ...]:
+        seen = []
+        for transition in self.issue_transitions:
+            pair = (transition.source, transition.event)
+            if pair not in seen:
+                seen.append(pair)
+        return tuple(seen)
+
+    def _issue_condition_keys(self, state, event) -> tuple[str, ...]:
+        keys = []
+        for transition in self.issue_transitions:
+            if transition.source == state and transition.event == event:
+                for outcome in transition.outcomes:
+                    for key in outcome.conditions:
+                        if key not in keys:
+                            keys.append(key)
+        return tuple(keys)
+
+    def _issue_combinations(self, state, event) -> list[dict]:
+        keys = self._issue_condition_keys(state, event)
+        if not keys:
+            return [{}]
+        codes = self._issue_codes()
+        combinations = [{}]
+        for key in keys:
+            combinations = [dict(base, **{key: value})
+                            for base in combinations for value in codes[key]]
+        return combinations
+
+    def _issue_codes(self) -> dict:
+        codes = dict(self.issues.get("коды_условий") or {})
+        codes["decision"] = self.vocabulary["решения_по_issue"]
+        return codes
+
+    def _issue_statuses(self) -> set:
+        statuses = self.vocabulary["статусы_issue"]
+        required = {"ждут_автора", "ждут_критика", "ждут_Антона", "терминальные"}
+        missing = required - set(statuses)
+        if missing:
+            raise ContractError(f"vocabulary.статусы_issue: отсутствует {sorted(missing)}")
+        return (set(statuses["ждут_автора"]) | set(statuses["ждут_критика"])
+                | set(statuses["ждут_Антона"]) | set(statuses["терминальные"]))
+
+    def _validate_issue_conditions(self, conditions: dict) -> None:
+        codes = self._issue_codes()
+        for key, value in conditions.items():
+            if key not in codes:
+                raise ContractError(f"unknown issue condition code {key!r}")
+            if value not in codes[key]:
+                raise ContractError(f"{key}={value!r} is not a declared issue value")
+
+    # -- БТ2: the framing automaton (framing.yaml) — the fifth input (R16-3) --
+    def decide_framing_transition(self, status: str | None, event: str,
+                                  conditions: dict | None = None) -> Outcome:
+        conditions = dict(conditions or {})
+        self._validate_framing_conditions(conditions)
+        statuses = self._framing_statuses()
+        if status is not None and status not in statuses:
+            raise ContractError(f"unknown framing status {status!r}")
+        events = {t.event for t in self.framing_transitions}
+        if event not in events:
+            raise ContractError(f"unknown framing event {event!r}")
+
+        matched = [(t, o) for t in self.framing_transitions
+                  if t.source == status and t.event == event
+                  for o in t.outcomes
+                  if all(conditions.get(k, _MISSING) == v for k, v in o.conditions.items())]
+        if not matched:
+            raise ContractError(
+                f"no outcome for framing ({status!r}, {event!r}) with {conditions!r}")
+        if len(matched) > 1:
+            raise ContractError(
+                f"{len(matched)} outcomes for framing ({status!r}, {event!r}) with {conditions!r}")
+        _, outcome = matched[0]
+        return Outcome(to=outcome.target)
+
+    def _framing_pairs(self) -> tuple[tuple[str | None, str], ...]:
+        seen = []
+        for transition in self.framing_transitions:
+            pair = (transition.source, transition.event)
+            if pair not in seen:
+                seen.append(pair)
+        return tuple(seen)
+
+    def _framing_condition_keys(self, state, event) -> tuple[str, ...]:
+        keys = []
+        for transition in self.framing_transitions:
+            if transition.source == state and transition.event == event:
+                for outcome in transition.outcomes:
+                    for key in outcome.conditions:
+                        if key not in keys:
+                            keys.append(key)
+        return tuple(keys)
+
+    def _framing_combinations(self, state, event) -> list[dict]:
+        keys = self._framing_condition_keys(state, event)
+        if not keys:
+            return [{}]
+        codes = {"framing_decision": self.vocabulary["решения_по_возражению"]}
+        combinations = [{}]
+        for key in keys:
+            combinations = [dict(base, **{key: value})
+                            for base in combinations for value in codes[key]]
+        return combinations
+
+    def _framing_statuses(self) -> set:
+        statuses = self.vocabulary["статусы_возражения"]
+        missing = {"активные", "терминальные"} - set(statuses)
+        if missing:
+            raise ContractError(f"vocabulary.статусы_возражения: отсутствует {sorted(missing)}")
+        return set(statuses["активные"]) | set(statuses["терминальные"])
+
+    def _validate_framing_conditions(self, conditions: dict) -> None:
+        codes = {"framing_decision": self.vocabulary["решения_по_возражению"]}
+        for key, value in conditions.items():
+            if key not in codes:
+                raise ContractError(f"unknown framing condition code {key!r}")
+            if value not in codes[key]:
+                raise ContractError(f"{key}={value!r} is not a declared framing value")
+
     # -- validation ---------------------------------------------------------
     def _states(self) -> set:
         states = self.vocabulary["состояния_прогона"]
+        # БТ2: this runs on every `load()` now (`_check_codes`), so a
+        # malformed vocabulary must fail as `ContractError`, not as a bare
+        # `KeyError` — the mutation ratchet caught exactly this: a missing
+        # `рабочие`/`терминальные` key used to crash the caller instead of
+        # refusing the load.
+        missing = {"рабочие", "терминальные"} - set(states)
+        if missing:
+            raise ContractError(
+                f"vocabulary.состояния_прогона: отсутствует {sorted(missing)}")
         return set(states["рабочие"]) | set(states["терминальные"])
 
     def _validate_conditions(self, conditions: dict) -> None:
@@ -596,14 +876,22 @@ class Tables:
             if value not in codes[key]:
                 raise ContractError(f"{key}={value!r} is not a declared value")
 
-    def check(self) -> list[str]:
-        """Every invariant the engine itself depends on. Returns what it checked."""
-        checked = []
+    def _check_codes(self) -> None:
+        """The closed-code closure of all three automata — cheap, so `load()`
+        runs it on every call (БТ2-4, closing R12-5): a typo in a condition
+        code used to load silently and quietly disable the transition it
+        broke, surfacing only if and when someone remembered to call the full
+        `check()`. This does NOT run `_check_plan()` or the combinatorial
+        "exactly one outcome" sweep — the mutation ratchet
+        (test_roundtable_mutations.py) depends on the loader accepting a
+        structurally valid table whose *plan* is still broken, so that split
+        stays: code closure is load-time, the heavier analysis stays in
+        `check()`.
+        """
         codes = self.vocabulary["коды_условий"]
         actions = set(self.vocabulary["коды_действий"])
         refusals = set(self.vocabulary["коды_отказа"])
         states = self._states()
-        working = set(self.vocabulary["состояния_прогона"]["рабочие"])
 
         for transition in self.transitions:
             if transition.source is not None and transition.source not in states:
@@ -620,6 +908,62 @@ class Tables:
                     raise ContractError(f"unknown action {action!r} in {transition}")
             if transition.refusal is not None and transition.refusal not in refusals:
                 raise ContractError(f"unknown refusal {transition.refusal!r} in {transition}")
+        self._check_issue_codes()
+        self._check_framing_codes()
+
+    def _check_issue_codes(self) -> None:
+        statuses = self._issue_statuses()
+        local = self.issues.get("коды_условий") or {}
+        for key, values in local.items():
+            if not values:
+                raise ContractError(f"issues.коды_условий.{key}: пустой список")
+        # БТ2-5: строгая проверка не только верхнего уровня, но и того, что
+        # закрытый различитель `блокер` и типы issue из `допустимые_решения`
+        # согласованы друг с другом — выдуманное вложенное значение в любой
+        # из двух таблиц отвергается здесь.
+        if set(self.ISSUE_TYPE_BY_BLOCKER) != set(local.get("блокер", ())):
+            raise ContractError(
+                "issues: коды_условий.блокер и ISSUE_TYPE_BY_BLOCKER расходятся")
+        if set(self.ISSUE_TYPE_BY_BLOCKER.values()) != set(self.issues["допустимые_решения"]):
+            raise ContractError(
+                "issues: тип issue по блокеру не покрывает все допустимые_решения")
+        if "РЕШЕНИЕ_ВНЕ_ТИПА" not in self.vocabulary["коды_отказа"]:
+            raise ContractError("issues: код отказа РЕШЕНИЕ_ВНЕ_ТИПА не объявлен в vocabulary")
+        codes = self._issue_codes()
+        for transition in self.issue_transitions:
+            if transition.source is not None and transition.source not in statuses:
+                raise ContractError(f"unknown issue status: {transition}")
+            for target in transition.targets:
+                if target not in statuses:
+                    raise ContractError(f"unknown issue status: {transition}")
+            for outcome in transition.outcomes:
+                for key, value in outcome.conditions.items():
+                    if key not in codes:
+                        raise ContractError(f"unknown issue condition code {key!r} in {transition}")
+                    if value not in codes[key]:
+                        raise ContractError(f"{key}={value!r} undeclared in {transition}")
+
+    def _check_framing_codes(self) -> None:
+        statuses = self._framing_statuses()
+        codes = {"framing_decision": self.vocabulary["решения_по_возражению"]}
+        for transition in self.framing_transitions:
+            if transition.source is not None and transition.source not in statuses:
+                raise ContractError(f"unknown framing status: {transition}")
+            if transition.target not in statuses:
+                raise ContractError(f"unknown framing status: {transition}")
+            for outcome in transition.outcomes:
+                for key, value in outcome.conditions.items():
+                    if key not in codes:
+                        raise ContractError(f"unknown framing condition code {key!r} in {transition}")
+                    if value not in codes[key]:
+                        raise ContractError(f"{key}={value!r} undeclared in {transition}")
+
+    def check(self) -> list[str]:
+        """Every invariant the engine itself depends on. Returns what it checked."""
+        checked = []
+        working = set(self.vocabulary["состояния_прогона"]["рабочие"])
+
+        self._check_codes()
         checked.append(f"{len(self.transitions)} переходов: коды закрыты")
 
         combinations = 0
@@ -636,6 +980,23 @@ class Tables:
             if not forward:
                 raise ContractError(f"{state}: the only way out is cancellation")
         checked.append(f"{len(working)} рабочих состояний: у каждого есть продолжение")
+
+        # БТ2: те же две гарантии — единственный исход на комбинацию условий —
+        # для issue-автомата и автомата возражений (закрывает R16-3 как
+        # проверяемый факт, а не только наличие функции).
+        issue_combinations = 0
+        for state, event in self._issue_pairs():
+            for conditions in self._issue_combinations(state, event):
+                self.decide_issue_transition(state, event, conditions)
+                issue_combinations += 1
+        checked.append(f"{issue_combinations} комбинаций issue-автомата: ровно один исход")
+
+        framing_combinations = 0
+        for state, event in self._framing_pairs():
+            for conditions in self._framing_combinations(state, event):
+                self.decide_framing_transition(state, event, conditions)
+                framing_combinations += 1
+        checked.append(f"{framing_combinations} комбинаций автомата возражений: ровно один исход")
         checked.extend(self._check_plan())
         return checked
 
@@ -1724,9 +2085,20 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
 
 
 def load(directory: Path = TABLES_DIR) -> Tables:
-    """Load, type and cross-check every table in `directory`."""
+    """Load, type and cross-check every table in `directory`.
+
+    БТ2-4 (closing R12-5): the closed-code closure of all three automata is
+    checked here, on every load — a typo in a condition code fails the load
+    instead of silently disabling the transition it broke. The heavier plan
+    analysis (`_check_plan`, folded into `Tables.check`) stays a deliberate
+    second step: test_roundtable_mutations.py relies on a structurally valid
+    table with a broken *plan* still loading, so a mutant can be told apart
+    by which of the two guards actually caught it.
+    """
     raw = {name: load_table(name, directory) for name in TABLE_NAMES}
-    return Tables.from_raw(raw)
+    tables = Tables.from_raw(raw)
+    tables._check_codes()
+    return tables
 
 
 # --------------------------------------------------------------------------

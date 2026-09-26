@@ -112,7 +112,11 @@ def ask(harness: str, prompt: str, codex_model: str | None) -> tuple[str, str]:
         if harness == "claude":
             run = subprocess.run(["claude", "-p", "--tools", ""], input=prompt,
                                  capture_output=True, text=True, cwd=tmp, timeout=600)
-            return run.stdout.strip(), _failure(run)
+            # Без входа Claude пишет «Not logged in» в stdout с кодом 1 — это
+            # не ответ модели (ревью 26.09), поэтому при ошибке ответа нет.
+            if run.returncode != 0:
+                return "", _failure(run)
+            return run.stdout.strip(), ""
         out = Path(tmp) / "answer.md"
         cmd = ["codex", "exec", "--skip-git-repo-check", "--ephemeral",
                "--sandbox", "read-only", "--output-last-message", str(out)]
@@ -126,10 +130,14 @@ def ask(harness: str, prompt: str, codex_model: str | None) -> tuple[str, str]:
 
 def _failure(run: subprocess.CompletedProcess) -> str:
     """Первая строка ошибки из вывода агента — например, про лимит подписки."""
-    for line in (run.stderr + "\n" + run.stdout).splitlines():
-        if line.strip().startswith("ERROR") or "usage limit" in line.lower():
-            return line.strip()[:200]
-    return "" if run.returncode == 0 else f"код выхода {run.returncode}"
+    lines = [line.strip() for line in (run.stderr + "\n" + run.stdout).splitlines()
+             if line.strip()]
+    for line in lines:
+        if line.startswith("ERROR") or "usage limit" in line.lower():
+            return line[:200]
+    if run.returncode == 0:
+        return ""
+    return f"код выхода {run.returncode}" + (f": {lines[0][:200]}" if lines else "")
 
 
 def main() -> int:

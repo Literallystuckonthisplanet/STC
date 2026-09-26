@@ -42,3 +42,25 @@ def test_ordinary_numbers_are_not_check_reporting():
     """Срок «1 день» и дата — не отчётность о проверках."""
     answer = "🎯 Готово к 8 октября.\n\n🙋 От тебя: ничего. Подготовка займёт 1 день."
     assert P.judge("report", answer) == []
+
+
+def test_a_failed_launch_is_unverified_not_a_format_failure(monkeypatch):
+    """Ревью 26.09: без входа Claude печатает «Not logged in» в stdout с кодом 1.
+
+    Раньше эта строка уходила в судью как ответ модели и давала ложный
+    «провал формата». Сбой запуска — неизвестность, а не нарушение.
+    """
+    import subprocess
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="Not logged in · Please run /login\n",
+                                           stderr="")
+
+    monkeypatch.setattr(P.subprocess, "run", fake_run)
+    answer, failure = P.ask("claude", "проба", None)
+    assert answer == ""
+    assert "Not logged in" in failure
+
+    monkeypatch.setattr(sys, "argv", ["answer_probe.py", "--harness", "claude",
+                                      "--scenario", "report"])
+    assert P.main() == 2

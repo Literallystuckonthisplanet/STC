@@ -92,7 +92,7 @@ FORK_MARK = "🗳"
 OPTION_LINE = re.compile(
     r"^[\s>*_-]*(?:🗳️?\s*)?\*{0,2}\s*"
     r"(?:(\d{1,2})[.)]\s"
-    r"|([A-DА-Г])\s*[—–:.)-]\s"
+    r"|([A-DА-Г])(?:\s*\([^)\n]{1,20}\))?\s*[—–:.)-]\*{0,2}\s"
     r"|\(([абвгA-D])\)"
     r"|вариант\s+(\d{1,2}|[A-DА-Г])\b)",
     re.I | re.M,
@@ -100,7 +100,10 @@ OPTION_LINE = re.compile(
 # Варианты жирными пунктами без номеров: «- **Влить сейчас (советую).** …».
 # Считаются, только если таких пунктов хотя бы два: одиночный жирный пункт —
 # это акцент, а не выбор. Ручная сверка 24.09: карточка из двух таких пунктов
-# с советом считалась слепой.
+# с советом считалась слепой. И только рядом с вопросом или советом: иначе это
+# список тем (ревью 26.09: «🗳️ Скоро понадобятся решения: **Объём**, **Кто
+# прочитает**» засчитывался развилкой из трёх вариантов). По архиву на 26.09
+# все десять настоящих карточек такого вида несут совет, ложная — ни того, ни другого.
 BOLD_BULLET = re.compile(r"^\s*[-*•]\s+\*\*([^*\n]{3,80})\*\*", re.M)
 # Варианты в одну строку: «(а) делаю сейчас; (б) держим план».
 INLINE_OPTION = re.compile(r"\(([абвгA-D])\)")
@@ -114,7 +117,9 @@ RECOMMEND = re.compile(r"(советую|рекоменд|я за\b|я бы вз
 # за которым идёт раздел «✅ Сделано» с нумерацией, засчитывался как развилка с
 # вариантами — ошибка, найденная внешним ревью 23.09.
 SECTION = re.compile(r"^\s*(?:#{1,4}\s|\*{0,2}(?:✅|📚|📊|🎯|🔬|🧠|📌|⏳|🔎|🚩|⚠️)\s)", re.M)
-FORK_TAIL = 1200
+# Потолок куска, если после развилки нет ни раздела, ни следующей развилки.
+# Прежние 1200 знаков резали длинную карточку до второго варианта (ревью 26.09).
+FORK_TAIL = 4000
 BACKREF = re.compile(r"(прежн\w+ развилк|вопрос за тобой прежний|как писал выше|"
                      r"развилка (?:всё ещё|по-прежнему)|та же развилка|ранее предлагал)", re.I)
 # Служебные вставки харнесса приезжают в роли user, но пишет их не Антон.
@@ -131,7 +136,11 @@ def fork_blocks(text: str) -> list[str]:
     Упоминание значка («развилка без маркера 🗳 не попадает») развилкой не
     считается; правило общее с хуком записи решений.
     """
-    return [_fork_block(text, i) for i in decision_health.fork_positions(text)]
+    # Значок на строке-варианте («🗳️ **(б)** …») продолжает ту же развилку, а
+    # не начинает новую: так выглядит карточка, где значок стоит у каждого варианта.
+    starts = [at for i, at in enumerate(decision_health.fork_positions(text))
+              if i == 0 or not OPTION_LINE.match(_line_at(text, at))]
+    return [_fork_block(text, at, nxt) for at, nxt in zip(starts, starts[1:] + [None])]
 
 
 def count_options(block: str) -> int:
@@ -148,7 +157,7 @@ def count_options(block: str) -> int:
         labels.add(next(g for g in m.groups() if g).lower())
     bold = [m.group(1).lower() for m in BOLD_BULLET.finditer(block)
             if "?" not in _line_at(block, m.start())]
-    if len(bold) >= 2:
+    if len(bold) >= 2 and ("?" in block or RECOMMEND.search(block)):
         labels.update(f"bullet:{b}" for b in bold)
     for m in INLINE_OPTION.finditer(block):
         labels.add(m.group(1).lower())
@@ -189,9 +198,14 @@ def lacks_advice(text: str) -> bool:
                for b in fork_blocks(text))
 
 
-def _fork_block(text: str, at: int) -> str:
-    """Текст самой развилки: от маркера до следующего раздела ответа."""
-    tail = text[at:at + FORK_TAIL]
+def _fork_block(text: str, at: int, next_fork: int | None = None) -> str:
+    """Текст самой развилки: от маркера до следующего раздела или развилки.
+
+    Без границы по следующей развилке первый вариант соседней карточки
+    доставался предыдущей (ревью 26.09).
+    """
+    stop = at + FORK_TAIL if next_fork is None else min(next_fork, at + FORK_TAIL)
+    tail = text[at:stop]
     end = SECTION.search(tail, 1)
     return tail[:end.start()] if end else tail
 

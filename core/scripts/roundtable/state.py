@@ -48,14 +48,10 @@ LOCK = "lock"
 # `submit-framing-decision` are meaningless pointed at nothing: a decision
 # with no issue or framing to attach to has no addressee (Б1-5). This list is
 # not read from a table: no table field for "which operations need a target"
-# exists yet, and `vocabulary.yaml` is out of this block's write scope.
+# exists yet, and `vocabulary.yaml` is out of this block's write scope. A
+# known boundary, not a fix — a block that owns the vocabulary should absorb
+# this list into it.
 OPERATIONS_REQUIRING_TARGET = ("submit-decision", "submit-framing-decision")
-
-# The token that proves a `RunStore` came out of `open_run` (Б1-6). A bare
-# `RunStore(directory)` still loads fine — reading needs no lock — but every
-# method that appends to the journal refuses unless it was handed this
-# token, so a mutating handle cannot be obtained by skipping `open_run`.
-_LIVE = object()
 
 
 class StateError(Exception):
@@ -103,6 +99,7 @@ class RunLock:
     def __init__(self, directory: Path):
         self.path = Path(directory) / LOCK
         self._handle = None
+        self._held = False
 
     def __enter__(self) -> "RunLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,14 +116,28 @@ class RunLock:
         self._handle.truncate()
         self._handle.write(f"{os.getpid()} {_now()}\n")
         self._handle.flush()
+        self._held = True
         return self
 
     def __exit__(self, *exc_info):
+        self._held = False
         if self._handle is not None:
             fcntl.flock(self._handle, fcntl.LOCK_UN)
             self._handle.close()
             self._handle = None
         return False
+
+    def is_held(self) -> bool:
+        """Whether *this* instance currently holds the lock (review #14, Б1-6).
+
+        Asked at call time, not cached: a `RunStore` that outlived its
+        `with open_run(...)` block must lose write access the moment the
+        block exits, and a store that never got a lock at all (a no-budget
+        operation) must never have had it in the first place. Checking where
+        the store came from proved neither of those — only asking the lock
+        itself, right now, does.
+        """
+        return self._held
 
 
 # --------------------------------------------------------------------------
@@ -235,55 +246,97 @@ class RunState:
 class RunStore:
     """One run directory: append, fold, and hand back the state."""
 
-    def __init__(self, directory: Path, tables=None, *, _token=None):
+    def __init__(self, directory: Path, tables=None, *, _lock: "RunLock | None" = None):
         self.directory = Path(directory)
         self.tables = tables or tables_module.load()
         self.journal_path = self.directory / JOURNAL
         self.snapshot_path = self.directory / SNAPSHOT
-        self._live = _token is _LIVE
+        self._lock = _lock
 
     def _require_live(self, what: str) -> None:
-        """Refuse a mutation unless this handle came out of `open_run` (Б1-6).
+        """Refuse a mutation unless a currently held lock backs this handle (Б1-6).
 
-        R13-2: every one of these methods used to be reachable on a bare
-        `RunStore(directory)` — the lock `open_run` takes was then only ever
-        a convention, not something the store itself enforced.
+        Review #14 (R26-1..3): checking *where the store came from* let three
+        different holes through — a no-budget operation (`precheck` etc.)
+        handed out a "live" store despite never taking a lock; a leaked
+        reference kept writing after its `with open_run(...)` block had
+        already exited; `create()` wrote unguarded, outside any lock at all.
+        Asking the lock itself whether it is held *right now* closes all
+        three: no lock at all, and a lock already released, both say no.
         """
-        if not self._live:
+        if self._lock is None or not self._lock.is_held():
             raise StateError(
-                f"{what}: изменяющий RunStore получают только через open_run")
+                f"{what}: изменяющий RunStore получают только под держимой блокировкой (open_run)")
 
     # -- durability ---------------------------------------------------------
-    def _truncate_torn_tail(self) -> None:
-        """Drop a torn last line from disk before writing onto the file (§Б1-7).
+    def _repair_tail(self) -> None:
+        """Make the journal end in a terminated line before writing onto it (§Б1-7).
 
-        A read tolerates a torn tail in place (`_entries`), but a write must
-        not build on top of it: appending straight onto it would glue the
-        new entry onto the broken one, and appending after a bare newline
-        would leave the torn fragment sitting as a *middle* line forever —
-        which the strict reader then refuses forever (R12-2). The only way
-        the file stays parseable across a resumed write is if the torn tail
-        never survives contact with one.
+        The bytes after the last `\\n` fall into exactly three shapes, told
+        apart without ever decoding the whole file at once:
+
+        * empty — the file already ends with `\\n`; untouched;
+        * decode as UTF-8 and parse as one complete JSON object, just missing
+          the terminator — the process died between the `write()` that
+          reported success and the following `\\n` landing on disk (review
+          #14 finding 2). That record already looked like success to its
+          caller; dropping it as "torn" would be a silent loss, so it is kept
+          and only terminated;
+        * anything else — bytes that do not even decode as UTF-8 (a crash mid
+          a multi-byte character, finding 1) or that are not valid JSON — is
+          a genuinely unfinished write and is dropped.
+
+        The repair itself is a temp file next to the journal, fsync'd, then
+        `os.replace` over the original — the same shape `_write_snapshot`
+        already uses. The previous version opened the journal in `"w"` mode,
+        which truncates it to zero bytes before a single repaired byte is
+        written; a second crash in that window erased every entry that was
+        already durable (finding 3).
         """
         if not self.journal_path.exists():
             return
-        text = self.journal_path.read_text(encoding="utf-8")
-        lines = text.splitlines()
-        if not lines:
+        raw = self.journal_path.read_bytes()
+        if not raw or raw.endswith(b"\n"):
             return
+
+        if b"\n" in raw:
+            head, tail = raw.rsplit(b"\n", 1)
+            head += b"\n"
+        else:
+            head, tail = b"", raw
+
         try:
-            json.loads(lines[-1])
-        except json.JSONDecodeError:
-            good = "".join(line + "\n" for line in lines[:-1])
-            with open(self.journal_path, "w", encoding="utf-8") as handle:
-                handle.write(good)
+            json.loads(tail.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            repaired = head                                   # genuinely torn — dropped
+        else:
+            repaired = raw + b"\n"                             # complete, just unterminated
+
+        if repaired == raw:
+            return
+        fd, tmp_name = tempfile.mkstemp(dir=self.directory, prefix=".journal-")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(repaired)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.replace(tmp_name, self.journal_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+        directory_fd = os.open(self.directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     def _append(self, entry: dict) -> dict:
         """Append one journal entry and get it onto the disk before returning."""
         self.directory.mkdir(parents=True, exist_ok=True)
-        self._truncate_torn_tail()
+        self._repair_tail()
         entry = {"seq": self._next_seq(), "at": _now(), **entry}
         line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
         with open(self.journal_path, "a", encoding="utf-8") as handle:
@@ -298,21 +351,30 @@ class RunStore:
     def _entries(self) -> list:
         """Read the journal, ignoring a torn final line.
 
-        A crash mid-write leaves a partial last line. Only the *last* line may
-        be dropped: a broken line anywhere else means the file was damaged by
-        something other than a crash, and quietly skipping it would silently
-        lose a rule-bearing event.
+        Bytes, decoded line by line — not the whole file at once. Decoding
+        the whole file in one call turned a crash mid a multi-byte character
+        (e.g. a Cyrillic letter cut in half) into an uncaught
+        `UnicodeDecodeError` that buried an otherwise intact run (review #14
+        finding 1). Only the *last* line may be dropped this way: a broken
+        line anywhere else means the file was damaged by something other
+        than a crash, and quietly skipping it would silently lose a
+        rule-bearing event.
         """
         if not self.journal_path.exists():
             return []
-        lines = self.journal_path.read_text(encoding="utf-8").splitlines()
+        raw = self.journal_path.read_bytes()
+        if not raw:
+            return []
+        lines = raw.split(b"\n")
+        if lines[-1] == b"":
+            lines = lines[:-1]
         entries = []
-        for index, line in enumerate(lines):
-            if not line.strip():
+        for index, raw_line in enumerate(lines):
+            if not raw_line.strip():
                 continue
             try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
+                entries.append(json.loads(raw_line.decode("utf-8")))
+            except (UnicodeDecodeError, json.JSONDecodeError):
                 if index == len(lines) - 1:
                     break  # torn tail from a kill -9 — the write never completed
                 raise StateError(f"{self.journal_path}: повреждена строка {index + 1}")
@@ -403,15 +465,27 @@ class RunStore:
 
     # -- the operations -----------------------------------------------------
     def create(self, run_id: str, stage: str) -> RunState:
-        if self.journal_path.exists() and self._entries():
-            raise StateError(f"{self.directory}: прогон уже создан")
+        """Bootstrap a run's journal.
+
+        There is no `create` entry in the operation vocabulary — the run
+        does not exist yet, so `open_run` has nothing to look up a lock
+        rule for. That does not make it safe unlocked: review #14 finding 6
+        raced two `create()` calls and got two `run_created` entries, which
+        `_fold` has no branch for — `load()` then refuses forever with
+        "неизвестная запись журнала: 'run_created'". The check and the first
+        append happen inside one dedicated lock instead, the same
+        exclusivity every other write gets through `open_run`.
+        """
         stages = set(self.tables.vocabulary["стадии"]["в_MVP"]) | set(
             self.tables.vocabulary["стадии"]["вне_MVP"])
         if stage not in stages:
             raise StateError(f"неизвестная стадия {stage!r}")
-        self._append({"kind": "run_created", "run_id": run_id, "stage": stage})
-        state = self.load()
-        self._write_snapshot(state)
+        with RunLock(self.directory):
+            if self.journal_path.exists() and self._entries():
+                raise StateError(f"{self.directory}: прогон уже создан")
+            self._append({"kind": "run_created", "run_id": run_id, "stage": stage})
+            state = self.load()
+            self._write_snapshot(state)
         return state
 
     def submit(self, operation: str, conditions: dict | None = None,
@@ -433,7 +507,11 @@ class RunStore:
         self._require_live("submit")
         if operation not in self.tables.vocabulary["операции"]:
             raise StateError(f"неизвестная операция {operation!r}")
-        if operation in OPERATIONS_REQUIRING_TARGET and target_kind is None:
+        if operation in OPERATIONS_REQUIRING_TARGET and (
+                target_kind is None or not (target_id or "").strip()):
+            # review #14 finding 7: `target_kind is None` alone let an empty
+            # or whitespace-only `target_id` through as if it named a real
+            # issue or framing — a decision recorded against nothing.
             raise StateError(f"{operation!r} без цели (вид_цели/ID_цели) — отказ (Б1-5)")
         state = self.load()
         key = self.operation_key(state, operation, target_kind, target_id)
@@ -680,7 +758,10 @@ class open_run:
     def __enter__(self) -> RunStore:
         if self._lock is not None:
             self._lock.__enter__()
-        return RunStore(self.directory, self.tables, _token=_LIVE)
+        # A no-budget operation passes `_lock=None` on: the returned store is
+        # then a read-only handle, never a "live" one — closing review #14
+        # finding 4, where these three used to get write access for free.
+        return RunStore(self.directory, self.tables, _lock=self._lock)
 
     def __exit__(self, *exc_info):
         if self._lock is not None:

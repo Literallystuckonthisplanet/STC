@@ -129,6 +129,13 @@ def scan_session(path: Path, since: datetime | None):
             if since and ts and ts < since:
                 continue
             first = len(events)       # события этой записи получат её uuid ниже
+            # Одна запись лежит в нескольких файлах архива (копии resume/fork).
+            # Ключ события — uuid записи и номер события в ней: ревью 25.09
+            # показало, что оригинал и копия давали два срабатывания вместо одного.
+            # Без uuid (старые записи, выгрузки) — сессия плюс время записи.
+            uid = obj.get("uuid") or (
+                f"{obj.get('sessionId')}|{obj.get('timestamp')}"
+                if obj.get("sessionId") and obj.get("timestamp") else None)
 
             # ненавязчивая подсказка: attachment с hookName
             hook_name = obj.get("hookName") or (obj.get("attachment") or {}).get("hookName")
@@ -138,6 +145,9 @@ def scan_session(path: Path, since: datetime | None):
 
             msg = obj.get("message")
             if not isinstance(msg, dict):
+                # Подсказка приходит вложением без message — ключ ей тоже нужен,
+                # иначе копии считаются дважды (ревью 26.09, вторая волна).
+                _stamp(events, first, uid)
                 continue
             content = msg.get("content")
 
@@ -180,16 +190,13 @@ def scan_session(path: Path, since: datetime | None):
                     "hook": _hook_name(m.group("path")),
                     "ts": ts,
                 })
-            # Одна запись лежит в нескольких файлах архива (копии resume/fork).
-            # Ключ события — uuid записи и номер события в ней: ревью 25.09
-            # показало, что оригинал и копия давали два срабатывания вместо одного.
-            # Без uuid (старые записи, выгрузки) — сессия плюс время записи.
-            uid = obj.get("uuid") or (
-                f"{obj.get('sessionId')}|{obj.get('timestamp')}"
-                if obj.get("sessionId") and obj.get("timestamp") else None)
-            for n, ev in enumerate(events[first:]):
-                ev["uid"] = f"{uid}#{n}" if uid else None
+            _stamp(events, first, uid)
     return events
+
+
+def _stamp(events: list, first: int, uid: str | None) -> None:
+    for n, ev in enumerate(events[first:]):
+        ev["uid"] = f"{uid}#{n}" if uid else None
 
 
 def health(raw_root: Path, since: datetime | None, codes: dict | None = None):
@@ -201,7 +208,9 @@ def health(raw_root: Path, since: datetime | None, codes: dict | None = None):
     sessions = files = 0
     counted: set[str] = set()
 
-    for path in sorted(raw_root.rglob("*.jsonl")):
+    # Самая полная копия — первой: короткая обрывается на блокировке, и повтор
+    # после неё терялся или находился в зависимости от имён файлов (ревью 26.09).
+    for path in sorted(raw_root.rglob("*.jsonl"), key=lambda f: (-f.stat().st_size, str(f))):
         files += 1
         events = scan_session(path, since)
         if not events:

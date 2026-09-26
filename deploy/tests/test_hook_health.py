@@ -248,3 +248,30 @@ def test_copies_without_uuid_are_matched_by_session_and_time(tmp_path):
     _write(tmp_path, "copy.jsonl", lines)
     res = hook_health.health(tmp_path, None, {"graphify-first": "H18"})
     assert res["fired"] == {"graphify-first (H18)": 1}
+
+
+def test_the_order_of_archive_copies_does_not_hide_a_blind_repeat(tmp_path):
+    """Короткая копия кончается блокировкой, полная — ещё и слепым повтором.
+    Итог не должен зависеть от имён файлов (ревью 26.09, вторая волна)."""
+    def rec(line, uid):
+        obj = json.loads(line)
+        obj["uuid"] = uid
+        return json.dumps(obj, ensure_ascii=False)
+    short = [rec(_call("ls"), "u1"), rec(_block(), "u2")]
+    full = short + [rec(_call("ls", ts="2026-08-01T10:00:03Z"), "u3")]
+    for first in ("a", "z"):
+        d = tmp_path / first
+        d.mkdir()
+        _write(d, f"{first}-short.jsonl", short)
+        _write(d, "m-full.jsonl", full)
+        res = hook_health.health(d, None, {"graphify-first": "H18"})
+        assert res["blind"] == {"graphify-first (H18)": 1}, first
+
+
+def test_an_advice_attachment_in_two_copies_counts_once(tmp_path):
+    """Подсказка приходит вложением без message и уходила из-под сведения копий."""
+    line = _line({"type": "attachment", "uuid": "a1", "timestamp": "2026-08-01T10:00:00Z",
+                  "attachment": {"type": "hook_success", "hookName": "PreToolUse:Bash"}})
+    _write(tmp_path, "original.jsonl", [line])
+    _write(tmp_path, "copy.jsonl", [line])
+    assert hook_health.health(tmp_path, None, {})["advice"] == {"Bash": 1}

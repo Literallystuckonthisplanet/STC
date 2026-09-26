@@ -23,7 +23,6 @@ is *when* an operation is a repeat, a conflict or a revocation (§7.1).
 
 from __future__ import annotations
 
-import base64
 import errno
 import fcntl
 import hashlib
@@ -42,16 +41,6 @@ RUNS_ROOT = Path.home() / ".stc" / "roundtable" / "runs"
 JOURNAL = "journal.jsonl"
 SNAPSHOT = "run.json"
 LOCK = "lock"
-
-# Operations that require a target — §7.1's key names "вид_цели / ID_цели",
-# but nothing forces a caller to actually supply one. `submit-decision` and
-# `submit-framing-decision` are meaningless pointed at nothing: a decision
-# with no issue or framing to attach to has no addressee (Б1-5). This list is
-# not read from a table: no table field for "which operations need a target"
-# exists yet, and `vocabulary.yaml` is out of this block's write scope. A
-# known boundary, not a fix — a block that owns the vocabulary should absorb
-# this list into it.
-OPERATIONS_REQUIRING_TARGET = ("submit-decision", "submit-framing-decision")
 
 
 class StateError(Exception):
@@ -99,7 +88,6 @@ class RunLock:
     def __init__(self, directory: Path):
         self.path = Path(directory) / LOCK
         self._handle = None
-        self._held = False
 
     def __enter__(self) -> "RunLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -116,28 +104,14 @@ class RunLock:
         self._handle.truncate()
         self._handle.write(f"{os.getpid()} {_now()}\n")
         self._handle.flush()
-        self._held = True
         return self
 
     def __exit__(self, *exc_info):
-        self._held = False
         if self._handle is not None:
             fcntl.flock(self._handle, fcntl.LOCK_UN)
             self._handle.close()
             self._handle = None
         return False
-
-    def is_held(self) -> bool:
-        """Whether *this* instance currently holds the lock (review #14, Б1-6).
-
-        Asked at call time, not cached: a `RunStore` that outlived its
-        `with open_run(...)` block must lose write access the moment the
-        block exits, and a store that never got a lock at all (a no-budget
-        operation) must never have had it in the first place. Checking where
-        the store came from proved neither of those — only asking the lock
-        itself, right now, does.
-        """
-        return self._held
 
 
 # --------------------------------------------------------------------------
@@ -159,25 +133,6 @@ class Operation:
     @property
     def moved_the_run(self) -> bool:
         return bool(self.outcome and self.outcome.get("moved"))
-
-
-@dataclass(frozen=True)
-class IdeaCandidate:
-    """One idea card as handed into a run (§Б1-8..10).
-
-    The record owns its own bytes — embedded, not referenced by path. A file
-    that changed or vanished between the assignment and a crash-and-reload
-    must not change what a resumed run holds; only what is inside the
-    journal entry can be trusted to come back byte for byte.
-    """
-
-    candidate_id: str
-    source: str
-    canonical_bytes: bytes
-
-    def blind(self) -> dict:
-        """The anonymised projection (§Б1-10): `source` never leaves here."""
-        return {"candidate_id": self.candidate_id, "canonical_bytes": self.canonical_bytes}
 
 
 @dataclass(frozen=True)
@@ -205,8 +160,6 @@ class RunState:
     linked_runs: list = field(default_factory=list)
     published: bool = False
     created_at: str = ""
-    idea_candidates: tuple = ()
-    idea_candidates_permutation: tuple = ()
 
     def as_dict(self) -> dict:
         return {
@@ -219,12 +172,6 @@ class RunState:
             "linked_runs": list(self.linked_runs),
             "published": self.published,
             "created_at": self.created_at,
-            "idea_candidates": [
-                {"candidate_id": c.candidate_id, "source": c.source,
-                 "canonical_bytes_b64": base64.b64encode(c.canonical_bytes).decode("ascii")}
-                for c in self.idea_candidates
-            ],
-            "idea_candidates_permutation": list(self.idea_candidates_permutation),
             "operations": [
                 {"operation_id": o.operation_id, "key": list(o.key),
                  "input_hash": o.input_hash, "outcome": o.outcome,
@@ -246,97 +193,16 @@ class RunState:
 class RunStore:
     """One run directory: append, fold, and hand back the state."""
 
-    def __init__(self, directory: Path, tables=None, *, _lock: "RunLock | None" = None):
+    def __init__(self, directory: Path, tables=None):
         self.directory = Path(directory)
         self.tables = tables or tables_module.load()
         self.journal_path = self.directory / JOURNAL
         self.snapshot_path = self.directory / SNAPSHOT
-        self._lock = _lock
-
-    def _require_live(self, what: str) -> None:
-        """Refuse a mutation unless a currently held lock backs this handle (Б1-6).
-
-        Review #14 (R26-1..3): checking *where the store came from* let three
-        different holes through — a no-budget operation (`precheck` etc.)
-        handed out a "live" store despite never taking a lock; a leaked
-        reference kept writing after its `with open_run(...)` block had
-        already exited; `create()` wrote unguarded, outside any lock at all.
-        Asking the lock itself whether it is held *right now* closes all
-        three: no lock at all, and a lock already released, both say no.
-        """
-        if self._lock is None or not self._lock.is_held():
-            raise StateError(
-                f"{what}: изменяющий RunStore получают только под держимой блокировкой (open_run)")
 
     # -- durability ---------------------------------------------------------
-    def _repair_tail(self) -> None:
-        """Make the journal end in a terminated line before writing onto it (§Б1-7).
-
-        The bytes after the last `\\n` fall into exactly three shapes, told
-        apart without ever decoding the whole file at once:
-
-        * empty — the file already ends with `\\n`; untouched;
-        * decode as UTF-8 and parse as one complete JSON object, just missing
-          the terminator — the process died between the `write()` that
-          reported success and the following `\\n` landing on disk (review
-          #14 finding 2). That record already looked like success to its
-          caller; dropping it as "torn" would be a silent loss, so it is kept
-          and only terminated;
-        * anything else — bytes that do not even decode as UTF-8 (a crash mid
-          a multi-byte character, finding 1) or that are not valid JSON — is
-          a genuinely unfinished write and is dropped.
-
-        The repair itself is a temp file next to the journal, fsync'd, then
-        `os.replace` over the original — the same shape `_write_snapshot`
-        already uses. The previous version opened the journal in `"w"` mode,
-        which truncates it to zero bytes before a single repaired byte is
-        written; a second crash in that window erased every entry that was
-        already durable (finding 3).
-        """
-        if not self.journal_path.exists():
-            return
-        raw = self.journal_path.read_bytes()
-        if not raw or raw.endswith(b"\n"):
-            return
-
-        if b"\n" in raw:
-            head, tail = raw.rsplit(b"\n", 1)
-            head += b"\n"
-        else:
-            head, tail = b"", raw
-
-        try:
-            json.loads(tail.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            repaired = head                                   # genuinely torn — dropped
-        else:
-            repaired = raw + b"\n"                             # complete, just unterminated
-
-        if repaired == raw:
-            return
-        fd, tmp_name = tempfile.mkstemp(dir=self.directory, prefix=".journal-")
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(repaired)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_name, self.journal_path)
-        except BaseException:
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
-        directory_fd = os.open(self.directory, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-
     def _append(self, entry: dict) -> dict:
         """Append one journal entry and get it onto the disk before returning."""
         self.directory.mkdir(parents=True, exist_ok=True)
-        self._repair_tail()
         entry = {"seq": self._next_seq(), "at": _now(), **entry}
         line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
         with open(self.journal_path, "a", encoding="utf-8") as handle:
@@ -351,30 +217,21 @@ class RunStore:
     def _entries(self) -> list:
         """Read the journal, ignoring a torn final line.
 
-        Bytes, decoded line by line — not the whole file at once. Decoding
-        the whole file in one call turned a crash mid a multi-byte character
-        (e.g. a Cyrillic letter cut in half) into an uncaught
-        `UnicodeDecodeError` that buried an otherwise intact run (review #14
-        finding 1). Only the *last* line may be dropped this way: a broken
-        line anywhere else means the file was damaged by something other
-        than a crash, and quietly skipping it would silently lose a
-        rule-bearing event.
+        A crash mid-write leaves a partial last line. Only the *last* line may
+        be dropped: a broken line anywhere else means the file was damaged by
+        something other than a crash, and quietly skipping it would silently
+        lose a rule-bearing event.
         """
         if not self.journal_path.exists():
             return []
-        raw = self.journal_path.read_bytes()
-        if not raw:
-            return []
-        lines = raw.split(b"\n")
-        if lines[-1] == b"":
-            lines = lines[:-1]
+        lines = self.journal_path.read_text(encoding="utf-8").splitlines()
         entries = []
-        for index, raw_line in enumerate(lines):
-            if not raw_line.strip():
+        for index, line in enumerate(lines):
+            if not line.strip():
                 continue
             try:
-                entries.append(json.loads(raw_line.decode("utf-8")))
-            except (UnicodeDecodeError, json.JSONDecodeError):
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
                 if index == len(lines) - 1:
                     break  # torn tail from a kill -9 — the write never completed
                 raise StateError(f"{self.journal_path}: повреждена строка {index + 1}")
@@ -441,12 +298,6 @@ class RunStore:
             state.published = True
         elif kind == "linked_run":
             state.linked_runs.append(entry["run_id"])
-        elif kind == "idea_candidates_assigned":
-            state.idea_candidates = tuple(
-                IdeaCandidate(candidate_id=c["candidate_id"], source=c["source"],
-                              canonical_bytes=base64.b64decode(c["canonical_bytes_b64"]))
-                for c in entry["candidates"])
-            state.idea_candidates_permutation = tuple(entry["permutation"])
         else:
             raise StateError(f"неизвестная запись журнала: {kind!r}")
 
@@ -465,27 +316,15 @@ class RunStore:
 
     # -- the operations -----------------------------------------------------
     def create(self, run_id: str, stage: str) -> RunState:
-        """Bootstrap a run's journal.
-
-        There is no `create` entry in the operation vocabulary — the run
-        does not exist yet, so `open_run` has nothing to look up a lock
-        rule for. That does not make it safe unlocked: review #14 finding 6
-        raced two `create()` calls and got two `run_created` entries, which
-        `_fold` has no branch for — `load()` then refuses forever with
-        "неизвестная запись журнала: 'run_created'". The check and the first
-        append happen inside one dedicated lock instead, the same
-        exclusivity every other write gets through `open_run`.
-        """
+        if self.journal_path.exists() and self._entries():
+            raise StateError(f"{self.directory}: прогон уже создан")
         stages = set(self.tables.vocabulary["стадии"]["в_MVP"]) | set(
             self.tables.vocabulary["стадии"]["вне_MVP"])
         if stage not in stages:
             raise StateError(f"неизвестная стадия {stage!r}")
-        with RunLock(self.directory):
-            if self.journal_path.exists() and self._entries():
-                raise StateError(f"{self.directory}: прогон уже создан")
-            self._append({"kind": "run_created", "run_id": run_id, "stage": stage})
-            state = self.load()
-            self._write_snapshot(state)
+        self._append({"kind": "run_created", "run_id": run_id, "stage": stage})
+        state = self.load()
+        self._write_snapshot(state)
         return state
 
     def submit(self, operation: str, conditions: dict | None = None,
@@ -497,28 +336,12 @@ class RunStore:
         back, no round is created and no budget is spent. Same key, different
         hash → `КОНФЛИКТ_ВХОДА`; replaying it needs an explicit
         `revoke-operation`, which stays visible in the history.
-
-        The hash covers the operation, the conditions, the target and the
-        body together (§Б1-2) — not the body alone. `conditions` drives the
-        table transition and is not stored in `body`; hashing only the body
-        let a second, differently-decided call under the same key through as
-        a silent "repeat" of the first (R12-3).
         """
-        self._require_live("submit")
         if operation not in self.tables.vocabulary["операции"]:
             raise StateError(f"неизвестная операция {operation!r}")
-        if operation in OPERATIONS_REQUIRING_TARGET and (
-                target_kind is None or not (target_id or "").strip()):
-            # review #14 finding 7: `target_kind is None` alone let an empty
-            # or whitespace-only `target_id` through as if it named a real
-            # issue or framing — a decision recorded against nothing.
-            raise StateError(f"{operation!r} без цели (вид_цели/ID_цели) — отказ (Б1-5)")
         state = self.load()
         key = self.operation_key(state, operation, target_kind, target_id)
-        input_hash = canonical_hash({
-            "operation": operation, "conditions": conditions or {},
-            "target_kind": target_kind, "target_id": target_id, "body": body,
-        })
+        input_hash = canonical_hash(body)
 
         for previous in state.operations:
             if previous.key != key or previous.revoked:
@@ -544,7 +367,6 @@ class RunStore:
         does not apply and they carry no key. They still move the run through
         the same table.
         """
-        self._require_live("record_event")
         if event in self.tables.vocabulary["операции"]:
             raise StateError(f"{event!r} — операция, ей нужен submit с ключом повтора")
         state = self.load()
@@ -585,7 +407,6 @@ class RunStore:
         Which events count as dependent is data: `run.yaml → revoke_operation`.
         Everything else is a compensating record — the history is not rewritten.
         """
-        self._require_live("revoke")
         rules = self.tables.run["revoke_operation"]
         state = self.load()
         entries = self._entries()
@@ -623,7 +444,6 @@ class RunStore:
     def record_attempt(self, stage: str, round_number: int, critic: str, attempt: int,
                        status: str, possible_duplicate: bool = False) -> Attempt:
         """Move one attempt along the states declared in the vocabulary (§8.1)."""
-        self._require_live("record_attempt")
         spec = self.tables.vocabulary["попытка"]
         order = spec["состояния"]
         if status not in order:
@@ -647,7 +467,6 @@ class RunStore:
         §8.1: "never call a critic twice" is unachievable, so the uncertainty is
         flagged and travels into the protocol rather than being papered over.
         """
-        self._require_live("mark_possible_duplicate")
         spec = self.tables.vocabulary["попытка"]
         state = self.load()
         key = (state.run_id, stage, round_number, critic, attempt)
@@ -660,63 +479,13 @@ class RunStore:
         self._write_snapshot(self.load())
 
     def start_round(self, number: int) -> RunState:
-        self._require_live("start_round")
         self._append({"kind": "round_started", "round": number})
         state = self.load()
         self._write_snapshot(state)
         return state
 
     def set_flag(self, flag: str, on: bool = True) -> RunState:
-        self._require_live("set_flag")
         self._append({"kind": "flag", "flag": flag, "on": on})
-        state = self.load()
-        self._write_snapshot(state)
-        return state
-
-    # -- idea candidates ------------------------------------------------------
-    def assign_idea_candidates(self, candidates: list[IdeaCandidate],
-                               permutation: list[int] | None = None) -> RunState:
-        """Assign the run's idea cards, once (§Б1-8, Б1-9, Б1-10).
-
-        The journal entry embeds each card's `source`, the display
-        `permutation` and its own canonical bytes — nothing is read back from
-        outside the journal, so a crash-and-reload restores the same cards,
-        the same IDs and the same order byte for byte. A second assignment of
-        a *different* set is a conflict, the same shape `submit` uses for a
-        repeated operation (§7.1); this one carries no operation key because
-        nobody submits it directly — the caller already holds the lock for
-        whatever operation triggered it.
-        """
-        self._require_live("assign_idea_candidates")
-        if not candidates:
-            raise StateError("набор карточек идеи не может быть пустым")
-        ids = [c.candidate_id for c in candidates]
-        if len(set(ids)) != len(ids):
-            raise StateError(f"повторяющиеся ID карточек идеи: {ids}")
-        permutation = list(permutation) if permutation is not None else list(range(len(candidates)))
-        if sorted(permutation) != list(range(len(candidates))):
-            raise StateError(
-                f"перестановка {permutation} не соответствует набору из {len(candidates)} карточек")
-
-        payload = [
-            {"candidate_id": c.candidate_id, "source": c.source,
-             "canonical_bytes_b64": base64.b64encode(c.canonical_bytes).decode("ascii")}
-            for c in candidates]
-
-        state = self.load()
-        if state.idea_candidates:
-            existing = [
-                {"candidate_id": c.candidate_id, "source": c.source,
-                 "canonical_bytes_b64": base64.b64encode(c.canonical_bytes).decode("ascii")}
-                for c in state.idea_candidates]
-            if existing == payload and list(state.idea_candidates_permutation) == permutation:
-                return state                                  # идемпотентный повтор
-            raise Refusal(
-                "КОНФЛИКТ_ВХОДА",
-                "карточки идеи уже назначены другим набором; повторное назначение отвергнуто (Б1-10)")
-
-        self._append({"kind": "idea_candidates_assigned", "candidates": payload,
-                      "permutation": permutation})
         state = self.load()
         self._write_snapshot(state)
         return state
@@ -758,10 +527,7 @@ class open_run:
     def __enter__(self) -> RunStore:
         if self._lock is not None:
             self._lock.__enter__()
-        # A no-budget operation passes `_lock=None` on: the returned store is
-        # then a read-only handle, never a "live" one — closing review #14
-        # finding 4, where these three used to get write access for free.
-        return RunStore(self.directory, self.tables, _lock=self._lock)
+        return RunStore(self.directory, self.tables)
 
     def __exit__(self, *exc_info):
         if self._lock is not None:

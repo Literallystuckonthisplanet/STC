@@ -84,6 +84,23 @@ def test_scan_counts_shares_by_month(tmp_path):
     assert row["anton_msgs"] == 2 and row["confused"] == 1
 
 
+
+def test_until_cuts_the_period_but_not_the_freshness_line(tmp_path):
+    """База «до» и замер «после» считаются одним счётчиком по одному архиву.
+
+    Ревью 26.09: база в задаче на 08.10 была посчитана прошлой версией
+    счётчика по прошлому срезу архива, и сравнение было бы нечестным.
+    Строка свежести по-прежнему смотрит на весь архив.
+    """
+    raw = tmp_path / "claude"
+    _write(raw, [
+        _assistant("до внедрения", stamp="2026-09-24T23:59:00Z", uuid="a"),
+        _assistant("в день внедрения", stamp="2026-09-25T00:01:00Z", uuid="b"),
+    ])
+    months = AH.scan(raw, since=None, strict=False, until="2026-09-25")
+    assert months["2026-09"]["answers"] == 1
+    assert months["_newest"]["claude"].startswith("2026-09-25")
+
 def test_section_after_the_fork_is_not_its_options(tmp_path):
     """«Нужно решение» + раздел «Сделано» с нумерацией — развилка всё равно слепая."""
     text = "🗳️ Нужно твоё решение.\n\n## ✅ Сделано\n1. первое\n2. второе"

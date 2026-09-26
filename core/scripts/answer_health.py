@@ -276,8 +276,13 @@ READERS = {"claude": _read_claude, "codex": _read_codex}
 
 
 def scan(raw_dir: Path, since: str | None, strict: bool,
-         harness: str = "claude", months: dict | None = None) -> dict:
-    """Доли по месяцам. `months` можно передать, чтобы слить два харнесса."""
+         harness: str = "claude", months: dict | None = None,
+         until: str | None = None) -> dict:
+    """Доли по месяцам. `months` можно передать, чтобы слить два харнесса.
+
+    `until` — дата, с которой записи уже не считаются: база «до» и замер
+    «после» считаются одним счётчиком по одному архиву (ревью 26.09).
+    """
     months = {} if months is None else months
     read = READERS[harness]
     seen: set = set()
@@ -295,6 +300,8 @@ def scan(raw_dir: Path, since: str | None, strict: bool,
             if stamp > newest.get(harness, ""):
                 newest[harness] = stamp
             if since and stamp[:10] < since:
+                continue
+            if until and stamp[:10] >= until:
                 continue
             parsed = read(rec, strict)
             if parsed is None:
@@ -339,6 +346,7 @@ def main() -> int:
     parser.add_argument("--harness", choices=HARNESSES, action="append",
                         help="по умолчанию оба")
     parser.add_argument("--since", help="YYYY-MM-DD, включительно")
+    parser.add_argument("--until", help="YYYY-MM-DD, не включая: для базы «до»")
     parser.add_argument("--strict", action="store_true",
                         help="только реплики с origin.kind=human (свежие сессии Claude)")
     parser.add_argument("--json", action="store_true")
@@ -352,7 +360,8 @@ def main() -> int:
         if not raw.is_dir():
             print(f"пропущен {harness}: нет каталога {raw}", file=sys.stderr)
             continue
-        scan(raw, args.since, args.strict, harness=harness, months=months)
+        scan(raw, args.since, args.strict, harness=harness, months=months,
+             until=args.until)
         scanned.append(harness)
     if not scanned:
         print(f"нет каталогов транскриптов в {args.raw_root}", file=sys.stderr)

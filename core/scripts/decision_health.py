@@ -120,14 +120,15 @@ STRONG_CUE = re.compile(
     # «Сужаем до отказов - это»: вариант повторён отдельной строкой с «это».
     r"|^[^\n?]{3,80}\s[—–-]\s*это\s*$",
     re.M)
-# Слабая: слово «вариант», порядковое («первый», «второе»), «п2», «оба». Она
-# означает выбор, только если человек ничего не спросил: «А что будет со
-# вторым?» — вопрос.
+# Слабая: «вариант 2» в середине фразы, порядковое («первый», «второе»), «п2»,
+# «оба». Она означает выбор только в утверждении, а не в вопросе: «А что будет
+# со вторым?» — вопрос. Голое слово «вариант» — не выбор: «объясни, чем
+# отличаются варианты» (ревью 26.09, вторая волна).
 # Одиночная буква в середине фразы — НЕ метка: «в» и «а» — предлог и союз, и
 # без этой оговорки «сохрани выводы в память» считалось выбором варианта «В».
 CHOICE_CUE = re.compile(
     STRONG_CUE.pattern
-    + r"|(?i:вариант)"
+    + r"|(?i:вариант)\s*(?:\d|[A-DА-Гa-dа-г])(?!\w)"
     r"|(?<!\w)(?i:перв|втор|трет)\w*"
     r"|(?<!\w)(?i:оба|обе)(?!\w)"
     r"|(?<!\w)(?i:п)\.?\s?\d",
@@ -136,6 +137,8 @@ CHOICE_CUE = re.compile(
 # развилку вставкой чужого ревью («посмотри ревью: <10 000 знаков>»), и «да» или
 # «Берём его» глубоко во вставке делали из просьбы выбор: 22 из 25 длинных
 # ответов в архиве на 26.09 так и классифицировались (ревью 26.09).
+# Предложение с концом: выбор и попутный вопрос судятся по отдельности.
+SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
 PASTED = re.compile(r"<pasted_content[^>]*>.*?(?:</pasted_content>|$)", re.S)
 HTML_NOTE = re.compile(r"<!--.*?-->", re.S)
 # Вставка целиком: начинается с кавычки или значка отчёта агента.
@@ -233,19 +236,28 @@ def reply_kind(reply: str, fork_text: str = "") -> str:
       другой теме»). Выбор ли это — видит только агент, читающий разговор;
       регулярка тут не судья. В долю не идёт ни с записью, ни без неё.
 
-    Судятся только собственные слова человека (`own_words`), а явная ссылка на
-    вариант проверяется раньше знака вопроса. `fork_text` — сама карточка:
-    по ней узнаётся выбор, названный словами варианта.
+    Судятся только собственные слова человека (`own_words`), а явная метка
+    варианта проверяется раньше знака вопроса. Остальные признаки выбора — по
+    предложениям: выбор в утверждении («Первый. Сколько времени займёт?») —
+    выбор, название варианта внутри вопроса («Почему советуешь Подключить
+    оплату сейчас?») — вопрос (ревью 26.09, вторая волна). `fork_text` — сама
+    карточка: по ней узнаётся выбор, названный словами варианта.
     """
     words = own_words(reply)
     if not words:
         return "unclear"
-    if STRONG_CUE.search(words) or (fork_text and names_option(words, fork_text)):
+    if STRONG_CUE.search(words):
         return "choice"
-    if "?" in words and not APPROVE.search(words):
+    parts = [m.group(0).strip() for m in SENTENCE.finditer(words) if m.group(0).strip()]
+    stated = [part for part in parts if not part.endswith("?")]
+    for part in stated:
+        if APPROVE.search(part) or CHOICE_CUE.search(part) \
+                or (fork_text and names_option(part, fork_text)):
+            return "choice"
+    if APPROVE.search(words):
+        return "choice"                 # «да, а сколько стоит?»
+    if len(stated) < len(parts) or "?" in words:
         return "question"
-    if APPROVE.search(words) or CHOICE_CUE.search(words):
-        return "choice"
     return "unclear"
 
 
@@ -295,9 +307,8 @@ def fork_turn_in_tail(lines: list[str], current_prompt: str = "") -> str:
     развилке (ревью 26.09: раньше она терялась). Поэтому вопрос перешагивается,
     и ход тянется до реплики человека, которая вопросом не была.
     """
-    texts: list[str] = []
-    skipped_current = False
-    for line in reversed(lines):
+    events: list[tuple[str, str]] = []
+    for line in lines:
         if '"message"' not in line and '"queued_command"' not in line:
             continue
         try:
@@ -306,21 +317,32 @@ def fork_turn_in_tail(lines: list[str], current_prompt: str = "") -> str:
             continue
         said = human_text(obj)
         if said is not None:
-            said = said.strip()
-            if (not texts and not skipped_current and current_prompt
-                    and said == current_prompt.strip()):
-                skipped_current = True
-                continue
-            if reply_kind(said) == "question":
-                continue
-            break
+            events.append(("human", said.strip()))
+            continue
         msg = obj.get("message")
         if isinstance(msg, dict) and msg.get("role") == "assistant":
             text = _text(msg.get("content"))
             if text.strip():
-                texts.append(text)
-    turn = "\n".join(reversed(texts))
-    return turn if presents_fork(turn) else ""
+                events.append(("assistant", text))
+    if current_prompt and events and events[-1] == ("human", current_prompt.strip()):
+        events.pop()
+    # Прямой проход тем же порядком, что `scan`: каждый старый ответ судится
+    # вместе со своей карточкой. Обратный проход судил его без карточки, и выбор
+    # названием варианта с попутным вопросом принимал за вопрос — сторож снова
+    # просил записать уже записанное (ревью 26.09, вторая волна).
+    turn: list[str] = []
+    carry = ""
+    for role, text in events:
+        if role == "assistant":
+            turn.append(text)
+            continue
+        fork_text = "\n".join(turn)
+        turn = []
+        if not presents_fork(fork_text):
+            fork_text = carry
+        carry = fork_text if fork_text and reply_kind(text, fork_text) == "question" else ""
+    last = "\n".join(turn)
+    return last if presents_fork(last) else carry
 
 
 def _text(content) -> str:
@@ -429,7 +451,9 @@ def scan(raw_root: Path, since: datetime | None):
     # та же развилка считается трижды: живой прогон давал 213 против 84
     # уникальных. Ключ — сессия плюс время ответа, как в `collect_corpus`.
     seen: set[tuple] = set()
-    for path in sorted(raw_root.rglob("*.jsonl")):
+    # Самая полная копия — первой: короткая копия того же разговора обрывается
+    # раньше записи, и итог зависел от имён файлов (ревью 26.09, вторая волна).
+    for path in sorted(raw_root.rglob("*.jsonl"), key=lambda f: (-f.stat().st_size, str(f))):
         turn: list[str] = []    # мои реплики с текстом после последней реплики человека
         awaiting = None         # человек ответил на развилку; ждём блок в моём ходе
         carry = ""              # развилка, на которую человек пока только спросил

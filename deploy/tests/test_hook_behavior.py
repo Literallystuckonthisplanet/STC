@@ -1152,3 +1152,17 @@ def test_h23_sees_a_fork_at_the_start_of_a_very_long_turn(tmp_path):
     res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "1"},
                tmp_path, USER_LANG="ru")
     assert "```decision" in res.stdout
+
+
+def test_h23_is_silent_after_a_fork_already_answered_by_name(tmp_path):
+    """Выбор названием + попутный вопрос → запись → «Ок»: сторож молчит."""
+    fork = ("🗳️ Как поступим?\n- **Подключить оплату сейчас (советую)** — сразу.\n"
+            "- **Отложить оплату на месяц** — вручную.")
+    t = _turns(tmp_path, "done.jsonl", [
+        ("assistant", fork),
+        ("human", "Подключить оплату сейчас. Сколько времени займёт?"),
+        ("assistant", "День.\n\n```decision\nпринято: оплата сейчас\nотклонено: отложить\n```"),
+        ("human", "Ок")])
+    res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "Ок"},
+               tmp_path, USER_LANG="ru")
+    assert res.stdout.strip() == ""

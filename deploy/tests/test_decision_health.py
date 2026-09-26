@@ -363,3 +363,60 @@ def test_a_reply_typed_while_the_agent_works_is_a_human_reply(tmp_path):
 
 def test_an_empty_rejection_is_not_a_rejection():
     assert dh.parse_block("принято: делать так\nотклонено: —")["dropped"] == []
+
+
+# ── Ревью 26.09, вторая волна ──────────────────────────────────────────────
+
+_PAY_FORK = ("🗳️ Как поступим?\n"
+             "- **Подключить оплату сейчас (советую)** — покупатели смогут платить сразу.\n"
+             "- **Отложить оплату на месяц** — пока принимаем заказы вручную.")
+
+
+def test_naming_an_option_inside_a_question_is_not_a_choice():
+    """«Почему советуешь Подключить оплату сейчас?» закрывал развилку выбором."""
+    assert dh.reply_kind("Почему советуешь Подключить оплату сейчас?", _PAY_FORK) == "question"
+    assert dh.reply_kind("Не понял. Почему советуешь Подключить оплату сейчас?", _PAY_FORK) \
+        == "question"
+    assert dh.reply_kind("Влить в ветку ВК?",
+                         "🗳️ Как?\n- **Влить в ветку ВК сейчас (советую).**\n- **Оставить.**") \
+        == "question"
+    assert dh.reply_kind("объясни, чем отличаются варианты") == "unclear"
+
+
+def test_a_choice_followed_by_a_question_is_a_choice():
+    """«Первый. Сколько времени займёт?» — выбор, а вопрос попутный."""
+    assert dh.reply_kind("Первый. Сколько времени займёт?") == "choice"
+    assert dh.reply_kind("Подключить оплату сейчас. Сколько времени займёт?", _PAY_FORK) \
+        == "choice"
+
+
+def test_a_question_naming_an_option_keeps_the_fork_open(tmp_path):
+    _write(tmp_path, "a.jsonl", [
+        _fork(0, _PAY_FORK), _human(1, text="Почему советуешь Подключить оплату сейчас?"),
+        _plain_reply(2, "Потому что покупатели уже спрашивают."),
+        _human(3, text="Тогда вариант 1"), _reply(4)])
+    res = dh.scan(tmp_path, None)
+    assert res["forks"] == 1 and res["marked"] == 1 and res["questions"] == 1
+
+
+def test_the_hook_does_not_reopen_a_fork_already_answered_by_name():
+    """Выбор названием + попутный вопрос → запись → «Ок». Сторож судил старый
+    ответ без карточки, принимал его за вопрос и снова просил записать."""
+    lines = [_fork(0, _PAY_FORK),
+             _human(1, text="Подключить оплату сейчас. Сколько времени займёт?"),
+             _reply(2), _human(3, text="Ок")]
+    assert dh.open_fork_in_tail(lines, current_prompt="Ок") is False
+    assert dh.open_fork_in_tail(lines[:3], current_prompt="Ок") is False
+
+
+def test_the_order_of_archive_copies_does_not_change_the_result(tmp_path):
+    """Короткая копия (до записи) и полная (с записью): итог не должен
+    зависеть от того, какой файл идёт первым по имени."""
+    short = [_fork(0), _human(1)]
+    full = short + [_reply(2)]
+    for first, second in (("a", "b"), ("z", "b")):
+        d = tmp_path / first
+        d.mkdir()
+        _write(d, f"{first}-short.jsonl", short)
+        _write(d, f"{second}-full.jsonl", full)
+        assert dh.scan(d, None)["marked"] == 1, first

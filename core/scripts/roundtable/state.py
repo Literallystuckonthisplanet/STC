@@ -23,6 +23,7 @@ is *when* an operation is a repeat, a conflict or a revocation (§7.1).
 
 from __future__ import annotations
 
+import base64
 import errno
 import fcntl
 import hashlib
@@ -41,6 +42,20 @@ RUNS_ROOT = Path.home() / ".stc" / "roundtable" / "runs"
 JOURNAL = "journal.jsonl"
 SNAPSHOT = "run.json"
 LOCK = "lock"
+
+# Operations that require a target — §7.1's key names "вид_цели / ID_цели",
+# but nothing forces a caller to actually supply one. `submit-decision` and
+# `submit-framing-decision` are meaningless pointed at nothing: a decision
+# with no issue or framing to attach to has no addressee (Б1-5). This list is
+# not read from a table: no table field for "which operations need a target"
+# exists yet, and `vocabulary.yaml` is out of this block's write scope.
+OPERATIONS_REQUIRING_TARGET = ("submit-decision", "submit-framing-decision")
+
+# The token that proves a `RunStore` came out of `open_run` (Б1-6). A bare
+# `RunStore(directory)` still loads fine — reading needs no lock — but every
+# method that appends to the journal refuses unless it was handed this
+# token, so a mutating handle cannot be obtained by skipping `open_run`.
+_LIVE = object()
 
 
 class StateError(Exception):
@@ -136,6 +151,25 @@ class Operation:
 
 
 @dataclass(frozen=True)
+class IdeaCandidate:
+    """One idea card as handed into a run (§Б1-8..10).
+
+    The record owns its own bytes — embedded, not referenced by path. A file
+    that changed or vanished between the assignment and a crash-and-reload
+    must not change what a resumed run holds; only what is inside the
+    journal entry can be trusted to come back byte for byte.
+    """
+
+    candidate_id: str
+    source: str
+    canonical_bytes: bytes
+
+    def blind(self) -> dict:
+        """The anonymised projection (§Б1-10): `source` never leaves here."""
+        return {"candidate_id": self.candidate_id, "canonical_bytes": self.canonical_bytes}
+
+
+@dataclass(frozen=True)
 class Attempt:
     """One critic call attempt, keyed as §8.1 requires."""
 
@@ -160,6 +194,8 @@ class RunState:
     linked_runs: list = field(default_factory=list)
     published: bool = False
     created_at: str = ""
+    idea_candidates: tuple = ()
+    idea_candidates_permutation: tuple = ()
 
     def as_dict(self) -> dict:
         return {
@@ -172,6 +208,12 @@ class RunState:
             "linked_runs": list(self.linked_runs),
             "published": self.published,
             "created_at": self.created_at,
+            "idea_candidates": [
+                {"candidate_id": c.candidate_id, "source": c.source,
+                 "canonical_bytes_b64": base64.b64encode(c.canonical_bytes).decode("ascii")}
+                for c in self.idea_candidates
+            ],
+            "idea_candidates_permutation": list(self.idea_candidates_permutation),
             "operations": [
                 {"operation_id": o.operation_id, "key": list(o.key),
                  "input_hash": o.input_hash, "outcome": o.outcome,
@@ -193,16 +235,55 @@ class RunState:
 class RunStore:
     """One run directory: append, fold, and hand back the state."""
 
-    def __init__(self, directory: Path, tables=None):
+    def __init__(self, directory: Path, tables=None, *, _token=None):
         self.directory = Path(directory)
         self.tables = tables or tables_module.load()
         self.journal_path = self.directory / JOURNAL
         self.snapshot_path = self.directory / SNAPSHOT
+        self._live = _token is _LIVE
+
+    def _require_live(self, what: str) -> None:
+        """Refuse a mutation unless this handle came out of `open_run` (Б1-6).
+
+        R13-2: every one of these methods used to be reachable on a bare
+        `RunStore(directory)` — the lock `open_run` takes was then only ever
+        a convention, not something the store itself enforced.
+        """
+        if not self._live:
+            raise StateError(
+                f"{what}: изменяющий RunStore получают только через open_run")
 
     # -- durability ---------------------------------------------------------
+    def _truncate_torn_tail(self) -> None:
+        """Drop a torn last line from disk before writing onto the file (§Б1-7).
+
+        A read tolerates a torn tail in place (`_entries`), but a write must
+        not build on top of it: appending straight onto it would glue the
+        new entry onto the broken one, and appending after a bare newline
+        would leave the torn fragment sitting as a *middle* line forever —
+        which the strict reader then refuses forever (R12-2). The only way
+        the file stays parseable across a resumed write is if the torn tail
+        never survives contact with one.
+        """
+        if not self.journal_path.exists():
+            return
+        text = self.journal_path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        if not lines:
+            return
+        try:
+            json.loads(lines[-1])
+        except json.JSONDecodeError:
+            good = "".join(line + "\n" for line in lines[:-1])
+            with open(self.journal_path, "w", encoding="utf-8") as handle:
+                handle.write(good)
+                handle.flush()
+                os.fsync(handle.fileno())
+
     def _append(self, entry: dict) -> dict:
         """Append one journal entry and get it onto the disk before returning."""
         self.directory.mkdir(parents=True, exist_ok=True)
+        self._truncate_torn_tail()
         entry = {"seq": self._next_seq(), "at": _now(), **entry}
         line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
         with open(self.journal_path, "a", encoding="utf-8") as handle:
@@ -298,6 +379,12 @@ class RunStore:
             state.published = True
         elif kind == "linked_run":
             state.linked_runs.append(entry["run_id"])
+        elif kind == "idea_candidates_assigned":
+            state.idea_candidates = tuple(
+                IdeaCandidate(candidate_id=c["candidate_id"], source=c["source"],
+                              canonical_bytes=base64.b64decode(c["canonical_bytes_b64"]))
+                for c in entry["candidates"])
+            state.idea_candidates_permutation = tuple(entry["permutation"])
         else:
             raise StateError(f"неизвестная запись журнала: {kind!r}")
 
@@ -336,12 +423,24 @@ class RunStore:
         back, no round is created and no budget is spent. Same key, different
         hash → `КОНФЛИКТ_ВХОДА`; replaying it needs an explicit
         `revoke-operation`, which stays visible in the history.
+
+        The hash covers the operation, the conditions, the target and the
+        body together (§Б1-2) — not the body alone. `conditions` drives the
+        table transition and is not stored in `body`; hashing only the body
+        let a second, differently-decided call under the same key through as
+        a silent "repeat" of the first (R12-3).
         """
+        self._require_live("submit")
         if operation not in self.tables.vocabulary["операции"]:
             raise StateError(f"неизвестная операция {operation!r}")
+        if operation in OPERATIONS_REQUIRING_TARGET and target_kind is None:
+            raise StateError(f"{operation!r} без цели (вид_цели/ID_цели) — отказ (Б1-5)")
         state = self.load()
         key = self.operation_key(state, operation, target_kind, target_id)
-        input_hash = canonical_hash(body)
+        input_hash = canonical_hash({
+            "operation": operation, "conditions": conditions or {},
+            "target_kind": target_kind, "target_id": target_id, "body": body,
+        })
 
         for previous in state.operations:
             if previous.key != key or previous.revoked:
@@ -367,6 +466,7 @@ class RunStore:
         does not apply and they carry no key. They still move the run through
         the same table.
         """
+        self._require_live("record_event")
         if event in self.tables.vocabulary["операции"]:
             raise StateError(f"{event!r} — операция, ей нужен submit с ключом повтора")
         state = self.load()
@@ -407,6 +507,7 @@ class RunStore:
         Which events count as dependent is data: `run.yaml → revoke_operation`.
         Everything else is a compensating record — the history is not rewritten.
         """
+        self._require_live("revoke")
         rules = self.tables.run["revoke_operation"]
         state = self.load()
         entries = self._entries()
@@ -444,6 +545,7 @@ class RunStore:
     def record_attempt(self, stage: str, round_number: int, critic: str, attempt: int,
                        status: str, possible_duplicate: bool = False) -> Attempt:
         """Move one attempt along the states declared in the vocabulary (§8.1)."""
+        self._require_live("record_attempt")
         spec = self.tables.vocabulary["попытка"]
         order = spec["состояния"]
         if status not in order:
@@ -467,6 +569,7 @@ class RunStore:
         §8.1: "never call a critic twice" is unachievable, so the uncertainty is
         flagged and travels into the protocol rather than being papered over.
         """
+        self._require_live("mark_possible_duplicate")
         spec = self.tables.vocabulary["попытка"]
         state = self.load()
         key = (state.run_id, stage, round_number, critic, attempt)
@@ -479,13 +582,63 @@ class RunStore:
         self._write_snapshot(self.load())
 
     def start_round(self, number: int) -> RunState:
+        self._require_live("start_round")
         self._append({"kind": "round_started", "round": number})
         state = self.load()
         self._write_snapshot(state)
         return state
 
     def set_flag(self, flag: str, on: bool = True) -> RunState:
+        self._require_live("set_flag")
         self._append({"kind": "flag", "flag": flag, "on": on})
+        state = self.load()
+        self._write_snapshot(state)
+        return state
+
+    # -- idea candidates ------------------------------------------------------
+    def assign_idea_candidates(self, candidates: list[IdeaCandidate],
+                               permutation: list[int] | None = None) -> RunState:
+        """Assign the run's idea cards, once (§Б1-8, Б1-9, Б1-10).
+
+        The journal entry embeds each card's `source`, the display
+        `permutation` and its own canonical bytes — nothing is read back from
+        outside the journal, so a crash-and-reload restores the same cards,
+        the same IDs and the same order byte for byte. A second assignment of
+        a *different* set is a conflict, the same shape `submit` uses for a
+        repeated operation (§7.1); this one carries no operation key because
+        nobody submits it directly — the caller already holds the lock for
+        whatever operation triggered it.
+        """
+        self._require_live("assign_idea_candidates")
+        if not candidates:
+            raise StateError("набор карточек идеи не может быть пустым")
+        ids = [c.candidate_id for c in candidates]
+        if len(set(ids)) != len(ids):
+            raise StateError(f"повторяющиеся ID карточек идеи: {ids}")
+        permutation = list(permutation) if permutation is not None else list(range(len(candidates)))
+        if sorted(permutation) != list(range(len(candidates))):
+            raise StateError(
+                f"перестановка {permutation} не соответствует набору из {len(candidates)} карточек")
+
+        payload = [
+            {"candidate_id": c.candidate_id, "source": c.source,
+             "canonical_bytes_b64": base64.b64encode(c.canonical_bytes).decode("ascii")}
+            for c in candidates]
+
+        state = self.load()
+        if state.idea_candidates:
+            existing = [
+                {"candidate_id": c.candidate_id, "source": c.source,
+                 "canonical_bytes_b64": base64.b64encode(c.canonical_bytes).decode("ascii")}
+                for c in state.idea_candidates]
+            if existing == payload and list(state.idea_candidates_permutation) == permutation:
+                return state                                  # идемпотентный повтор
+            raise Refusal(
+                "КОНФЛИКТ_ВХОДА",
+                "карточки идеи уже назначены другим набором; повторное назначение отвергнуто (Б1-10)")
+
+        self._append({"kind": "idea_candidates_assigned", "candidates": payload,
+                      "permutation": permutation})
         state = self.load()
         self._write_snapshot(state)
         return state
@@ -527,7 +680,7 @@ class open_run:
     def __enter__(self) -> RunStore:
         if self._lock is not None:
             self._lock.__enter__()
-        return RunStore(self.directory, self.tables)
+        return RunStore(self.directory, self.tables, _token=_LIVE)
 
     def __exit__(self, *exc_info):
         if self._lock is not None:

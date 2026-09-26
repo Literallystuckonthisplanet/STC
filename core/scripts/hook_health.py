@@ -128,6 +128,7 @@ def scan_session(path: Path, since: datetime | None):
             ts = _parse_ts(obj.get("timestamp"))
             if since and ts and ts < since:
                 continue
+            first = len(events)       # события этой записи получат её uuid ниже
 
             # ненавязчивая подсказка: attachment с hookName
             hook_name = obj.get("hookName") or (obj.get("attachment") or {}).get("hookName")
@@ -179,6 +180,15 @@ def scan_session(path: Path, since: datetime | None):
                     "hook": _hook_name(m.group("path")),
                     "ts": ts,
                 })
+            # Одна запись лежит в нескольких файлах архива (копии resume/fork).
+            # Ключ события — uuid записи и номер события в ней: ревью 25.09
+            # показало, что оригинал и копия давали два срабатывания вместо одного.
+            # Без uuid (старые записи, выгрузки) — сессия плюс время записи.
+            uid = obj.get("uuid") or (
+                f"{obj.get('sessionId')}|{obj.get('timestamp')}"
+                if obj.get("sessionId") and obj.get("timestamp") else None)
+            for n, ev in enumerate(events[first:]):
+                ev["uid"] = f"{uid}#{n}" if uid else None
     return events
 
 
@@ -189,14 +199,19 @@ def health(raw_root: Path, since: datetime | None, codes: dict | None = None):
     aware = defaultdict(int)
     advice = defaultdict(int)
     sessions = files = 0
+    counted: set[str] = set()
 
-    for path in raw_root.rglob("*.jsonl"):
+    for path in sorted(raw_root.rglob("*.jsonl")):
         files += 1
         events = scan_session(path, since)
         if not events:
             continue
         sessions += 1
         for i, ev in enumerate(events):
+            if ev["kind"] in ("advice", "block") and ev.get("uid"):
+                if ev["uid"] in counted:
+                    continue            # то же событие из копии файла
+                counted.add(ev["uid"])
             if ev["kind"] == "advice":
                 advice[ev["tool"]] += 1
                 continue
@@ -298,6 +313,13 @@ def main() -> int:
     invisible = sorted(quiet)
 
     if args.json:
+        # Пустой реестр — «не знаю», а не «мёртвых нет». До 25.09 машинный вывод
+        # отдавал dead=[] и код 0, и предупреждение жило только в тексте (ревью).
+        if not blocking:
+            print(json.dumps({**res, "dead": None, "invisible": None,
+                              "unverified": "реестр хуков не найден — укажи STC_SOURCE"},
+                             ensure_ascii=False, indent=2))
+            return 3
         print(json.dumps({**res, "dead": dead, "invisible": invisible},
                          ensure_ascii=False, indent=2))
         return 0
@@ -330,7 +352,7 @@ def main() -> int:
           "противоречит; сигналом считается слепой — когда агент повторил, не "
           "написав между делом ни слова. Подсказки не несут кода хука в "
           "транскрипте, поэтому считаются по инструменту, а не по правилу.")
-    return 0
+    return 0 if blocking else 3
 
 
 if __name__ == "__main__":

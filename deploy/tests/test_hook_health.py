@@ -187,3 +187,33 @@ def test_registry_is_found_via_stc_source(tmp_path):
         blocking, _quiet, codes = hook_health.declared_hooks(tmp_path / "nowhere")
     assert codes.get("link-integrity-guard") == "H08"
     assert any(h.startswith("link-integrity-guard") for h in blocking)
+
+
+def test_the_same_event_in_two_archive_copies_counts_once(tmp_path):
+    """Ревью 25.09: оригинал и копия разговора давали два срабатывания."""
+    def rec(line, uid):
+        obj = json.loads(line)
+        obj["uuid"] = uid
+        return json.dumps(obj, ensure_ascii=False)
+    lines = [rec(_call("ls"), "u1"), rec(_block(), "u2"), rec(_call("ls"), "u3")]
+    _write(tmp_path, "original.jsonl", lines)
+    _write(tmp_path, "copy.jsonl", lines)
+    res = hook_health.health(tmp_path, None, {"graphify-first": "H18"})
+    assert res["fired"] == {"graphify-first (H18)": 1}
+
+
+def test_json_output_says_unverified_when_the_registry_is_missing(tmp_path):
+    """Машинный вывод без реестра отдавал dead=[] и код 0 — то есть «всё живо»."""
+    import shutil
+    import subprocess
+    deployed = tmp_path / "stc" / "core" / "scripts"
+    deployed.mkdir(parents=True)
+    shutil.copy(REPO / "core" / "scripts" / "hook_health.py", deployed)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+    res = subprocess.run(["python3", str(deployed / "hook_health.py"), "--raw", str(raw), "--json"],
+                         capture_output=True, text=True, env=env)
+    out = json.loads(res.stdout)
+    assert res.returncode == 3
+    assert out["dead"] is None and "реестр" in out["unverified"]

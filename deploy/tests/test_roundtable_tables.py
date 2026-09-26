@@ -987,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 9}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 135
+    assert len(findings) == 144
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1161,6 +1161,15 @@ FINDING_PINS = {
     "R40-3": ("2d680a75656d", "53d263c8eff8"),
     "R40-4": ("6738249749a3", "4cfa9fff251f"),
     "R41-1": ("1ad0290b689c", "1760c70038c6"),
+    "R42-1": ("edc98ec2615a", "f2ae8e844f45"),
+    "R42-2": ("375ff26aba21", "27f04defa1f3"),
+    "R42-3": ("c56a2d578cd0", "4bd5142d9bf7"),
+    "R42-4": ("41119f910730", "90f0e0bc8b00"),
+    "R42-5": ("587a9daaa45d", "2da23db62397"),
+    "R42-6": ("9cd0258cf1b5", "041f46698eaa"),
+    "R42-7": ("7c3ae9da753f", "3f107775f851"),
+    "R42-8": ("dca69af14304", "1760c70038c6"),
+    "R42-9": ("77432d77f752", "1760c70038c6"),
 }
 
 

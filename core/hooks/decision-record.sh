@@ -44,12 +44,13 @@ INPUT=$(cat)
 AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null)
 [ -n "$AGENT_ID" ] && exit 0
 
-# Развилка опознаётся по МОЕМУ маркеру в последней реплике, а не по форме
-# ответа пользователя. Маркер, стоящий после слова «маркер/значок/эмодзи», не
-# в счёт: 20.09 хук сработал на фразе «развилка без маркера 🗳 в знаменатель
-# не попадает» — разговор о маркере принял за предъявленный выбор. Три шаблона по форме ответа отбракованы замером: они
-# ловили мои же нумерованные промпты субагентам, вставки файлов с номерами
-# строк и цитаты моего текста (подробности — в шапке decision_health.py).
+# Развилка опознаётся по МОЕМУ маркеру 🗳️ в последнем моём ХОДЕ (все реплики
+# после прошлого сообщения человека), а ответ-вопрос («Сколько будет стоить A?»)
+# развилку не закрывает. Оба правила живут в decision_health.py и общие со
+# счётчиком: ревью 25.09 поймало, что сторож смотрел одну последнюю реплику,
+# а счётчик — любую до ответа человека, и на «выбор → ещё реплика → выбрал A»
+# они расходились. Почему опознаём по маркеру, а не по форме ответа, — в шапке
+# decision_health.py (три шаблона по форме отбракованы замером).
 FORK=$(printf '%s' "$INPUT" | python3 -c '
 import json, os, sys
 
@@ -62,8 +63,8 @@ path = data.get("transcript_path") or ""
 if not path or not os.path.exists(path):
     sys.exit(0)
 
-# Нужна ровно последняя реплика ассистента, поэтому читаем хвост файла, а не
-# весь транскрипт: он растёт до десятков мегабайт, а хук висит на каждом
+# Нужен только последний ход, поэтому читаем хвост файла, а не весь
+# транскрипт: он растёт до десятков мегабайт, а хук висит на каждом
 # сообщении пользователя.
 TAIL = 400_000
 try:
@@ -78,36 +79,14 @@ lines = chunk.splitlines()
 if size > TAIL and lines:
     lines = lines[1:]          # первая строка хвоста обрезана посередине
 
-for line in reversed(lines):
-    if "assistant" not in line:
-        continue               # быстрый отсев без разбора JSON
-    try:
-        obj = json.loads(line)
-    except Exception:
-        continue
-    msg = obj.get("message")
-    if not isinstance(msg, dict) or msg.get("role") != "assistant":
-        continue
-    content = msg.get("content")
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        text = "\n".join(p.get("text", "") for p in content
-                         if isinstance(p, dict) and p.get("type") == "text")
-    else:
-        text = ""
-    if not text.strip():
-        continue               # реплика без слов (только вызов инструмента)
-    # Правило «предъявление, а не упоминание» живёт в одном месте — здесь
-    # только спрашиваем. Своя копия шаблона уже разъезжалась с измерителем
-    # (линза: аудит считал не то, что срабатывало).
-    sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
-    try:
-        from decision_health import presents_fork
-    except Exception:
-        sys.exit(0)            # счётчик недоступен — молчим, а не гадаем
-    print("fork" if presents_fork(text) else "")
-    break
+sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
+try:
+    from decision_health import open_fork_in_tail, is_question_only
+except Exception:
+    sys.exit(0)                # счётчик недоступен — молчим, а не гадаем
+prompt = data.get("prompt") or ""
+if open_fork_in_tail(lines, prompt) and not is_question_only(prompt):
+    print("fork")
 ' "$STC_CORE" 2>/dev/null)
 
 [ "$FORK" = "fork" ] || exit 0
@@ -115,35 +94,43 @@ for line in reversed(lines):
 if [ "$USER_LANG" = "ru" ]; then
   cat <<'EOF'
 
-[решение] Ответ на развилку получен — значит остальные варианты отвергнуты, и
-это нигде не останется, если не записать. В ЭТОТ ответ, после обычных слов,
-добавь служебный блок (не для чтения человеком, его разбирает
-decision_health.py):
+[решение] Предыдущий ход предъявлял развилку. Если это сообщение ВЫБИРАЕТ
+вариант — остальные отвергнуты, и это нигде не останется, если не записать.
+Тогда в ЭТОТ ответ, после обычных слов, добавь служебный блок (не для чтения
+человеком, его разбирает decision_health.py):
 
 ```decision
 принято: <что делаем>
-отклонено: <что не делаем> — <причина, ТОЛЬКО если прозвучала>
+отклонено: <что не делаем>; причина: <только если прозвучала>
 ```
 
 Одна строка «отклонено» на каждый отвергнутый вариант, на языке разговора.
-Причину не выдумывай: не прозвучала — оставь строку без неё, доля таких
+Причину не выдумывай: не прозвучала — пиши строку без «причина:», доля таких
 отказов считается отдельно и это метрика, а не дефект.
+
+Если выбора в сообщении НЕТ — уточнение, вопрос, новая задача — блок НЕ
+ставь: записанное «решение», которого не было, хуже пропущенного.
 EOF
 else
   cat <<'EOF'
 
-[decision] A fork was just resolved — the other options are now rejected, and
-that leaves no trace unless recorded. In THIS reply, after the prose, add the
-service block (not for a human to read; decision_health.py parses it):
+[decision] The previous turn presented a fork. If this message CHOOSES an
+option, the other options are now rejected and leave no trace unless recorded.
+Then in THIS reply, after the prose, add the service block (not for a human to
+read; decision_health.py parses it):
 
 ```decision
 принято: <what we do>
-отклонено: <what we do not> — <reason, ONLY if voiced>
+отклонено: <what we do not>; причина: <only if voiced>
 ```
 
 One "отклонено" line per rejected option, in the language of the conversation.
-Never infer a reason: if none was voiced, leave the line without one. The share
-of unreasoned rejections is a metric, not a defect.
+Never infer a reason: if none was voiced, write the line without "причина:".
+The share of unreasoned rejections is a metric, not a defect.
+
+If the message makes NO choice — a clarification, a question, a new task — do
+NOT add the block: a recorded "decision" that never happened is worse than a
+missing one.
 EOF
 fi
 

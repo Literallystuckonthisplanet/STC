@@ -50,7 +50,7 @@ def _agent_prompt(i=1, text="Read-only exploration. Sources: 1. a 2. b"):
                   "message": {"role": "user", "content": text}})
 
 
-def _reply(i=2, body="принято: делать так\nотклонено: делать иначе — дороже"):
+def _reply(i=2, body="принято: делать так\nотклонено: делать иначе; причина: дороже"):
     text = f"Записал.\n\n```decision\n{body}\n```\n"
     return _line({"timestamp": TS.format(i), "sessionId": "s1",
                   "message": {"role": "assistant",
@@ -130,7 +130,7 @@ def test_rejection_without_reason_is_recorded_not_invented(tmp_path):
 
 def test_latin_lookalike_in_key_still_parses():
     """«отклонено» с латинскими о/е — артефакт раскладки, не другое слово."""
-    body = "принято: A\noтклонено: B — потому что"   # первая «o» латинская
+    body = "принято: A\noтклонено: B; причина: потому что"   # первая «o» латинская
     assert "o" in body                               # страховка от правки вслепую
     rec = dh.parse_block(body)
     assert rec["dropped"] and rec["dropped"][0]["what"] == "B"
@@ -215,3 +215,67 @@ def test_mention_does_not_open_a_fork_in_the_scan(tmp_path):
                          {"type": "text", "text": "маркер 🗳️ я объяснял выше"}]}})
     _write(tmp_path, "a.jsonl", [mention, _human(), _plain_reply()])
     assert dh.scan(tmp_path, None)["forks"] == 0
+
+
+
+# --- Ревью 25.09: сценарии, на которых журнал записывал то, чего не было ---
+
+
+def test_a_dash_inside_an_option_name_is_not_a_reason():
+    """«Пилот — неделя проверки без оплаты» — название варианта, причина не
+    звучала. Причиной считается только явное «причина:»."""
+    rec = dh.parse_block("принято: Полный запуск\nотклонено: Пилот — неделя проверки без оплаты")
+    assert rec["dropped"] == [{"what": "Пилот — неделя проверки без оплаты", "reason": ""}]
+
+
+def test_a_question_does_not_resolve_the_fork_and_a_block_after_it_is_phantom(tmp_path):
+    """«Сколько будет стоить A?» — не выбор. Запись после такого ответа
+    фиксирует решение, которого не было; в долю она не идёт."""
+    _write(tmp_path, "a.jsonl",
+           [_fork(), _human(text="Сколько будет стоить A?"), _reply()])
+    res = dh.scan(tmp_path, None)
+    assert res["forks"] == 0 and res["marked"] == 0
+    assert res["phantom"] == 1 and res["questions"] == 1
+
+
+def test_a_block_without_any_rejection_is_not_compliance(tmp_path):
+    """Одно «принято» без единого отказа накручивало долю соблюдения."""
+    _write(tmp_path, "a.jsonl",
+           [_fork(), _human(), _reply(body="принято: делать так")])
+    res = dh.scan(tmp_path, None)
+    assert res["forks"] == 1 and res["marked"] == 0
+    assert res["without_rejection"] == 1
+
+
+def test_an_unrelated_request_without_a_block_is_not_counted(tmp_path):
+    """Новая задача вместо выбора: агент записи не ставит — развилки в доле нет."""
+    _write(tmp_path, "a.jsonl",
+           [_fork(), _human(text="дай инструкцию по экосбору"), _plain_reply()])
+    res = dh.scan(tmp_path, None)
+    assert res["forks"] == 0 and res["unclear"] == 1
+
+
+def test_fork_earlier_in_the_same_turn_is_still_open(tmp_path):
+    """Выбор → ещё одна моя реплика без значка → человек выбрал. Развилка
+    открыта и для счётчика, и для сторожа (open_fork_in_tail) — раньше они
+    расходились."""
+    lines = [_fork(0), _plain_reply(1, "Подробности выше."), _human(2, text="вариант 1")]
+    _write(tmp_path, "a.jsonl", lines + [_reply(3)])
+    assert dh.scan(tmp_path, None)["marked"] == 1
+    assert dh.open_fork_in_tail(lines[:2]) is True
+
+
+def test_the_hook_steps_over_the_prompt_already_written_to_the_transcript():
+    """Если харнесс записал новое сообщение до сторожа, оно не граница хода."""
+    lines = [_fork(0), _human(1, text="вариант 1")]
+    assert dh.open_fork_in_tail(lines, current_prompt="вариант 1") is True
+    assert dh.open_fork_in_tail(lines, current_prompt="другое") is False
+
+
+def test_reply_kind_on_real_shapes():
+    assert dh.reply_kind("Сколько будет стоить A?") == "question"
+    assert dh.reply_kind("А что насчёт второго?") == "question"
+    assert dh.reply_kind("1 - это хорошо") == "choice"
+    assert dh.reply_kind("делаем вместе с идеей. а как это будет?") == "choice"
+    assert dh.reply_kind("сохрани выводы в память") == "unclear"   # «в» — не вариант «В»
+    assert dh.reply_kind("эмоджи не мешают") == "unclear"

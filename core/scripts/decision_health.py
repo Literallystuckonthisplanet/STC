@@ -92,10 +92,32 @@ CODE_FENCE = re.compile(r"```.*?(?:```|$)", re.S)
 FENCE = re.compile(r"```decision\s*\n(.*?)```", re.S)
 KEY_KEPT = "принято"
 KEY_DROPPED = "отклонено"
-# Причина — после тире: «отклонено: X — потому что Y». Тире любое из трёх.
-REASON = re.compile(r"\s[-–—]\s+(\S.*)$")
+# Причина — только после явного слова: «отклонено: X; причина: Y». До 26.09
+# причиной считалось всё после тире, и «отклонено: Пилот — неделя проверки без
+# оплаты» читалось как вариант «Пилот» с причиной, которой никто не называл
+# (ревью 25.09). Тире внутри названия варианта — обычное дело, слово «причина»
+# в нём — нет. Записи старого вида теперь честно читаются как «без причины».
+REASON = re.compile(r"[\s;,—–-]*\bпричина\s*:\s*(\S.*)$", re.I)
+# Реплика человека, которая спрашивает, а не выбирает: «Сколько будет стоить A?»
+# Вопрос без слова согласия развилку не закрывает — ни для сторожа, ни для
+# счётчика (ревью 25.09: такой вопрос засчитывался как выбор).
+APPROVE = re.compile(
+    r"(?<!\w)(да|ок|окей|ok|okay|делай|делаем|давай|согласен|согласна|берём|берем|беру|"
+    r"выбираю|оставляем|го|поехали|принято|пойдёт|пойдет|годится)(?!\w)", re.I)
+# Явная ссылка на вариант: ответ начинается с метки («1», «Б.»), метка в скобках
+# («(б)», «2)»), слово «вариант», порядковое («первый», «второе»), «п2», «оба».
+# Одиночная буква в середине фразы — НЕ метка: «в» и «а» — предлог и союз, и
+# без этой оговорки «сохрани выводы в память» считалось выбором варианта «В».
+CHOICE_CUE = re.compile(
+    r"^\s*(?:\d|[A-DА-Г])(?=[\s.,:;)!—–-]|$)"
+    r"|\((?:[абвгa-d]|\d)\)|(?<!\w)(?:[абвгa-d]|\d)\)"
+    r"|(?i:вариант)"
+    r"|(?<!\w)(?i:перв|втор|трет)\w*"
+    r"|(?<!\w)(?i:оба|обе)(?!\w)"
+    r"|(?<!\w)(?i:п)\.?\s?\d",
+    re.M)
 # Заполнитель из объяснения формата: «принято: <что делаем>», «отклонено:
-# <что не делаем> — <причина>». Такой блок — пример в ответе пользователю, а
+# <что не делаем>; причина: <…>». Такой блок — пример в ответе пользователю, а
 # не решение. Без фильтра объяснение формата засчиталось бы как соблюдение
 # правила: метрику можно было бы накрутить, ни одного решения не записав.
 # Якоря на конец нет намеренно — вторая форма несёт за заполнителем причину.
@@ -131,6 +153,72 @@ def fork_positions(text: str) -> list[int]:
             continue
         found.append(i)
     return found
+
+
+def is_question_only(reply: str) -> bool:
+    """Человек спросил, а не выбрал: вопрос без слова согласия."""
+    return "?" in reply and not APPROVE.search(reply)
+
+
+def reply_kind(reply: str) -> str:
+    """Как ответ человека соотносится с развилкой.
+
+    * `question` — спросил и не согласился: развилка не закрыта, запись не нужна;
+    * `choice` — есть ссылка на вариант или согласие: выбор сделан, запись ждём;
+    * `unclear` — ни того ни другого («эмоджи не мешают», «дай инструкцию по
+      другой теме»). Выбор ли это — видит только агент, читающий разговор;
+      регулярка тут не судья. Засчитывается по факту: агент поставил запись —
+      выбор был, не поставил — развилка в долю не идёт вовсе.
+    """
+    if is_question_only(reply):
+        return "question"
+    if APPROVE.search(reply) or CHOICE_CUE.search(reply):
+        return "choice"
+    return "unclear"
+
+
+def is_human(obj: dict) -> bool:
+    """Реплика человека, а не промпт субагенту и не результат инструмента."""
+    msg = obj.get("message") or {}
+    return msg.get("role") == "user" and (obj.get("origin") or {}).get("kind") == "human"
+
+
+def open_fork_in_tail(lines: list[str], current_prompt: str = "") -> bool:
+    """Предъявил ли агент выбор в ПОСЛЕДНЕМ своём ходе — для сторожа.
+
+    Ход — все мои реплики с текстом после предыдущей реплики человека. Ревью
+    25.09: сторож смотрел только последнюю реплику, а счётчик — любую до ответа
+    человека, и «выбор → ещё реплика без значка → человек выбрал» сторож
+    пропускал, а счётчик засчитывал. Теперь оба смотрят на ход целиком, и
+    правило живёт здесь одно.
+
+    `current_prompt` — если харнесс уже дописал новое сообщение в транскрипт до
+    срабатывания сторожа, его надо перешагнуть, а не принять за границу хода.
+    """
+    texts: list[str] = []
+    skipped_current = False
+    for line in reversed(lines):
+        if '"message"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        msg = obj.get("message")
+        if not isinstance(msg, dict):
+            continue
+        if is_human(obj):
+            text = _text(msg.get("content")).strip()
+            if (not texts and not skipped_current and current_prompt
+                    and text == current_prompt.strip()):
+                skipped_current = True
+                continue
+            break
+        if msg.get("role") == "assistant":
+            text = _text(msg.get("content"))
+            if text.strip():
+                texts.append(text)
+    return presents_fork("\n".join(reversed(texts)))
 
 
 def _text(content) -> str:
@@ -182,7 +270,7 @@ def parse_block(body: str) -> dict:
                 continue
             m = REASON.search(value)
             dropped.append({
-                "what": (value[: m.start()] if m else value).strip(),
+                "what": (value[: m.start()] if m else value).strip(" ;,—–-"),
                 "reason": m.group(1).strip() if m else "",
             })
     return {"kept": kept, "dropped": dropped}
@@ -217,20 +305,39 @@ def _events(path: Path):
 def scan(raw_root: Path, since: datetime | None):
     """Считает развилки и разметку, идя по сессии как по конечному автомату.
 
-    Состояния: нет развилки → развилка предъявлена (🗳️) → развилка разрешена
-    (ответил человек) → ждём блок. Блок принимается в ЛЮБОЙ моей реплике до
-    следующей реплики человека: он может лечь и в первый ответ, и в последний
-    после длинной работы с инструментами.
+    Состояния: нет развилки → развилка предъявлена (🗳️ в моём ходе) → человек
+    ответил (выбор / вопрос / неясно) → ждём блок. Блок принимается в ЛЮБОЙ
+    моей реплике до следующей реплики человека: он может лечь и в первый ответ,
+    и в последний после длинной работы с инструментами. Ход и вид ответа
+    определяются теми же функциями, что у сторожа (`open_fork_in_tail`,
+    `reply_kind`), чтобы правило и измеритель не разъезжались.
     """
     forks = marked = 0
+    # Ревью 25.09, чтобы метрику нельзя было накрутить и чтобы она не считала
+    # того, чего не было:
+    # * `without_rejection` — блок с одним «принято»: развилка из двух и больше
+    #   вариантов без единого отказа — не записанный отказ, а его отсутствие;
+    # * `phantom` — блок после вопроса человека: решения не было, а журнал его
+    #   записал;
+    # * `unclear` — ответ без ссылки на вариант и без согласия, и агент записи
+    #   не поставил: выбор ли это, неизвестно, в долю такие не идут.
+    without_rejection = phantom = unclear = questions = 0
     records: list[dict] = []
     # Одна сессия лежит в нескольких файлах (resume/fork копии), и без дедупа
     # та же развилка считается трижды: живой прогон давал 213 против 84
     # уникальных. Ключ — сессия плюс время ответа, как в `collect_corpus`.
     seen: set[tuple] = set()
     for path in sorted(raw_root.rglob("*.jsonl")):
-        fork_open = False       # я предъявил выбор
-        awaiting = None         # человек ответил; ждём блок
+        turn: list[str] = []    # мои реплики с текстом после последней реплики человека
+        awaiting = None         # человек ответил на развилку; ждём блок в моём ходе
+
+        def close(pending):
+            nonlocal forks, unclear
+            if pending["kind"] == "choice":
+                forks += 1              # выбор сделан, записи нет
+            elif pending["kind"] == "unclear":
+                unclear += 1
+
         for role, text, obj in _events(path):
             ts = _parse_ts(obj.get("timestamp"))
             if since and ts and ts < since:
@@ -238,37 +345,54 @@ def scan(raw_root: Path, since: datetime | None):
 
             if role == "human":
                 if awaiting is not None:
-                    forks += 1          # предыдущая развилка закрылась пустой
+                    close(awaiting)
                     awaiting = None
-                if fork_open:
-                    fork_open = False
-                    key = (obj.get("sessionId"), obj.get("timestamp"))
-                    if key in seen:
-                        continue        # тот же разговор из копии файла
-                    seen.add(key)
-                    awaiting = {
-                        "session": obj.get("sessionId"),
-                        "timestamp": obj.get("timestamp"),
-                        "cwd": obj.get("cwd"),
-                    }
+                fork = presents_fork("\n".join(turn))
+                turn = []
+                if not fork:
+                    continue
+                key = (obj.get("sessionId"), obj.get("timestamp"))
+                if key in seen:
+                    continue            # тот же разговор из копии файла
+                seen.add(key)
+                kind = reply_kind(text)
+                if kind == "question":
+                    questions += 1
+                awaiting = {
+                    "kind": kind,
+                    "session": obj.get("sessionId"),
+                    "timestamp": obj.get("timestamp"),
+                    "cwd": obj.get("cwd"),
+                }
                 continue
 
-            # моя реплика: сперва блок по открытому долгу, потом новая развилка
-            if awaiting is not None:
-                m = FENCE.search(text)
-                if m:
-                    rec = parse_block(m.group(1))
-                    if rec["kept"] or rec["dropped"]:
-                        forks += 1
-                        marked += 1
-                        rec.update(awaiting)
-                        records.append(rec)
-                        awaiting = None
-            if presents_fork(text):
-                fork_open = True
-        if awaiting is not None:
+            if text.strip():
+                turn.append(text)
+            if awaiting is None:
+                continue
+            m = FENCE.search(text)
+            if not m:
+                continue
+            rec = parse_block(m.group(1))
+            if not (rec["kept"] or rec["dropped"]):
+                continue                # блок-пример из объяснения формата
+            kind = awaiting.pop("kind")
+            rec.update(awaiting)
+            awaiting = None
+            if kind == "question":
+                phantom += 1
+                continue
             forks += 1
-    return {"forks": forks, "marked": marked, "records": records}
+            if rec["dropped"]:
+                marked += 1
+                records.append(rec)
+            else:
+                without_rejection += 1
+        if awaiting is not None:
+            close(awaiting)
+    return {"forks": forks, "marked": marked, "records": records,
+            "without_rejection": without_rejection, "phantom": phantom,
+            "unclear": unclear, "questions": questions}
 
 
 def summarize(res: dict) -> dict:
@@ -283,6 +407,10 @@ def summarize(res: dict) -> dict:
         "rejections": len(dropped),
         "rejections_without_reason": no_reason,
         "no_reason_share": round(no_reason / len(dropped), 2) if dropped else None,
+        "without_rejection": res.get("without_rejection", 0),
+        "phantom": res.get("phantom", 0),
+        "unclear": res.get("unclear", 0),
+        "questions": res.get("questions", 0),
     }
 
 
@@ -333,12 +461,18 @@ def main() -> int:
         return 0
     print(f"с разметкой: {stat['marked']}   без разметки: {stat['unmarked']}"
           f"   доля соблюдения: {stat['marked_share']}")
+    if stat["without_rejection"]:
+        print(f"из них без разметки — блок с одним «принято», без отказов: "
+              f"{stat['without_rejection']}")
+    print(f"вне доли: ответ-вопрос {stat['questions']} (из них с лишней записью "
+          f"{stat['phantom']}), неясный ответ без записи {stat['unclear']}")
     if stat["rejections"]:
         print(f"отказов записано: {stat['rejections']}, из них без названной "
               f"причины: {stat['rejections_without_reason']} "
               f"(доля {stat['no_reason_share']})")
-    print("\nОговорка: развилкой считается моя реплика с маркером 🗳️, "
-          "разрешением — ответ человека. Развилка, предъявленная БЕЗ маркера, "
+    print("\nОговорка: развилкой считается мой ход с маркером 🗳️, разрешением — "
+          "ответ человека со ссылкой на вариант или согласием; ответ-вопрос "
+          "развилку не закрывает. Развилка, предъявленная БЕЗ маркера, "
           "в знаменатель не попадает — это известная дыра метрики. Отказ без "
           "причины не дефект: причина ставится только если прозвучала.")
     return 0

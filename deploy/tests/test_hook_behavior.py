@@ -1053,3 +1053,64 @@ def test_h23_finds_the_counter_without_any_environment_variable(tmp_path):
                          text=True, capture_output=True, env=env)
     assert res.returncode == 0
     assert "```decision" in res.stdout, f"хук промолчал: {res.stderr[:200]}"
+
+
+# --- Ревью 25.09: сторож и счётчик одинаково понимают ход и выбор ---
+
+
+def _turns(tmp_path, name, records):
+    """Транскрипт из пар (роль, текст); реплики человека — с origin, как в бою."""
+    p = tmp_path / name
+    rows = []
+    for role, text in records:
+        if role == "human":
+            rows.append({"origin": {"kind": "human"},
+                         "message": {"role": "user", "content": text}})
+        else:
+            rows.append({"message": {"role": "assistant",
+                                     "content": [{"type": "text", "text": text}]}})
+    p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                 encoding="utf-8")
+    return p
+
+
+def test_h23_is_silent_when_the_reply_is_a_question(tmp_path):
+    """«Сколько будет стоить A?» — не выбор: просьба записать решение здесь
+    рождала запись о решении, которого не было."""
+    t = _turns(tmp_path, "q.jsonl", [("human", "что делаем?"),
+                                     ("assistant", "🗳️ Развилка:\n1. A\n2. B")])
+    res = _run("decision-record.sh", {"transcript_path": str(t),
+                                      "prompt": "Сколько будет стоить A?"},
+               tmp_path, USER_LANG="ru")
+    assert res.returncode == 0 and res.stdout.strip() == ""
+
+
+def test_h23_sees_a_fork_earlier_in_the_same_turn(tmp_path):
+    """Выбор → ещё моя реплика без значка → человек выбрал. Раньше сторож
+    смотрел одну последнюю реплику и молчал, а счётчик развилку засчитывал."""
+    t = _turns(tmp_path, "turn.jsonl", [("human", "что делаем?"),
+                                        ("assistant", "🗳️ Развилка:\n1. A\n2. B"),
+                                        ("assistant", "Подробности — выше.")])
+    res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "1"},
+               tmp_path, USER_LANG="ru")
+    assert "```decision" in res.stdout
+
+
+def test_h23_does_not_reach_into_an_earlier_turn(tmp_path):
+    """Развилка из прошлого хода уже отвечена — новый ход без значка её не
+    переоткрывает."""
+    t = _turns(tmp_path, "old.jsonl", [("assistant", "🗳️ Развилка:\n1. A\n2. B"),
+                                       ("human", "1"),
+                                       ("assistant", "Сделал вариант 1.")])
+    res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "спасибо, дальше"},
+               tmp_path, USER_LANG="ru")
+    assert res.stdout.strip() == ""
+
+
+def test_h23_tells_the_agent_to_skip_the_block_when_nothing_was_chosen(tmp_path):
+    """Семантику «выбрал или нет» видит только агент — приписка обязана
+    разрешать НЕ ставить блок."""
+    t = _turns(tmp_path, "f.jsonl", [("assistant", "🗳️ Развилка:\n1. A\n2. B")])
+    res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "дай инструкцию"},
+               tmp_path, USER_LANG="ru")
+    assert "блок НЕ" in res.stdout and "причина:" in res.stdout

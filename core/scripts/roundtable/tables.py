@@ -845,7 +845,13 @@ class Tables:
                     f"{'на другой объём' if named else 'отсутствует'}")
             if block.state == "сделано" and self.permitted(name) is None \
                     and name not in historic:
-                raise ContractError(f"{name}: закрыт, но разрешения на него нет нигде")
+                # Круг 42: «нет нигде» было неправдой, когда разрешение есть, но
+                # выдано на прежний объём. Слова совпадают с ветвью «в работе»,
+                # чтобы опыт с подменой шлюза не зависел от состояния блока.
+                named = any(name in g["блоки"] for g in plan["разрешения_исполнения"])
+                raise ContractError(
+                    f"{name}: закрыт, а разрешение "
+                    f"{'на другой объём' if named else 'отсутствует'}")
         checked.append("в работе — только под действующим разрешением на текущий объём")
 
         # An absorbed block's ids legitimately appear twice: in it and in its

@@ -987,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 9}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 12}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 144
+    assert len(findings) == 147
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1152,7 +1152,7 @@ FINDING_PINS = {
     "R38-6": ("5911649beacc", "63bec5b2d7bf"),
     "R38-7": ("d03eabfe8ec0", "f4aa85503842"),
     "R38-8": ("8e481468c39f", "eac22f0fedd8"),
-    "R38-9": ("d4385f6c9ac4", "53343132d309"),
+    "R38-9": ("d4385f6c9ac4", "1b9132d743af"),
     "R39-1": ("211df7dee553", "fb37793fb35f"),
     "R39-2": ("17c3c7892981", "70d53e7f5525"),
     "R39-3": ("81a50cb0dbf3", "1760c70038c6"),
@@ -1168,8 +1168,11 @@ FINDING_PINS = {
     "R42-5": ("587a9daaa45d", "2da23db62397"),
     "R42-6": ("9cd0258cf1b5", "041f46698eaa"),
     "R42-7": ("7c3ae9da753f", "3f107775f851"),
-    "R42-8": ("dca69af14304", "1760c70038c6"),
+    "R42-8": ("dca69af14304", "c7e8f55684bc"),
     "R42-9": ("77432d77f752", "1760c70038c6"),
+    "R42-10": ("4e68d49e153c", "9cad1b26ea39"),
+    "R42-11": ("23410e5e2f49", "d110ca3f9d38"),
+    "R42-12": ("505910201732", "1b9132d743af"),
 }
 
 
@@ -2551,7 +2554,7 @@ def test_a_permission_cannot_be_rewritten_in_place():
               for g in BLOCKS["разрешения_исполнения"]]
     digest = hashlib.sha256(
         json.dumps(grants, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-    assert digest == "3c2d4ec98b41a2ac36d35befbb245664322fec647a36fc819b3c1f930f3991d0", (
+    assert digest == "738d3761174e8c39886dc7038ce66658401f74dcad09762ef507c114a3378a05", (
         "выданное разрешение переписано: хеш объёма, список блоков или основание")
 
 
@@ -2596,7 +2599,7 @@ def test_the_break_list_itself_is_pinned():
     records = sorted([case[0], case[3], case[4]] for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "d89bceae3dbff2b255f3defbdedff31250fb921d4317725ec68549ab20a24f6a", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "00b1ec313c7d017249538a995df3f75bb4b52c75e9a7cb5ec51684e25796e122", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

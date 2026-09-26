@@ -65,8 +65,9 @@ if not path or not os.path.exists(path):
 
 # Нужен только последний ход, поэтому читаем хвост файла, а не весь
 # транскрипт: он растёт до десятков мегабайт, а хук висит на каждом
-# сообщении пользователя.
-TAIL = 400_000
+# сообщении пользователя. Хвост с запасом: живой ход 24.09 весил 765 КБ, и при
+# 400 КБ значок развилки оказался за краем (ревью 26.09).
+TAIL = 2_000_000
 try:
     with open(path, "rb") as fh:
         size = fh.seek(0, os.SEEK_END)
@@ -81,11 +82,12 @@ if size > TAIL and lines:
 
 sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
 try:
-    from decision_health import open_fork_in_tail, is_question_only
+    from decision_health import fork_turn_in_tail, reply_kind
 except Exception:
     sys.exit(0)                # счётчик недоступен — молчим, а не гадаем
 prompt = data.get("prompt") or ""
-if open_fork_in_tail(lines, prompt) and not is_question_only(prompt):
+turn = fork_turn_in_tail(lines, prompt)
+if turn and reply_kind(prompt, turn) != "question":
     print("fork")
 ' "$STC_CORE" 2>/dev/null)
 

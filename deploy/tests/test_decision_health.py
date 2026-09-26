@@ -279,3 +279,87 @@ def test_reply_kind_on_real_shapes():
     assert dh.reply_kind("делаем вместе с идеей. а как это будет?") == "choice"
     assert dh.reply_kind("сохрани выводы в память") == "unclear"   # «в» — не вариант «В»
     assert dh.reply_kind("эмоджи не мешают") == "unclear"
+
+
+# ── Повторное ревью 26.09: ответ человека на живых данных ─────────────────
+
+_REVIEW_PASTE = ("посмотри ревью: \"🔎 Вердикт: нужны правки. " + "Проверил всё по списку. " * 30
+                 + "\nВ [tables.py:935] неизвестная версия принимается за совпадение. "
+                 + "Автор говорит «да», но тест этого не ловит.\"")
+
+
+def test_reply_kind_reads_only_the_persons_own_words():
+    """Вставленное ревью и цитаты — не слова человека. Раньше «да» и строка
+    «В [tables.py…]» глубоко во вставке делали из просьбы «посмотри ревью» выбор."""
+    assert dh.reply_kind(_REVIEW_PASTE) == "unclear"
+    assert dh.reply_kind('<pasted_content id="1">\nда, берём\n</pasted_content>') == "unclear"
+    assert dh.reply_kind("🔎 **Три находки закрыты.** " + "Подробности. " * 60) == "unclear"
+    # Ответ через цитату: процитирована строка развилки с «?», ответ — ниже.
+    assert dh.reply_kind("<!-- reply -->\n> 🗳️ Развилка: A или B?\n\nвторой") == "choice"
+
+
+def test_reply_kind_explicit_option_beats_a_question_mark():
+    """Выбор с попутным вопросом — всё равно выбор («1 - вариант 1 … ?»)."""
+    assert dh.reply_kind("1 - вариант 1\n2 - а как это будет?") == "choice"
+    assert dh.reply_kind("вариант 2, но сколько это стоит?") == "choice"
+    assert dh.reply_kind("сделай Б и потом распиши план реализации") == "choice"
+    # Привычка Антона: повторить вариант и дописать «- это». Живой ответ 17.09 —
+    # тот самый выбор, с которого начался журнал решений.
+    assert dh.reply_kind("я правильно понимаю, что журнал в поиске?\n\n"
+                         "Сужаем до отказов - это\n\nЧем ловить — реши сам") == "choice"
+    # Заглавная буква в начале фразы — не метка варианта.
+    assert dh.reply_kind("В общем, я пока не решил.") == "unclear"
+    # Вопрос про вариант — всё ещё вопрос.
+    assert dh.reply_kind("А что будет с вариантом 2?") == "question"
+
+
+def test_reply_kind_recognises_a_choice_by_the_option_name():
+    fork = ("🗳️ Как поступаем?\n- **Влить в ветку ВК сейчас (советую).** Меньше слияний.\n"
+            "- **Оставить отдельно.** Проще откатить.")
+    assert dh.reply_kind("Влить в ветку ВК сейчас", fork) == "choice"
+    assert dh.reply_kind("сделай инструкцию по экосбору", fork) == "unclear"
+
+
+def test_a_fork_stays_open_through_a_clarifying_question(tmp_path):
+    """«🗳️ A или B?» → «Сколько стоит A?» → ответ без значка → «берём A».
+    Раньше развилка терялась: и счётчик, и сторож смотрели только на ход
+    перед последним сообщением."""
+    lines = [_fork(0, "🗳️ Развилка: A или B?"), _human(1, text="Сколько будет стоить A?"),
+             _plain_reply(2, "A — 5000 ₽, B — 3000 ₽."), _human(3, text="берём A")]
+    _write(tmp_path, "a.jsonl", lines + [_reply(4)])
+    res = dh.scan(tmp_path, None)
+    assert res["forks"] == 1 and res["marked"] == 1 and res["questions"] == 1
+    assert dh.open_fork_in_tail(lines[:3]) is True
+    assert dh.open_fork_in_tail(lines, current_prompt="берём A") is True
+
+
+def test_a_record_after_an_unclear_reply_does_not_raise_the_share(tmp_path):
+    """Запись после «продолжай» раньше засчитывалась соблюдением, а неясный
+    ответ без записи из доли выпадал — долю можно было только поднять."""
+    _write(tmp_path, "a.jsonl", [
+        _fork(0), _human(1, text="вариант 1"), _plain_reply(2),
+        _fork(3), _human(4, text="продолжай"), _reply(5),
+    ])
+    res = dh.scan(tmp_path, None)
+    assert res["forks"] == 1 and res["marked"] == 0
+    assert res["after_unclear"] == 1
+
+
+def test_a_reply_typed_while_the_agent_works_is_a_human_reply(tmp_path):
+    """Сообщение, набранное во время работы агента, пишется вложением
+    queued_command, а не репликой user. Раньше его не видел никто, и запись
+    приписывалась чужой развилке."""
+    queued = _line({"timestamp": TS.format(1), "sessionId": "s1", "type": "attachment",
+                    "attachment": {"type": "queued_command", "prompt": "вариант 1",
+                                   "commandMode": "prompt", "origin": {"kind": "human"}}})
+    notification = _line({"timestamp": TS.format(1), "sessionId": "s1", "type": "attachment",
+                          "attachment": {"type": "queued_command",
+                                         "prompt": "<task-notification>готово</task-notification>",
+                                         "commandMode": "task-notification"}})
+    _write(tmp_path, "a.jsonl", [_fork(0), notification, queued, _reply(2)])
+    res = dh.scan(tmp_path, None)
+    assert res["forks"] == 1 and res["marked"] == 1
+
+
+def test_an_empty_rejection_is_not_a_rejection():
+    assert dh.parse_block("принято: делать так\nотклонено: —")["dropped"] == []

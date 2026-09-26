@@ -1114,3 +1114,41 @@ def test_h23_tells_the_agent_to_skip_the_block_when_nothing_was_chosen(tmp_path)
     res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "дай инструкцию"},
                tmp_path, USER_LANG="ru")
     assert "блок НЕ" in res.stdout and "причина:" in res.stdout
+
+
+# --- Повторное ревью 26.09: боевой порядок записи и уточняющий вопрос ---
+
+
+def test_h23_fires_when_the_reply_is_already_in_the_transcript(tmp_path):
+    """В бою харнесс пишет сообщение человека в транскрипт РАНЬШЕ, чем зовёт
+    сторожа. Если сторож не перешагнёт его, он примет свежее сообщение за
+    границу хода и замолчит — а тесты, где сообщения в транскрипте нет, этого
+    не видели (ревью 26.09: поломка проходила все проверки)."""
+    t = _turns(tmp_path, "live.jsonl", [("human", "что делаем?"),
+                                        ("assistant", "🗳️ Развилка:\n1. A\n2. B"),
+                                        ("human", "1")])
+    res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "1"},
+               tmp_path, USER_LANG="ru")
+    assert "```decision" in res.stdout
+
+
+def test_h23_fires_on_a_choice_after_a_clarifying_question(tmp_path):
+    """«🗳️ A или B?» → «Сколько стоит A?» → ответ без значка → «берём A»."""
+    t = _turns(tmp_path, "clarify.jsonl", [("assistant", "🗳️ Развилка: A или B?"),
+                                           ("human", "Сколько будет стоить A?"),
+                                           ("assistant", "A — 5000 ₽, B — 3000 ₽."),
+                                           ("human", "берём A")])
+    res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "берём A"},
+               tmp_path, USER_LANG="ru")
+    assert "```decision" in res.stdout
+
+
+def test_h23_sees_a_fork_at_the_start_of_a_very_long_turn(tmp_path):
+    """Живой ход 24.09 весил 765 КБ, и значок лежал за пределом хвоста, который
+    читал сторож (400 КБ): сторож молчал, счётчик развилку считал."""
+    work = [("assistant", "Промежуточный шаг. " + "x" * 50_000) for _ in range(12)]
+    t = _turns(tmp_path, "long.jsonl",
+               [("assistant", "🗳️ Развилка:\n1. A\n2. B")] + work)
+    res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "1"},
+               tmp_path, USER_LANG="ru")
+    assert "```decision" in res.stdout

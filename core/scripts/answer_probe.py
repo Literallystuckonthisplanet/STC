@@ -171,6 +171,8 @@ def main() -> int:
                     mark = "✅" if not problems else "❌"
                     print(f"{mark} {harness:6} {scenario:6} #{run}  "
                           + ("; ".join(problems) if problems else "по формату"))
+                    if problems:          # без самого ответа провал не разобрать
+                        print("    " + answer.replace("\n", "\n    "))
 
     if args.json:
         print(json.dumps(results, ensure_ascii=False, indent=2))

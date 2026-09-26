@@ -64,3 +64,13 @@ def test_a_failed_launch_is_unverified_not_a_format_failure(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["answer_probe.py", "--harness", "claude",
                                       "--scenario", "report"])
     assert P.main() == 2
+
+
+def test_a_failed_answer_is_shown_so_it_can_be_read(monkeypatch, capsys):
+    """Проба 26.09: Codex однажды не поставил значок развилки, но ответ не
+    сохранился, и разобрать причину было нельзя. Провал печатается с ответом."""
+    monkeypatch.setattr(P, "ask", lambda *a: ("Выбери: автоматически или вручную.", ""))
+    monkeypatch.setattr(sys, "argv", ["answer_probe.py", "--harness", "codex",
+                                      "--scenario", "choice"])
+    assert P.main() == 1
+    assert "Выбери: автоматически или вручную." in capsys.readouterr().out

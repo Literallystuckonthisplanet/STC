@@ -11,6 +11,43 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — the decision journal judges the person's own words
+- Two external reviews (2026-09-26/27) found the "choice or question" rule
+  wrong on live replies. It now reads only what the person wrote (pasted
+  reviews and quotes are dropped), judges each sentence on its own ("First.
+  How long will it take?" is a choice; an option named inside a question is a
+  question), recognises a choice by the option's name, and keeps the fork open
+  through a clarifying question — in the counter and the hook alike.
+- The hook walks the transcript forward in the same order as the counter, so
+  it no longer asks to record a choice that is already recorded; it reads a
+  2 MB tail (a live 765 KB turn did not fit into 400 KB) and is tested with the
+  reply already written to the transcript, as it is live.
+- A record after an unclear reply ("continue") no longer raises the share; it
+  is printed on its own line. Replies typed while the agent works
+  (`queued_command`) count as replies. Known limit: a negation ("option 1 does
+  not fit, I choose nothing yet") still reads as a choice.
+
+### Fixed — archive copies no longer change the counts
+- Decision and hook-health counters process the fullest copy of a session
+  first, so file names no longer decide whether a record or a blind repeat is
+  seen. Advice attachments carry a key and count once across copies. Without
+  the hook registry the text output says "unverified" instead of "none".
+
+### Fixed — answer-clarity measurement
+- `answer_health.py`: a fork ends at the next fork (a long card kept its
+  second option, a neighbour no longer lends its own), `**Б:**` and
+  `А (советую):` are options, a bold topic list without a question or advice
+  is not. New `--until` lets the baseline and the "after" window be counted by
+  the same counter over the same archive; the 2026-10-08 remeasure uses it.
+- `answer_probe.py`: a failed launch ("Not logged in", exit 1) is
+  "unverified", not a format failure; a failed answer is printed so it can be
+  read.
+
+### Changed — Roundtable block Б1 (in development)
+- Repairs from review #14: the journal no longer breaks off, the repeat hash is
+  no longer blind, mutations are protected, the tail is repaired byte-wise and
+  the lock is held while it matters.
+
 ### Fixed — Context7 could keep running a stale cached copy
 - Every adapter launched Context7 as a bare `npx -y @upstash/context7-mcp`;
   without a tag npx may reuse a cached copy instead of asking the registry. A

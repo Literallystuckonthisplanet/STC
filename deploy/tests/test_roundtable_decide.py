@@ -570,23 +570,28 @@ def test_the_ratchet_has_four_independent_mutation_class_generators():
         "подменить_текст_сохранив_ID", "подсунуть_недопустимое",
     }
 
-    assert ratchet.CLASSES["убрать_правило"]({"id": "X-1", "условие": "т"}) is ratchet._Deleted
+    # Finding 3: every generator returns `(value, reason)` — a miss ALWAYS
+    # carries a non-empty reason, never a bare `None`.
+    assert ratchet.CLASSES["убрать_правило"]({"id": "X-1", "условие": "т"}) == (ratchet._Deleted, None)
 
-    assert ratchet.CLASSES["подменить_значение_на_допустимое"]({"a": True}) == {"a": False}
-    assert ratchet.CLASSES["подменить_значение_на_допустимое"]({"a": "текст"}) is None, (
-        "a row with no boolean anywhere is not eligible for this class")
+    value, reason = ratchet.CLASSES["подменить_значение_на_допустимое"]({"a": True})
+    assert value == {"a": False} and reason is None
+    value, reason = ratchet.CLASSES["подменить_значение_на_допустимое"]({"a": "текст"})
+    assert value is None and reason, (
+        "a row with no boolean anywhere is not eligible for this class, and must say so")
 
-    kept_id = ratchet.CLASSES["подменить_текст_сохранив_ID"]({"id": "X-1", "условие": "т"})
-    assert kept_id["id"] == "X-1" and kept_id["условие"] != "т"
-    assert ratchet.CLASSES["подменить_текст_сохранив_ID"]({"a": "текст"}) is None, (
-        "a row with no id is not eligible for this class"
-    )
+    kept_id, reason = ratchet.CLASSES["подменить_текст_сохранив_ID"]({"id": "X-1", "условие": "т"})
+    assert kept_id["id"] == "X-1" and kept_id["условие"] != "т" and reason is None
+    value, reason = ratchet.CLASSES["подменить_текст_сохранив_ID"]({"a": "текст"})
+    assert value is None and reason, "a row with no id is not eligible for this class, and must say so"
 
-    assert ratchet.CLASSES["подсунуть_недопустимое"]({"a": "текст"}) == {
-        "a": "текст", ratchet.UNKNOWN_FIELD: True}
-    assert ratchet.CLASSES["подсунуть_недопустимое"]("проза") == ratchet.MUTATION_SENTINEL
-    assert ratchet.CLASSES["подсунуть_недопустимое"](True) is None, (
-        "every bool is a valid bool — there is no generic invalid substitute")
+    value, reason = ratchet.CLASSES["подсунуть_недопустимое"]({"a": "текст"})
+    assert value == {"a": "текст", ratchet.UNKNOWN_FIELD: True} and reason is None
+    value, reason = ratchet.CLASSES["подсунуть_недопустимое"]("проза")
+    assert value == ratchet.MUTATION_SENTINEL and reason is None
+    value, reason = ratchet.CLASSES["подсунуть_недопустимое"](True)
+    assert value is None and reason, (
+        "every bool is a valid bool — there is no generic invalid substitute, and must say so")
 
 
 # --------------------------------------------------------------------------
@@ -626,3 +631,321 @@ def test_admissible_decision_code_swap_changes_the_route_and_only_a_pin_catches_
     after = {o.conditions["decision"]: o.target for t in mutated.issue_transitions
             if t.event == "anton-decision" for o in t.outcomes}
     assert after != pinned
+
+
+# ==========================================================================
+# БТ2 rework — a review of the ratchet found seven more ways it could report
+# coverage that was not there. Findings 1-5 are about the MEASUREMENT
+# (mutate_roundtable_tables.py); 6-7 are about rules nothing was watching.
+# ==========================================================================
+
+def _ratchet_module():
+    path = ROOT / "deploy" / "tests" / "mutate_roundtable_tables.py"
+    spec = importlib.util.spec_from_file_location("rt_ratchet_rework", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# --------------------------------------------------------------------------
+# Finding 1 — a typo in --only/--class matched nothing and reported "100 %"
+# --------------------------------------------------------------------------
+
+def test_a_typo_in_only_or_class_is_refused_not_silently_all_green():
+    ratchet = _ratchet_module()
+    # Before the fix this returned 0 with every class printed as
+    # "мутировано: 0, замечено: 0 (100%)" — a filter matching nothing looked
+    # exactly like a full, green pass.
+    assert ratchet.main(only="frmaing.yaml") != 0
+    assert ratchet.main(only_class="выдуманный_класс") != 0
+    # the real names still work, unaffected by the new validation
+    assert "framing.yaml" in {p.name for p in ratchet.CANON.glob("*.yaml")}
+    assert "убрать_правило" in ratchet.CLASSES
+
+
+# --------------------------------------------------------------------------
+# Finding 2 — a bare scalar top-level field was invisible to `_targets`
+# --------------------------------------------------------------------------
+
+def test_targets_walk_reaches_a_bare_scalar_top_level_field():
+    ratchet = _ratchet_module()
+    data = {"версия_контракта": 1, "статус": "отложен", "список": [1, 2]}
+    targets = ratchet._targets(data, "synthetic.yaml")
+    assert ("статус",) in targets, "a scalar field must be its own target"
+
+
+def test_the_shared_resolver_status_is_pinned_until_it_actually_ships():
+    # Finding 2's real hole: precheck.yaml's `общий_резолвер: отложен` is a
+    # PROJECT-STATE claim ("not built yet"), not descriptive prose — flipping
+    # it to `готово` used to pass the whole suite silently, because no
+    # top-level scalar was ever a mutation target and nothing else read this
+    # one either.
+    assert TABLES.raw["precheck"]["общий_резолвер"] == "отложен", (
+        "flip this only alongside actually building the shared resolver "
+        "(see the comment above the field in precheck.yaml)")
+
+
+# --------------------------------------------------------------------------
+# Finding 3 — a generator's `None` looked the same whether deliberate or buggy
+# --------------------------------------------------------------------------
+
+def test_every_mutation_generator_returns_a_reason_alongside_a_miss():
+    ratchet = _ratchet_module()
+    # a value the class DOES apply to: no reason required, but returning one
+    # is not tested here — only that a MISS always carries a reason.
+    for name, generate in ratchet.CLASSES.items():
+        value, reason = generate("бесформенная строка без булевых полей и id")
+        if value is None:
+            assert reason and reason.strip(), (
+                f"{name}: None без причины — дефект генератора")
+
+
+def test_a_generator_returning_none_without_a_reason_is_a_ratchet_defect():
+    # NOT `ratchet.main(...)` here: `main` shells out to a real `pytest` over
+    # SUITES, which includes THIS file — calling it from inside a test that
+    # lives in that same file would have the subprocess re-collect and
+    # re-run this very test, recursively, with no base case. `_run_generator`
+    # is the exact rule under test, split out for precisely this reason.
+    ratchet = _ratchet_module()
+
+    def broken(_value):
+        return None, ""  # empty reason — exactly the bug finding 3 named
+
+    _raises(ratchet.RatchetDefect, ratchet._run_generator, broken, "x", "synthetic label")
+
+    # a real class, given a value it legitimately has nothing to say about,
+    # must NOT raise — only an EMPTY reason is the defect.
+    value, reason = ratchet._run_generator(
+        ratchet.CLASSES["подменить_значение_на_допустимое"], "текст без булевых полей",
+        "synthetic label")
+    assert value is None and reason
+
+
+# --------------------------------------------------------------------------
+# Finding 4 — CLASS_EXCLUSIONS was pinned by nothing outside this file
+# --------------------------------------------------------------------------
+
+def test_the_class_exclusions_are_named_and_nothing_more():
+    # Named one by one, the same shape the findings registry uses — not a
+    # hash. A silently added or silently widened entry fails this by name.
+    ratchet = _ratchet_module()
+    expected = {
+        "убрать_правило": {
+            ("precheck.yaml", "почему"),
+        },
+        "подменить_значение_на_допустимое": {
+            ("vocabulary.yaml", "коды_условий", "run_finished"),
+        },
+        "подсунуть_недопустимое": {
+            ("framing.yaml", "хранение"),
+            ("issues.yaml", "валидация"),
+            ("precheck.yaml", "классы_файлов"),
+            ("precheck.yaml", "фикстуры", "не_смешивать_с"),
+            ("precheck.yaml", "почему"),
+            ("stages.yaml", "стадии", "идея"),
+            ("stages.yaml", "стадии", "план"),
+            ("stages.yaml", "стадии", "ревью"),
+            ("stages.yaml", "слепой_вопрос"),
+            ("stages.yaml", "сигнал_нежизнеспособности"),
+            ("stages.yaml", "метрика_цены_понимания"),
+            ("stages.yaml", "приоритет_расхода"),
+            ("blocks.yaml", "заключения_ревью", 0),
+            ("blocks.yaml", "разрешения_исполнения", 0),
+            ("blocks.yaml", "разрешения_исполнения", 1),
+            ("blocks.yaml", "история_разрешений", 0),
+            ("blocks.yaml", "история_разрешений", 1),
+            ("blocks.yaml", "история_разрешений", 2),
+            ("blocks.yaml", "шлюзы", "ремонт_после_ревью_12"),
+            ("blocks.yaml", "шлюзы", "изоляция_подтверждена"),
+            ("blocks.yaml", "исполнение", "роли"),
+            ("blocks.yaml", "исполнение", "проверки"),
+            ("blocks.yaml", "сверка_записи", "код_движка"),
+            ("blocks.yaml", "порядок_критики", "почему"),
+            ("vocabulary.yaml", "операции", 2),
+            ("vocabulary.yaml", "операции", 4),
+            ("vocabulary.yaml", "операции", 5),
+            ("vocabulary.yaml", "операции", 6),
+            ("vocabulary.yaml", "операции", 7),
+            ("vocabulary.yaml", "операции", 8),
+            ("vocabulary.yaml", "операции", 9),
+            ("vocabulary.yaml", "операции", 10),
+            ("vocabulary.yaml", "схемы_контрактов", 0),
+            ("vocabulary.yaml", "схемы_контрактов", 1),
+            ("vocabulary.yaml", "схемы_контрактов", 2),
+            ("vocabulary.yaml", "схемы_контрактов", 3),
+            ("vocabulary.yaml", "схемы_контрактов", 4),
+            ("vocabulary.yaml", "схемы_контрактов", 5),
+            ("vocabulary.yaml", "схемы_контрактов", 6),
+            ("vocabulary.yaml", "схемы_контрактов", 7),
+            ("vocabulary.yaml", "схемы_контрактов", 8),
+            ("vocabulary.yaml", "попытка", "почему"),
+            ("vocabulary.yaml", "повтор_невалидного_ответа", "порядок"),
+            ("vocabulary.yaml", "повтор_невалидного_ответа", "оба_невалидны"),
+            ("findings.yaml", "находки"),
+        },
+    }
+    actual = {cls: set(entries) for cls, entries in ratchet.CLASS_EXCLUSIONS.items()}
+    assert actual == expected
+    for cls, entries in ratchet.CLASS_EXCLUSIONS.items():
+        for entry, reason in entries.items():
+            assert reason and reason.strip(), f"{cls}:{entry} исключён без причины"
+
+
+# --------------------------------------------------------------------------
+# Finding 5 — a collection error was classified by matching truncated text
+# --------------------------------------------------------------------------
+
+def test_a_collection_error_is_classified_by_loading_the_mutant_in_process(tmp_path):
+    ratchet = _ratchet_module()
+    directory = _copy(tmp_path)
+
+    def typo(data):
+        for row in data["переходы"]:
+            if row.get("условия", {}).get("блокер") == "сменой_решения":
+                row["условия"] = {"блокер": "сменой_решениа"}
+
+    _edit(directory, "issues", typo)
+    assert ratchet._is_contract_refusal(directory) is True
+
+    # a directory holding no tables at all is a DIFFERENT failure (missing
+    # files), never the contract's own refusal — classified as such too
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert ratchet._is_contract_refusal(empty) is False
+
+
+# --------------------------------------------------------------------------
+# Finding 6 — one row's `исходы` could be reordered with nothing noticing
+# --------------------------------------------------------------------------
+
+def test_every_issue_and_framing_route_is_pinned_end_to_end():
+    # Every row, every outcome, both automata — spelled out literally so that
+    # swapping which condition routes to which `в` INSIDE one row (the exact
+    # shape of the reordering finding 6 named) fails this assertion instead
+    # of passing `check()` silently (both codes stay declared, coverage stays
+    # exhaustive — `check()` was never going to see it).
+    issue_pins = {
+        (None, "new-finding", ()): "открыт",
+        ("открыт", "lead-response", (("ответ_ведущего", "принял"),)): "принят_автором",
+        ("открыт", "lead-response", (("ответ_ведущего", "оспорил"),)): "оспорен_автором",
+        ("остался", "lead-response", (("ответ_ведущего", "принял"),)): "принят_автором",
+        ("остался", "lead-response", (("ответ_ведущего", "оспорил"),)): "оспорен_автором",
+        ("принят_автором", "critic-outcome", (("итог_критика", "исправлено"),)): "закрыт_исправлением",
+        ("принят_автором", "critic-outcome", (("итог_критика", "осталось"),)): "остался",
+        ("оспорен_автором", "critic-outcome", (("итог_критика", "исправлено"),)): "возражение_снято",
+        ("оспорен_автором", "critic-outcome", (("итог_критика", "осталось"),)): "остался",
+        ("открыт", "escalate", (("блокер", "сменой_решения"),)): "вынесен_Антону",
+        ("остался", "escalate", (("блокер", "сменой_решения"),)): "вынесен_Антону",
+        ("открыт", "escalate", (("блокер", "только_сменой_цели"),)): "вынесен_Антону",
+        ("остался", "escalate", (("блокер", "только_сменой_цели"),)): "вынесен_Антону",
+        ("открыт", "escalate", (("блокер", "неизвестное_высокой_существенности"),)): "вынесен_Антону",
+        ("остался", "escalate", (("блокер", "неизвестное_высокой_существенности"),)): "вынесен_Антону",
+        ("открыт", "escalate", (("блокер", "правкой_круги_исчерпаны"),)): "вынесен_Антону",
+        ("остался", "escalate", (("блокер", "правкой_круги_исчерпаны"),)): "вынесен_Антону",
+        ("вынесен_Антону", "anton-decision", (("decision", "принять_риск"),)): "риск_принят",
+        ("вынесен_Антону", "anton-decision", (("decision", "остановить"),)): "остановлено",
+        ("вынесен_Антону", "anton-decision", (("decision", "изменить_цель"),)): "цель_изменена",
+        ("вынесен_Антону", "anton-decision", (("decision", "сменить_решение"),)): "решение_изменено",
+        ("вынесен_Антону", "anton-decision", (("decision", "запросить_ещё_правку"),)): "открыт",
+    }
+    actual_issue = {
+        (t.source, t.event, tuple(sorted(o.conditions.items()))): o.target
+        for t in TABLES.issue_transitions for o in t.outcomes}
+    assert actual_issue == issue_pins
+
+    framing_pins = {
+        (None, "new-objection", ()): "открыто",
+        ("открыто", "anton-decision", (("framing_decision", "подтвердить_постановку"),)): "подтверждено",
+        ("открыто", "anton-decision", (("framing_decision", "изменить_цель"),)): "принято",
+        ("открыто", "anton-decision", (("framing_decision", "сменить_решение"),)): "принято",
+        ("открыто", "anton-decision", (("framing_decision", "остановить"),)): "остановлено",
+        ("принято", "run-spawned", ()): "породило_новый_прогон",
+    }
+    actual_framing = {
+        (t.source, t.event, tuple(sorted(o.conditions.items()))): o.target
+        for t in TABLES.framing_transitions for o in t.outcomes}
+    assert actual_framing == framing_pins
+
+    for pins, decide in ((issue_pins, TABLES.decide_issue_transition),
+                        (framing_pins, TABLES.decide_framing_transition)):
+        for (source, event, conditions), target in pins.items():
+            assert decide(source, event, dict(conditions)).to == target
+
+
+def test_swapping_two_outcomes_inside_one_critic_outcome_row_is_caught(tmp_path):
+    # The coordinator's exact repro: swap which target "исправлено" and
+    # "осталось" route to, inside the `оспорен_автором` row only. Both codes
+    # stay declared and coverage stays exhaustive, so `check()` stays silent
+    # — only the end-to-end pin above tells the two routes apart.
+    directory = _copy(tmp_path)
+
+    def swap_inside_one_row(data):
+        row = next(r for r in data["переходы"]
+                  if r.get("из") == "оспорен_автором" and r.get("событие") == "critic-outcome")
+        by_outcome = {o["условия"]["итог_критика"]: o for o in row["исходы"]}
+        by_outcome["исправлено"]["в"] = "остался"
+        by_outcome["осталось"]["в"] = "возражение_снято"
+
+    _edit(directory, "issues", swap_inside_one_row)
+    mutated = T.load(directory)
+    mutated.check()  # loader and full check stay silent — this is the point
+
+    swapped = mutated.decide_issue_transition(
+        "оспорен_автором", "critic-outcome", {"итог_критика": "исправлено"})
+    assert swapped.to == "остался", "the swap moved silently until this pin"
+
+
+def test_targets_address_an_outcome_entry_inside_исходы_on_its_own():
+    ratchet = _ratchet_module()
+    row = {"из": "принят_автором", "в": ["закрыт_исправлением", "остался"],
+          "кто": "поднявший_критик", "условие": "т", "событие": "critic-outcome",
+          "исходы": [{"условия": {"итог_критика": "исправлено"}, "в": "закрыт_исправлением"},
+                     {"условия": {"итог_критика": "осталось"}, "в": "остался"}]}
+    data = {"версия_контракта": 1, "переходы": [row]}
+    targets = ratchet._targets(data, "synthetic.yaml")
+    assert ("переходы", 0, "исходы", 0) in targets
+    assert ("переходы", 0, "исходы", 1) in targets
+
+
+# --------------------------------------------------------------------------
+# Finding 7 — the prose `условие` and the structural route could drift apart
+# --------------------------------------------------------------------------
+#
+# DECIDED: pin the (prose, structural route) PAIR literally in this test,
+# rather than require the prose to name every structural condition code by
+# word. Free Russian text matched against code identifiers is its own source
+# of false confidence — a prose edit that keeps meaning but changes wording
+# would either false-positive (word missing) or the check would have to be
+# loose enough to miss a real drift anyway. A literal pin fails the moment
+# EITHER side changes without the other, which is the actual guarantee
+# БТ2-1 asks for, and needs no new matching heuristic in tables.py.
+
+def test_the_prose_and_the_structural_route_are_pinned_as_one_pair():
+    pinned_issue_prose = [
+        (None, "new-finding", "принята валидная находка"),
+        ("открыт", "lead-response", "контракт C"),
+        ("остался", "lead-response", "контракт C"),
+        ("принят_автором", "critic-outcome", "контракт D"),
+        ("оспорен_автором", "critic-outcome", "контракт D"),
+        ("открыт", "escalate", "блокер сменой_решения, любой круг"),
+        ("остался", "escalate", "блокер сменой_решения, любой круг"),
+        ("открыт", "escalate", "блокер только_сменой_цели, любой круг"),
+        ("остался", "escalate", "блокер только_сменой_цели, любой круг"),
+        ("открыт", "escalate", "неизвестное высокой существенности, любой круг"),
+        ("остался", "escalate", "неизвестное высокой существенности, любой круг"),
+        ("открыт", "escalate", "блокер правкой, круги исчерпаны"),
+        ("остался", "escalate", "блокер правкой, круги исчерпаны"),
+        ("вынесен_Антону", "anton-decision", "контракт E, в границах допустимых решений"),
+    ]
+    actual_issue = [(t.source, t.event, t.condition) for t in TABLES.issue_transitions]
+    assert actual_issue == pinned_issue_prose
+
+    pinned_framing_prose = [
+        (None, "new-objection", "принята валидная находка класса возражение_к_постановке"),
+        ("открыто", "anton-decision", "решение подтвердить_постановку, в любой момент"),
+        ("открыто", "anton-decision", "решение изменить_цель или сменить_решение, в любой момент"),
+        ("открыто", "anton-decision", "решение остановить, в любой момент"),
+        ("принято", "run-spawned", "создан новый связанный прогон"),
+    ]
+    actual_framing = [(t.source, t.event, t.condition) for t in TABLES.framing_transitions]
+    assert actual_framing == pinned_framing_prose

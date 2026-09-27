@@ -33,6 +33,7 @@ The same entry points work as `python3 -m roundtable.tables …` when
 from __future__ import annotations
 
 import argparse
+import contextvars
 import functools
 import hashlib
 import itertools
@@ -880,8 +881,22 @@ class Tables:
         # коммиты (их сверяет `authority`), а блок, пишущий код движка, — файл
         # тестов: иначе сверка запретила бы ему тесты или их спрятали бы в чужом.
         rule = plan["сверка_записи"]
-        _require(rule, {"трейлер", "код_движка", "тесты", "до_правила"}, set(),
-                 "blocks.сверка_записи")
+        _require(rule, {"трейлер", "код_движка", "тесты", "до_правила"},
+                 {"откачено_без_трейлера"}, "blocks.сверка_записи")
+        # Круг 42 (R42-8): коммит, чью пометку git не разобрал, остаётся в истории
+        # только как доказанное исключение — откачен и переложен заново.
+        exempt = rule.get("откачено_без_трейлера", {})
+        if not isinstance(exempt, dict):
+            raise ContractError("blocks.сверка_записи.откачено_без_трейлера: ожидалась карта")
+        for sha, entry in exempt.items():
+            where = f"blocks.сверка_записи.откачено_без_трейлера.{str(sha)[:7]}"
+            if not _is_sha40(sha):
+                raise ContractError(f"{where}: ключ — полный sha коммита")
+            _require(entry, {"откат", "заново", "почему"}, set(), where)
+            for key in ("откат", "заново"):
+                if not _is_sha40(entry[key]):
+                    raise ContractError(f"{where}.{key}: ожидался полный sha коммита")
+            _nonempty_string(entry["почему"], f"{where}.почему")
         _string_list(rule["до_правила"], "blocks.сверка_записи.до_правила")
         for key in ("трейлер", "код_движка", "тесты"):
             _nonempty_string(rule[key], f"blocks.сверка_записи.{key}")
@@ -1301,12 +1316,16 @@ class Tables:
                 recorded_versions.get(vendor) for vendor in spec_report["версии_команд"]):
             drift.append("в отчёте нет версий обоих вендоров")
             return drift
-        observed = (observed_versions if observed_versions is not None
-                    else observe_cli_versions(spec_report["версии_команд"]))
-        if observed is None:
-            drift.append("среду не удалось спросить о версиях")
-        elif recorded_versions != observed:
-            drift.append("версии_CLI")
+        if observed_versions is None and _WITHOUT_ENVIRONMENT.get():
+            # Не спросили — значит не подтверждено: отсутствие ответа не согласие.
+            drift.append(VERSIONS_NOT_ASKED)
+        else:
+            observed = (observed_versions if observed_versions is not None
+                        else observe_cli_versions(spec_report["версии_команд"]))
+            if observed is None:
+                drift.append("среду не удалось спросить о версиях")
+            elif recorded_versions != observed:
+                drift.append("версии_CLI")
 
         # 🚩 Ревью #31: неполный отпечаток открывал шлюз живых вызовов. Совпадение
         # трёх полей из семи выдавалось за подтверждение всей изоляции, хотя
@@ -1340,6 +1359,13 @@ def _cli_version(command: tuple) -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
+# Круг 42 (R42-11): генератор документа спрашивал среду о версиях CLI, и текст
+# документа менялся от того, что установлено на машине. Пока идёт рендер, среда
+# не спрашивается вовсе: версии сверяет только команда `isolation`.
+_WITHOUT_ENVIRONMENT = contextvars.ContextVar("roundtable_without_environment", default=False)
+VERSIONS_NOT_ASKED = "версии_CLI: сверяет команда isolation, документ среду не спрашивает"
+
+
 def observe_cli_versions(commands: dict) -> dict | None:
     """Спросить среду, какие вендоры стоят сейчас. Не ответила — не согласие."""
     observed = {}
@@ -1349,6 +1375,11 @@ def observe_cli_versions(commands: dict) -> dict | None:
             return None
         observed[vendor] = version
     return observed
+
+
+def _is_sha40(value) -> bool:
+    return (isinstance(value, str) and len(value) == 40
+            and all(c in "0123456789abcdef" for c in value))
 
 
 def _is_sha256(value) -> bool:
@@ -1520,7 +1551,87 @@ def write_scope_receipt(tables: "Tables") -> list[str]:
             if claimed and listed.get(sha) != claimed:
                 problems.append(f"{sha[:7]} помечен «{trailer}: {claimed}», но в коммитах "
                                 f"{claimed} не назван — работа мимо учёта")
+    return problems + unparsed_block_marks(tables)
+
+
+def unparsed_block_marks(tables: "Tables") -> list[str]:
+    """Круг 42 (R42-8): пометка блока в тексте, которую git не разобрал трейлером.
+
+    git считает трейлерами только ПОСЛЕДНИЙ абзац сообщения. Пустая строка
+    между пометкой и подписью оставляла пометку текстом тела: коммит выглядел
+    непомеченным, и сверка его не проверяла вовсе. Строка пометки в начале
+    строки тела без разобранного трейлера — отказ; упоминание посреди фразы —
+    не пометка. Исключение — только доказанное (`_exemption_problems`).
+    """
+    rule = tables.plan["сверка_записи"]
+    trailer = rule["трейлер"]
+    exempt = rule.get("откачено_без_трейлера") or {}
+    trailer_format = f"%(trailers:key={trailer},valueonly,separator=%x02)"
+    parsed_log = _git("log", f"--format=%H%x00{trailer_format}%x01")
+    bodies = _git("log", "--format=%H%x00%B%x01")
+    if parsed_log is None or bodies is None:
+        return ["git не отдал сообщения коммитов — пометку в тексте не проверить"]
+    parsed = {}
+    for record in parsed_log.split("\x01"):
+        if "\x00" not in record:
+            continue
+        sha, values = record.strip("\n").split("\x00", 1)
+        parsed[sha] = {value.strip() for value in values.split("\x02") if value.strip()}
+    pattern = re.compile(rf"^{re.escape(trailer)}:[ \t]*(\S+)[ \t]*$", re.M)
+    problems = []
+    for record in bodies.split("\x01"):
+        if "\x00" not in record:
+            continue
+        sha, body = record.strip("\n").split("\x00", 1)
+        unparsed = sorted(set(pattern.findall(body)) - parsed.get(sha, set()))
+        if not unparsed:
+            continue
+        if sha in exempt:
+            problems += _exemption_problems(sha, unparsed, exempt[sha], trailer)
+            continue
+        problems.append(f"{sha[:7]}: пометка «{trailer}: {unparsed[0]}» стоит в тексте, но git "
+                        f"не разобрал её трейлером — пустая строка отделила её от подписи; "
+                        f"работа мимо учёта")
     return problems
+
+
+def _exemption_problems(sha: str, unparsed: list, entry: dict, trailer: str) -> list[str]:
+    """Исключение доказывается историей, а не записью в таблице.
+
+    Работа коммита откачена (откат трогает его файлы и стоит после него) и
+    переложена заново коммитом с теми же файлами и настоящим трейлером того же
+    блока. Иначе список исключений стал бы новым способом спрятать работу.
+    """
+    label = f"{sha[:7]}: исключение из правила о пометке"
+    why = entry.get("почему")
+    if not isinstance(why, str) or not why.strip():
+        return [f"{label} без причины"]
+    undone, redone = entry.get("откат"), entry.get("заново")
+    for name, value in (("откат", undone), ("заново", redone)):
+        if _git("rev-list", "-n", "1", str(value)) is None:
+            return [f"{label}: коммита «{name}» {str(value)[:7]} нет"]
+    if len({sha, undone, redone}) < 3:
+        return [f"{label}: исходный, откат и переложенный — три разных коммита"]
+    for older, newer in ((sha, undone), (undone, redone), (redone, "HEAD")):
+        if _git("merge-base", "--is-ancestor", older, newer) is None:
+            return [f"{label}: {older[:7]} не предшествует {newer[:7]} — "
+                    f"откат и перекладка не доказаны"]
+
+    def files(commit: str) -> set:
+        raw = _git("-c", "core.quotePath=false", "diff-tree", "--root", "--no-commit-id",
+                   "--name-only", "-r", "--no-renames", "-z", commit)
+        return set(_paths(raw or ""))
+    own = files(sha)
+    if not own or not own <= files(undone):
+        return [f"{label}: откат {undone[:7]} не трогает файлы коммита"]
+    if files(redone) != own:
+        return [f"{label}: переложенный {redone[:7]} трогает другие файлы"]
+    marks = _git("log", "-1", f"--format=%(trailers:key={trailer},valueonly,separator=%x02)",
+                 redone)
+    carried = {value.strip() for value in (marks or "").split("\x02") if value.strip()}
+    if marks is None or not set(unparsed) <= carried:
+        return [f"{label}: переложенный {redone[:7]} не несёт трейлер «{trailer}: {unparsed[0]}»"]
+    return []
 
 
 def staged_outside_scope(tables: "Tables", name: str) -> list[str]:
@@ -1908,7 +2019,12 @@ SECTIONS = {
 def render_section(name: str, tables: Tables) -> str:
     if name not in SECTIONS:
         raise ContractError(f"unknown generated section {name!r}")
-    return "\n".join([GENERATED_NOTE, ""] + SECTIONS[name](tables)).rstrip() + "\n"
+    token = _WITHOUT_ENVIRONMENT.set(True)
+    try:
+        lines = SECTIONS[name](tables)
+    finally:
+        _WITHOUT_ENVIRONMENT.reset(token)
+    return "\n".join([GENERATED_NOTE, ""] + lines).rstrip() + "\n"
 
 
 def inject_sections(text: str, tables: Tables) -> str:

@@ -1168,10 +1168,10 @@ FINDING_PINS = {
     "R42-5": ("587a9daaa45d", "2da23db62397"),
     "R42-6": ("9cd0258cf1b5", "041f46698eaa"),
     "R42-7": ("7c3ae9da753f", "3f107775f851"),
-    "R42-8": ("dca69af14304", "c7e8f55684bc"),
+    "R42-8": ("dca69af14304", "f9edf94168fa"),
     "R42-9": ("77432d77f752", "1760c70038c6"),
-    "R42-10": ("4e68d49e153c", "9cad1b26ea39"),
-    "R42-11": ("23410e5e2f49", "d110ca3f9d38"),
+    "R42-10": ("4e68d49e153c", "4b9a37b18136"),
+    "R42-11": ("23410e5e2f49", "bec625653793"),
     "R42-12": ("505910201732", "1b9132d743af"),
 }
 
@@ -1288,6 +1288,57 @@ def _conveyor_pairs():
     for identifier in CONVEYOR_EXTRA:
         pairs.append([identifier, everywhere.get(identifier, "—")])
     return pairs
+
+
+# Круг 42 (R42-10): текст критерия держал отпечаток объёма — но только у блоков
+# с выданным разрешением. У остальных критерий можно было переписать на «как-
+# нибудь работает», и разрешение потом выдавалось бы уже на ослабленную
+# формулировку. Замок по блоку, а не общий: ревью #38 показало, что общий
+# слепок одинаково падает от подмены и от честной правки и не называет, ЧТО
+# изменилось. Честная правка приёмки — это правка и этой строки, видная в diff.
+ACCEPTANCE_PINS = {
+    "Б0а": "8009aa325984",
+    "Б3а": "ebfcc0c557a3",
+    "Ш1": "f79067003eb1",
+    "БТ": "180756ee6304",
+    "БК": "8c00dca467df",
+    "Б1": "3986dec70100",
+    "Б2": "41b48bdcb612",
+    "БТ2": "5d702ef36ec0",
+    "БИ": "0f8aa9c0e853",
+    "БУ": "70ae8b633cc0",
+    "БА": "b9b744de6264",
+    "Б15": "a8d864b664bc",
+    "Б4": "e9623ee8803e",
+    "Ш2": "6918ea7a2711",
+    "Б3б": "b21858bd895d",
+    "Б5": "174fffb97870",
+    "Б6": "f74b1911a848",
+    "Б7": "6b3d40b37bc4",
+    "Б8": "3ed32358ea7b",
+    "Б9": "53e3eab8c25e",
+    "Б10": "7bc7ef02a2db",
+    "БП": "8702cfee5fb5",
+    "Б0б": "f0b8b74e8cd5",
+    "Б11": "9a0dbeaa3982",
+    "Б12": "c49accc90bc2",
+    "Б13": "e6fbf08958ee",
+    "Б14": "92391b728c85",
+    "Б16": "af56067b6bf5",
+}
+
+
+def test_every_block_acceptance_is_pinned_by_full_text():
+    """Приёмка каждого блока закреплена полным текстом — с разрешением или без."""
+    blocks = BLOCKS["блоки"]
+    assert set(ACCEPTANCE_PINS) == set(blocks), (
+        f"замки приёмки разошлись с блоками: без замка {sorted(set(blocks) - set(ACCEPTANCE_PINS))}, "
+        f"замок без блока {sorted(set(ACCEPTANCE_PINS) - set(blocks))}")
+    for name, spec in blocks.items():
+        pairs = [[item["id"], item["условие"]] for item in spec["приёмка"]]
+        assert _finding_digest(pairs) == ACCEPTANCE_PINS[name], (
+            f"{name}: текст приёмки изменён — критерий добавлен, удалён или переписан "
+            f"под прежним ID")
 
 
 def test_the_conveyor_rules_survive_as_acceptance_criteria():
@@ -2231,6 +2282,90 @@ def _git_repo(tmp_path):
     return git, commit
 
 
+def _without_exemptions(module):
+    raw = copy.deepcopy(module.load().raw)
+    raw["blocks"]["сверка_записи"]["откачено_без_трейлера"] = {}
+    return module.Tables.from_raw(raw)
+
+
+def test_a_block_mark_that_git_did_not_parse_is_refused(tmp_path, monkeypatch):
+    """Пометка блока, которую git не разобрал трейлером, — отказ, а не невидимость.
+
+    🚩 Круг 42 (R42-8): git считает трейлерами только последний абзац
+    сообщения. Пустая строка между `Roundtable-Block: Б1` и подписью оставила
+    пометку обычным текстом, коммит выглядел непомеченным — и сверка области
+    записи его не проверяла вовсе. Так прошли два коммита блока прогона.
+    """
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    commit({"README": "x"}, "init")
+    tables = _without_exemptions(module)
+
+    parsed = commit({"f": "1"}, "работа\n\nRoundtable-Block: Б1\nCo-Authored-By: X <x@y>")
+    problems = module.write_scope_receipt(tables)
+    assert not any("стоит в тексте" in p for p in problems), f"контроль: {problems}"
+
+    prose = commit({"f": "2"}, "разбор\n\nстрока `Roundtable-Block: Б1` посреди фразы — не пометка")
+    problems = module.write_scope_receipt(tables)
+    assert not any(prose[:7] in p for p in problems), f"упоминание в тексте принято за пометку: {problems}"
+
+    torn = commit({"f": "3"}, "работа\n\nRoundtable-Block: Б1\n\nCo-Authored-By: X <x@y>")
+    problems = module.write_scope_receipt(tables)
+    assert any(torn[:7] in p and "стоит в тексте" in p for p in problems), problems
+    assert parsed != torn
+
+
+def test_an_undone_and_redone_commit_is_exempt_only_with_proof(tmp_path, monkeypatch):
+    """Исключение из правила о пометке — проверяемое утверждение, а не запись.
+
+    Коммит с неразобранной пометкой можно оставить в истории, только если его
+    работа откачена и переложена заново коммитом с настоящим трейлером того же
+    блока и теми же файлами. Иначе список исключений стал бы новым способом
+    спрятать работу мимо учёта.
+    """
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    commit({"README": "x"}, "init")
+    work = "core/scripts/roundtable/state.py"
+    torn = commit({work: "v1"}, "Б1: работа\n\nRoundtable-Block: Б1\n\nCo-Authored-By: X <x@y>")
+    git("revert", "--no-edit", torn)
+    undone = git("rev-parse", "HEAD")
+    redone = commit({work: "v1"}, "Б1: работа\n\nRoundtable-Block: Б1\nCo-Authored-By: X <x@y>")
+    other = commit({"README": "y"}, "постороннее")
+
+    def receipt(exempt):
+        raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["сверка_записи"]["откачено_без_трейлера"] = exempt
+        return module.write_scope_receipt(module.Tables.from_raw(raw))
+
+    assert any(torn[:7] in p and "стоит в тексте" in p for p in receipt({})), "контроль"
+    proven = {torn: {"откат": undone, "заново": redone, "почему": "откачен и переложен"}}
+    assert not any(torn[:7] in p for p in receipt(proven)), receipt(proven)
+
+    for label, entry in [
+            ("откат не откатывает", {"откат": other, "заново": redone, "почему": "x"}),
+            ("переложен не тем", {"откат": undone, "заново": other, "почему": "x"}),
+            ("откат после переложенного", {"откат": redone, "заново": undone, "почему": "x"}),
+            ("без причины", {"откат": undone, "заново": redone, "почему": " "}),
+            ("несуществующий откат", {"откат": "0" * 40, "заново": redone, "почему": "x"})]:
+        problems = receipt({torn: entry})
+        assert any(torn[:7] in p for p in problems), f"{label}: исключение принято без доказательства"
+
+
+def test_every_block_mark_in_the_real_history_is_parsed_or_exempted():
+    """В настоящей истории нет коммита с пометкой, которую git не разобрал.
+
+    Два коммита блока прогона попали в эту ловушку; их работа откачена и
+    переложена, и они названы исключениями. Удалить исключение — значит снова
+    получить отказ: это и держит строку таблицы.
+    """
+    module = import_tables_module()
+    problems = module.unparsed_block_marks(module.load())
+    assert problems == [], problems
+
+
 def test_commits_of_a_closed_block_are_checked_against_its_scope(tmp_path, monkeypatch):
     """Коммит блока, вышедший за `пишет`, — отказ, а не молчание.
 
@@ -2570,6 +2705,51 @@ def test_the_memory_receipt_cannot_be_switched_off():
     assert module.memory_receipt(empty), "пустой список принят за пройденную проверку"
 
 
+def test_the_generated_document_does_not_depend_on_what_is_installed(monkeypatch):
+    """Документ — производная таблиц и файлов репозитория, а не состояния машины.
+
+    🚩 Круг 42 (R42-11): раздел изоляции записывал, какие версии CLI видит
+    машина. 26.09 обновилось приложение ChatGPT и переложило свою CLI —
+    документ поменял текст, `render --check` и два теста упали, указывая на
+    таблицы, хотя таблицы не менялись. Версии сверяет команда `isolation`;
+    документ среду не спрашивает вовсе.
+    """
+    module = import_tables_module()
+    tables = module.load()
+    asked = []
+
+    def environment(answer):
+        def observe(commands):
+            asked.append(commands)
+            return answer
+        return observe
+
+    # Весь документ, а не один раздел: зависимость от среды может сидеть в
+    # любом из них, и проверка одного раздела её не увидит.
+    current = module.DOCUMENT.read_text(encoding="utf-8")
+    monkeypatch.setattr(module, "observe_cli_versions", environment(None))
+    unreachable = module.inject_sections(current, tables)
+    monkeypatch.setattr(module, "observe_cli_versions",
+                        environment({"claude": "0.0.1", "codex": "9.9.9"}))
+    other_versions = module.inject_sections(current, tables)
+    assert not asked, "генератор документа спрашивал среду о версиях"
+    assert unreachable == other_versions, "текст документа зависит от установленных CLI"
+
+    # Не спросил — не значит «совпало» и не значит «разошлось»: документ
+    # говорит, что версии сверяет команда, и не выдумывает наблюдение.
+    token = module._WITHOUT_ENVIRONMENT.set(True)
+    try:
+        offline = tables.isolation_drift()
+    finally:
+        module._WITHOUT_ENVIRONMENT.reset(token)
+    assert module.VERSIONS_NOT_ASKED in offline, "без среды версии объявлены совпавшими"
+    assert "версии_CLI" not in offline, "документ заявляет расхождение, которого не наблюдал"
+
+    # А команда `isolation` среду по-прежнему спрашивает: отключён только рендер.
+    tables.isolation_drift()
+    assert asked, "проверка изоляции перестала спрашивать среду"
+
+
 def test_the_document_header_counts_the_real_tables():
     # 🚩 Ревью #38: в шапке документа стояло «7 таблиц», в каноне их восемь.
     module = import_tables_module()
@@ -2599,7 +2779,7 @@ def test_the_break_list_itself_is_pinned():
     records = sorted([case[0], case[3], case[4]] for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "00b1ec313c7d017249538a995df3f75bb4b52c75e9a7cb5ec51684e25796e122", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "13007984f55323a3929e39e4497651f0626ada0ba540081f47c213b79f322e0e", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

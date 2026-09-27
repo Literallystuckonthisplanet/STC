@@ -137,14 +137,6 @@ def _module():
 # a suite stops being read.
 NOTES = {
     ("blocks.yaml", "вне_порядка"),
-    # R38-9: заявленный сторож существует (test_a_negative_claim_about_an_
-    # event_needs_the_raw_source в test_roundtable_tables.py), значит причина
-    # исключения из этого списка устарела — раздел ДОЛЖЕН измеряться. Оставлен
-    # здесь только потому, что убрать его значит разойтись с parity-тестом
-    # test_what_the_ratchet_does_not_measure_is_named, который сверяет этот
-    # список с blocks.yaml → порядок_критики.вне_замера — а blocks.yaml вне
-    # области записи БТ2. Координатор взял это отдельной находкой к Антону.
-    ("blocks.yaml", "проверки_источников"),
     ("framing.yaml", "критерии_решения"),
     ("framing.yaml", "критерии_постановки"),
     ("framing.yaml", "права_по_стадиям"),
@@ -595,7 +587,9 @@ def _run_generator(mutate, value, label):
     recursively.
     """
     new_value, reason = mutate(value)
-    if new_value is None and not reason:
+    # Круг 42 (R42-14): причина из одних пробелов проходила как настоящая —
+    # тот же приём, что пустой ID цели в блоке прогона.
+    if new_value is None and not (reason or "").strip():
         raise RatchetDefect(
             f"{label}: генератор класса вернул None без причины — это дефект "
             f"генератора, а не обоснованное исключение.")

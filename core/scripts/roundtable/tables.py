@@ -1149,9 +1149,26 @@ class Tables:
         checked.append(f"{len(plan['шлюзы'])} шлюзов: удерживаемое не начато")
 
         # authority: a permission must point somewhere resolvable
+        #
+        # Круг 42: записи полномочий читались по именам полей, и лишнее поле
+        # рядом («подтверждено_устно: да») не видел никто — ни проверка, ни
+        # тест, а человек мог принять его за правду. Набор полей закрыт.
+        entry_fields = {
+            "заключения_ревью": ({"блоки", "дата", "круг", "основание"}, set()),
+            # scope_sha256 обязателен, но его отсутствие называет отдельная
+            # проверка ниже — её сообщение точнее общего «не хватает поля».
+            "разрешения_исполнения": ({"кем", "блоки", "дата", "алгоритм_отпечатка",
+                                       "основание"}, {"объём_пересчитан", "scope_sha256"}),
+            "история_разрешений": ({"кем", "блоки", "дата", "основание"}, set()),
+        }
+        basis_optional = {"план_артефакт": {"восстановлен", "контекст"},
+                          "событие_транскрипта": {"контекст", "подвид"}}
         for registry in ("заключения_ревью", "разрешения_исполнения",
                          "история_разрешений"):
             for entry in plan[registry]:
+                if not isinstance(entry, dict):
+                    raise ContractError(f"{registry}: запись не словарь — {entry!r}")
+                _require(entry, *entry_fields[registry], registry)
                 unknown = set(entry["блоки"]) - names
                 if unknown:
                     raise ContractError(f"{registry}: неизвестные блоки {sorted(unknown)}")
@@ -1165,6 +1182,8 @@ class Tables:
                 if missing:
                     raise ContractError(
                         f"{registry}: основание вида {basis['вид']} без {sorted(missing)}")
+                _require(basis, required | {"вид"}, basis_optional[basis["вид"]],
+                         f"{registry}.основание")
                 if basis["вид"] == "план_артефакт" and not _is_sha256(basis["sha256"]):
                     raise ContractError(f"{registry}: sha256 не похож на sha256")
                 # 16.09 план исчез из ~/.claude/plans: основание вне репозитория
@@ -1236,6 +1255,15 @@ class Tables:
                 raise ContractError(f"{name}: переоткрыт, но не сказано почему")
             if block.state == "неполный" and not block.blocker:
                 raise ContractError(f"{name}: неполный, но не сказано, чем заблокирован")
+
+        # Круг 42 (R38-9): раздел проверок источников снят с исключений замера,
+        # и замер сразу нашёл, что лишнее поле в правиле не видит никто.
+        sources = plan["проверки_источников"]
+        _require(sources, {"отрицательное_утверждение_о_событии"}, set(),
+                 "blocks.проверки_источников")
+        _require(sources["отрицательное_утверждение_о_событии"],
+                 {"источник", "запрещено", "почему"}, set(),
+                 "blocks.проверки_источников.отрицательное_утверждение_о_событии")
 
         # 🚩 R19-7: объём описывал намерение, но не ограничивал исполнение —
         # коммит блока мог тронуть что угодно. Закрытый блок обязан назвать свои
@@ -1938,7 +1966,11 @@ def unparsed_block_marks(tables: "Tables") -> list[str]:
             continue
         sha, values = record.strip("\n").split("\x00", 1)
         parsed[sha] = {value.strip() for value in values.split("\x02") if value.strip()}
-    pattern = re.compile(rf"^{re.escape(trailer)}:[ \t]*(\S+)[ \t]*$", re.M)
+    # Отзывы круга 42: строгий шаблон пропускал ту же ловушку в другом
+    # написании — строчный ключ, пробел перед ключом или перед двоеточием,
+    # текст после значения. Попытка пометки — любая строка, которая после
+    # пробелов начинается с ключа в любом регистре и двоеточия.
+    pattern = re.compile(rf"^[ \t]*{re.escape(trailer)}[ \t]*:[ \t]*(\S+)", re.M | re.I)
     problems = []
     for record in bodies.split("\x01"):
         if "\x00" not in record:
@@ -1948,7 +1980,7 @@ def unparsed_block_marks(tables: "Tables") -> list[str]:
         if not unparsed:
             continue
         if sha in exempt:
-            problems += _exemption_problems(sha, unparsed, exempt[sha], trailer)
+            problems += _exemption_problems(sha, unparsed, exempt, trailer)
             continue
         problems.append(f"{sha[:7]}: пометка «{trailer}: {unparsed[0]}» стоит в тексте, но git "
                         f"не разобрал её трейлером — пустая строка отделила её от подписи; "
@@ -1956,7 +1988,15 @@ def unparsed_block_marks(tables: "Tables") -> list[str]:
     return problems
 
 
-def _exemption_problems(sha: str, unparsed: list, entry: dict, trailer: str) -> list[str]:
+def _blob(commit: str, path: str) -> str | None:
+    """Содержимое файла в коммите: id объекта, "" если файла нет, None если git молчит."""
+    out = _git("ls-tree", "-z", commit, "--", path)
+    if out is None:
+        return None
+    return out.split("\t", 1)[0].split()[2] if out.strip() else ""
+
+
+def _exemption_problems(sha: str, unparsed: list, exempt: dict, trailer: str) -> list[str]:
     """Исключение доказывается историей, а не записью в таблице.
 
     Работа коммита откачена (откат трогает его файлы и стоит после него) и
@@ -1964,6 +2004,7 @@ def _exemption_problems(sha: str, unparsed: list, entry: dict, trailer: str) -> 
     блока. Иначе список исключений стал бы новым способом спрятать работу.
     """
     label = f"{sha[:7]}: исключение из правила о пометке"
+    entry = exempt[sha]
     why = entry.get("почему")
     if not isinstance(why, str) or not why.strip():
         return [f"{label} без причины"]
@@ -1987,6 +2028,29 @@ def _exemption_problems(sha: str, unparsed: list, entry: dict, trailer: str) -> 
         return [f"{label}: откат {undone[:7]} не трогает файлы коммита"]
     if files(redone) != own:
         return [f"{label}: переложенный {redone[:7]} трогает другие файлы"]
+    # Отзывы круга 42: совпадение ИМЁН файлов не доказывает ни отката, ни
+    # перекладки. Доказывает содержимое: переложенный меняет каждый файл из того
+    # же состояния в то же, что исходный; а после отката каждый файл находится
+    # в одном из своих состояний ДО исходного коммита — его правка не выжила.
+    for path in sorted(own):
+        change = (_blob(f"{sha}^", path), _blob(sha, path))
+        again = (_blob(f"{redone}^", path), _blob(redone, path))
+        if None in change + again:
+            return [f"{label}: git не отдал содержимое {path} — перекладку не доказать"]
+        if again != change:
+            return [f"{label}: переложенный {redone[:7]} меняет {path} не так, как исходный"]
+    # Один откат может снять сразу несколько коммитов — тогда файл уходит в
+    # состояние раньше каждого из них. Поэтому годится любое прежнее состояние
+    # файла, а не ровно предыдущее: так исключения доказываются независимо.
+    for path in sorted(own):
+        restored = _blob(undone, path)
+        history = _git("log", "--format=%H", f"{sha}^", "--", path)
+        if restored is None or history is None:
+            return [f"{label}: git не отдал историю {path} — откат не доказать"]
+        earlier = {_blob(f"{sha}^", path)} | {_blob(c, path) for c in history.split()}
+        if None in earlier or restored not in earlier:
+            return [f"{label}: после отката {undone[:7]} в {path} осталась правка "
+                    f"исходного коммита"]
     marks = _git("log", "-1", f"--format=%(trailers:key={trailer},valueonly,separator=%x02)",
                  redone)
     carried = {value.strip() for value in (marks or "").split("\x02") if value.strip()}

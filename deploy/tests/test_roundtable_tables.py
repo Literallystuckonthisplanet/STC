@@ -987,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 12}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 147
+    assert len(findings) == 154
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1152,7 +1152,7 @@ FINDING_PINS = {
     "R38-6": ("5911649beacc", "63bec5b2d7bf"),
     "R38-7": ("d03eabfe8ec0", "f4aa85503842"),
     "R38-8": ("8e481468c39f", "eac22f0fedd8"),
-    "R38-9": ("d4385f6c9ac4", "1b9132d743af"),
+    "R38-9": ("d4385f6c9ac4", "4f1c27bc2949"),
     "R39-1": ("211df7dee553", "fb37793fb35f"),
     "R39-2": ("17c3c7892981", "70d53e7f5525"),
     "R39-3": ("81a50cb0dbf3", "1760c70038c6"),
@@ -1172,7 +1172,14 @@ FINDING_PINS = {
     "R42-9": ("77432d77f752", "1760c70038c6"),
     "R42-10": ("4e68d49e153c", "4b9a37b18136"),
     "R42-11": ("23410e5e2f49", "bec625653793"),
-    "R42-12": ("505910201732", "1b9132d743af"),
+    "R42-12": ("505910201732", "b5c2280044a9"),
+    "R42-13": ("649740c4480e", "53277cf384a3"),
+    "R42-14": ("250b4744d1ec", "439a7b6fd3ff"),
+    "R42-15": ("1fcabd565f5f", "f9edf94168fa"),
+    "R42-16": ("44bca651c13c", "34bc8edbe8ff"),
+    "R42-17": ("dc938034f06f", "4f1c27bc2949"),
+    "R42-18": ("83b77d2a67fb", "a4f6de7e87e3"),
+    "R42-19": ("27748f00cecf", "8ff74f4b377e"),
 }
 
 
@@ -2112,6 +2119,30 @@ def test_the_isolation_fingerprint_is_more_than_a_version_string():
         assert (module.ROOT / relative).is_file(), relative
 
 
+def test_authority_records_and_the_source_rule_have_closed_fields():
+    """Лишнее поле в записи полномочий или в правиле источников — отказ контракта.
+
+    🚩 Круг 42: снятый с исключений раздел проверок источников и новая запись
+    разрешения оказались непойманными — поля читались по именам, и соседнее
+    поле («подтверждено_устно: да») не видел никто.
+    """
+    module = import_tables_module()
+    module.load().check()
+    targets = [
+        ("заключения_ревью", lambda plan: plan["заключения_ревью"][0]),
+        ("разрешения_исполнения", lambda plan: plan["разрешения_исполнения"][-1]),
+        ("история_разрешений", lambda plan: plan["история_разрешений"][0]),
+        ("основание", lambda plan: plan["разрешения_исполнения"][-1]["основание"]),
+        ("отрицательное_утверждение_о_событии",
+         lambda plan: plan["проверки_источников"]["отрицательное_утверждение_о_событии"]),
+    ]
+    for where, pick in targets:
+        raw = copy.deepcopy(module.load().raw)
+        pick(raw["blocks"])["никем_не_читается"] = "да"
+        with pytest.raises(module.ContractError, match="unknown fields"):
+            module.Tables.from_raw(raw).check()
+
+
 def test_a_negative_claim_about_an_event_needs_the_raw_source():
     # Cost a whole round: a filtered search dropped a message that existed, and
     # I reported "не нашёл" as "не существует".
@@ -2315,6 +2346,18 @@ def test_a_block_mark_that_git_did_not_parse_is_refused(tmp_path, monkeypatch):
     assert any(torn[:7] in p and "стоит в тексте" in p for p in problems), problems
     assert parsed != torn
 
+    # Отзывы круга 42: та же ловушка в другом написании не должна проходить.
+    # Пробел перед ключом ломает git весь абзац подписи — и без пустой строки.
+    for message in ("работа\n\nroundtable-block: Б1\n\nCo-Authored-By: X <x@y>",
+                    "работа\n\n Roundtable-Block: Б1\n\nCo-Authored-By: X <x@y>",
+                    "работа\n\n Roundtable-Block: Б1\nCo-Authored-By: X <x@y>",
+                    "работа\n\nRoundtable-Block : Б1\n\nCo-Authored-By: X <x@y>",
+                    "работа\n\nRoundtable-Block: Б1 и ещё слова\n\nCo-Authored-By: X <x@y>"):
+        variant = commit({"f": message}, message)
+        problems = module.write_scope_receipt(tables)
+        assert any(variant[:7] in p and "стоит в тексте" in p for p in problems), (
+            f"написание {message!r} прошло мимо сверки: {problems}")
+
 
 def test_an_undone_and_redone_commit_is_exempt_only_with_proof(tmp_path, monkeypatch):
     """Исключение из правила о пометке — проверяемое утверждение, а не запись.
@@ -2352,6 +2395,40 @@ def test_an_undone_and_redone_commit_is_exempt_only_with_proof(tmp_path, monkeyp
             ("несуществующий откат", {"откат": "0" * 40, "заново": redone, "почему": "x"})]:
         problems = receipt({torn: entry})
         assert any(torn[:7] in p for p in problems), f"{label}: исключение принято без доказательства"
+
+
+def test_an_exemption_is_proven_by_content_not_by_file_names(tmp_path, monkeypatch):
+    """Откат должен вернуть файлы, перекладка — повторить ту же правку.
+
+    Отзывы круга 42: доказательство смотрело только на ИМЕНА файлов. Коммит,
+    который трогает файл, но не откатывает его, сходил за откат, а
+    «перекладка» с другим содержимым — за повтор той же работы.
+    """
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    work = "core/scripts/roundtable/state.py"
+    torn_mark = "\n\nRoundtable-Block: Б1\n\nCo-Authored-By: X <x@y>"
+    good_mark = "\n\nRoundtable-Block: Б1\nCo-Authored-By: X <x@y>"
+    commit({"README": "x", work: "v0"}, "init")
+    torn = commit({work: "v1"}, "Б1: работа" + torn_mark)
+    not_undone = commit({work: "v2"}, "трогает файл, но не откатывает")
+    restored = commit({work: "v0"}, "возвращает файл к исходному")
+    wrong_redo = commit({work: "v3"}, "Б1: другая правка" + good_mark)
+    commit({work: "v0"}, "снова к исходному")
+    redone = commit({work: "v1"}, "Б1: та же работа" + good_mark)
+
+    def receipt(entry):
+        raw = copy.deepcopy(module.load().raw)
+        raw["blocks"]["сверка_записи"]["откачено_без_трейлера"] = {torn: entry}
+        return [p for p in module.write_scope_receipt(module.Tables.from_raw(raw))
+                if torn[:7] in p]
+
+    assert receipt({"откат": restored, "заново": redone, "почему": "x"}) == [], "контроль"
+    assert receipt({"откат": not_undone, "заново": redone, "почему": "x"}), (
+        "коммит, не вернувший файл, принят за откат")
+    assert receipt({"откат": restored, "заново": wrong_redo, "почему": "x"}), (
+        "перекладка с другим содержимым принята за ту же работу")
 
 
 def test_every_block_mark_in_the_real_history_is_parsed_or_exempted():
@@ -2779,7 +2856,7 @@ def test_the_break_list_itself_is_pinned():
     records = sorted([case[0], case[3], case[4]] for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "13007984f55323a3929e39e4497651f0626ada0ba540081f47c213b79f322e0e", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "ab17da9fa1d9db4a208cab6b91318d023224b3bb8fb8487c52bf0bb099385828", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 
@@ -2820,6 +2897,90 @@ def test_what_the_ratchet_does_not_measure_is_named():
         f"лишние {sorted(set(named) - real)}, необъявленные {sorted(real - set(named))}")
     for section, why in named.items():
         assert why.strip(), f"{section}: исключено из замера без причины"
+
+    # Круг 42 (БК-20, R42-12): поклассовые исключения жили только в коде
+    # храповика, и дописать строку там с сохранением «100 %» было можно молча.
+    # Теперь каждое названо в таблице той же причиной, сверка в обе стороны.
+    def key(entry):
+        table, *path = entry
+        rendered = ""
+        for part in path:
+            rendered += f"[{part}]" if isinstance(part, int) else (
+                f".{part}" if rendered else part)
+        return f"{table}:{rendered}"
+    # Отзыв кода: запись таблицы — строка, храповика — кортеж. Сравнение
+    # честно, только если перевод однозначен: в имени поля нет . [ ] :, и две
+    # записи храповика не сливаются в одну строку таблицы.
+    for cls, entries in ratchet.CLASS_EXCLUSIONS.items():
+        for entry in entries:
+            for part in entry[1:]:
+                assert isinstance(part, int) or not set(str(part)) & set(".[]:"), (
+                    f"{cls} {entry}: в имени поля . [ ] или : — запись в таблице неоднозначна")
+    in_code = {cls: {key(entry): why for entry, why in entries.items()}
+               for cls, entries in ratchet.CLASS_EXCLUSIONS.items()}
+    for cls, entries in ratchet.CLASS_EXCLUSIONS.items():
+        assert len(in_code[cls]) == len(entries), f"{cls}: две записи храповика слились в одну"
+    in_table = BLOCKS["порядок_критики"]["вне_замера_по_классам"]
+    assert set(in_table) == set(in_code), (
+        f"классы исключений разошлись: в таблице {sorted(in_table)}, в храповике {sorted(in_code)}")
+    for cls in in_code:
+        table_side, code_side = in_table[cls] or {}, in_code[cls]
+        assert set(table_side) == set(code_side), (
+            f"{cls}: исключения разошлись с храповиком: лишние в таблице "
+            f"{sorted(set(table_side) - set(code_side))}, необъявленные "
+            f"{sorted(set(code_side) - set(table_side))}")
+        for row, why in table_side.items():
+            assert isinstance(why, str) and why.strip(), f"{cls} {row}: исключено без причины"
+            assert why == code_side[row], f"{cls} {row}: причина в таблице и в храповике разная"
+
+
+def test_a_blank_reason_does_not_excuse_a_generator(tmp_path):
+    """Промах генератора оправдывает только настоящая причина, не пробелы.
+
+    🚩 Круг 42 (R42-14): `None` без причины стал дефектом измерения, но причина
+    из одних пробелов проходила как настоящая — тот же приём, что пустой ID
+    цели в блоке прогона.
+    """
+    import importlib.util
+    path = Path(__file__).with_name("mutate_roundtable_tables.py")
+    spec = importlib.util.spec_from_file_location("rt_ratchet_blank", path)
+    ratchet = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ratchet)
+    assert ratchet._run_generator(lambda v: (None, "нет булевых полей"), {}, "контроль")[1]
+    for blank in ("", "   ", "\t\n", None):
+        with pytest.raises(ratchet.RatchetDefect):
+            ratchet._run_generator(lambda v, b=blank: (None, b), {}, f"причина {blank!r}")
+
+
+def test_every_finding_row_has_exactly_the_fields_its_status_allows():
+    """Строка реестра — закрытая схема: лишнее поле не читает никто, значит нельзя.
+
+    🚩 Круг 42 (R42-13): строки реестра были свободными словарями. Поле вроде
+    «подтверждено: да» рядом со статусом не проверял ни один тест и ни одна
+    проверка — а человек, читающий реестр, мог принять его за правду.
+    """
+    base = {"id", "круг", "что", "статус"}
+    allowed = {
+        "назначена_блоку": (base | {"критерий"}, set()),
+        "открыта": (base | {"почему"}, set()),
+        "избыточна": (base | {"почему"}, set()),
+        "ждёт_Антона": (base | {"почему"}, set()),
+        "устранена": (base | {"тест", "поломка"}, {"почему_без_поломки"}),
+    }
+    for finding in _load("findings")["находки"]:
+        assert finding["статус"] in allowed, f"{finding['id']}: статус {finding['статус']!r} вне схемы"
+        required, optional = allowed[finding["статус"]]
+        fields = set(finding)
+        # Отзыв проверками: поле из одних пробелов — не значение.
+        for name in fields - {"круг"}:
+            assert isinstance(finding[name], str) and finding[name].strip(), (
+                f"{finding['id']}: поле {name} пустое")
+        assert required <= fields, f"{finding['id']}: не хватает {sorted(required - fields)}"
+        assert fields <= required | optional, (
+            f"{finding['id']}: лишнее поле {sorted(fields - required - optional)}")
+        if finding.get("поломка") == "вне_таблиц":
+            assert str(finding.get("почему_без_поломки", "")).strip(), (
+                f"{finding['id']}: поломки нет, а почему — не сказано")
 
 
 def test_the_ratchet_refuses_an_experiment_without_a_green_control(monkeypatch, tmp_path):

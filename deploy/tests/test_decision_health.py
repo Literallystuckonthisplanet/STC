@@ -79,6 +79,111 @@ def test_marked_fork_counts_as_compliance(tmp_path):
         {"what": "делать иначе", "reason": "дороже"}]
 
 
+def _codex_line(kind, payload, ts="2026-09-27T10:00:00Z"):
+    return _line({"timestamp": ts, "type": kind, "payload": payload})
+
+
+def _codex_session(session="cx1", source="cli"):
+    return _codex_line("session_meta", {"id": session, "session_id": session,
+                                        "cwd": "/tmp/STC", "source": source})
+
+
+def test_codex_repeated_real_choices_are_not_mirrors(tmp_path):
+    rows = [_codex_session()]
+    for minute in (1, 2):
+        for second, kind, text in (
+            (1, "agent_message", "🗳️ A или B?"),
+            (2, "user_message", "берём A"),
+            (3, "agent_message", "```decision\nпринято: A\nотклонено: B\n```"),
+        ):
+            rows.append(_codex_line("event_msg", {"type": kind, "message": text},
+                                    f"2026-09-27T10:0{minute}:0{second}Z"))
+    _write(tmp_path, "repeat.jsonl", rows)
+    result = dh.scan(tmp_path, None)
+    assert (result["forks"], result["marked"]) == (2, 2)
+
+
+def _codex_message(role, text, session="cx1", turn="t1", phase=None):
+    payload = {"type": "message", "role": role,
+               "content": [{"type": "input_text" if role == "user" else "output_text",
+                             "text": text}],
+               "internal_chat_message_metadata_passthrough": {
+                   "turn_id": turn, "content_item_kinds": ["user.text"]}}
+    if phase:
+        payload["phase"] = phase
+    return _codex_line("response_item", payload)
+
+
+def test_codex_transcript_counts_human_choice_and_ignores_mirrors(tmp_path):
+    p = tmp_path / "codex.jsonl"
+    _write(p.parent, p.name, [
+        _codex_session(),
+        _codex_message("assistant", "🗳️ Развилка: A или B?", turn="t0", phase="final_answer"),
+        _codex_message("user", "берём A"),
+        _codex_line("event_msg", {"type": "item_completed", "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "берём A"}]}}),
+        _codex_message("assistant", "```decision\nпринято: A\nотклонено: B\n```", turn="t2", phase="final_answer"),
+    ])
+    res = dh.scan(tmp_path, None)
+    assert (res["forks"], res["marked"]) == (1, 1)
+    assert res["records"][0]["harness"] == "codex"
+    assert res["records"][0]["cwd"] == "/tmp/STC"
+
+
+def test_codex_question_keeps_fork_open_until_later_choice(tmp_path):
+    p = tmp_path / "codex.jsonl"
+    _write(p.parent, p.name, [
+        _codex_session(),
+        _codex_message("assistant", "🗳️ Развилка: A или B?", turn="t0", phase="final_answer"),
+        _codex_message("user", "сколько стоит A?", turn="t1"),
+        _codex_message("assistant", "A стоит 5.", turn="t1", phase="final_answer"),
+        _codex_message("user", "берём A", turn="t2"),
+        _codex_message("assistant", "```decision\nпринято: A\nотклонено: B\n```", turn="t2", phase="final_answer"),
+    ])
+    res = dh.scan(tmp_path, None)
+    assert (res["forks"], res["marked"], res["questions"]) == (1, 1, 1)
+
+
+def test_codex_foreign_session_and_subagent_are_silent(tmp_path):
+    foreign = tmp_path / "foreign.jsonl"
+    _write(foreign.parent, foreign.name, [
+        _codex_session("other"), _codex_message("assistant", "🗳️ A или B?", session="other", phase="final_answer"),
+        _codex_message("user", "A", session="other"),
+    ])
+    sub = tmp_path / "sub.jsonl"
+    _write(sub.parent, sub.name, [
+        _codex_session("sub", source={"kind": "subagent"}),
+        _codex_message("assistant", "🗳️ A или B?", session="sub", phase="final_answer"),
+        _codex_message("user", "A", session="sub"),
+    ])
+    # Offline measurement has no caller session id, so it may measure the
+    # foreign file; the subagent session itself must still be excluded.
+    assert dh.scan(tmp_path, None)["forks"] == 1
+
+
+def test_mixed_legacy_and_native_codex_history_keeps_prior_decision(tmp_path):
+    p = tmp_path / "mixed.jsonl"
+    _write(p.parent, p.name, [
+        _codex_session(),
+        _codex_line("event_msg", {"type": "agent_message", "turn_id": "t0", "message": "🗳️ A или B"}),
+        _codex_line("event_msg", {"type": "user_message", "turn_id": "t1", "message": "берём A"}),
+        _codex_line("event_msg", {"type": "agent_message", "turn_id": "t1", "message": "```decision\nпринято: A\nотклонено: B\n```"}),
+        _codex_message("user", "новая задача", turn="t2"),
+        _codex_message("assistant", "Готово.", turn="t2", phase="final_answer"),
+    ])
+    res = dh.scan(tmp_path, None)
+    assert (res["forks"], res["marked"]) == (1, 1)
+
+
+def test_malformed_codex_shapes_are_ignored(tmp_path):
+    p = tmp_path / "bad.jsonl"
+    _write(p.parent, p.name, [
+        _line({"type": "session_meta", "payload": [1]}),
+        _line({"type": "response_item", "payload": {"type": "message", "metadata": [1]}}),
+        "null", "[]", "{broken",
+    ])
+    assert dh.scan(tmp_path, None)["forks"] == 0
+
+
 def test_unmarked_fork_counts_against(tmp_path):
     _write(tmp_path, "a.jsonl", [_fork(), _human(), _plain_reply()])
     res = dh.scan(tmp_path, None)

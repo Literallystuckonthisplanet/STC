@@ -1166,3 +1166,97 @@ def test_h23_is_silent_after_a_fork_already_answered_by_name(tmp_path):
     res = _run("decision-record.sh", {"transcript_path": str(t), "prompt": "Ок"},
                tmp_path, USER_LANG="ru")
     assert res.stdout.strip() == ""
+
+
+def test_h23_codex_reads_own_session_and_skips_foreign_or_subagent(tmp_path):
+    """Codex native response_item history is bounded to the caller session."""
+    def row(kind, payload):
+        return {"type": kind, "payload": payload}
+    def msg(role, text, sid="main", turn="t1", phase=None):
+        payload = {"type": "message", "role": role,
+                   "content": [{"type": "input_text" if role == "user" else "output_text", "text": text}],
+                   "internal_chat_message_metadata_passthrough": {
+                       "turn_id": turn, "content_item_kinds": ["user.text"]}}
+        if phase:
+            payload["phase"] = phase
+        return row("response_item", payload)
+    p = tmp_path / "codex.jsonl"
+    p.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
+        row("session_meta", {"id": "main", "session_id": "main", "source": "cli"}),
+        msg("assistant", "🗳️ A или B", turn="t0", phase="final_answer"),
+        msg("user", "A", turn="t1"),
+    ]) + "\n", encoding="utf-8")
+    own = _run("decision-record.sh", {"transcript_path": str(p), "session_id": "main", "prompt": "A"}, tmp_path, USER_LANG="en", STC_CORE=str(REPO / "core"))
+    foreign = _run("decision-record.sh", {"transcript_path": str(p), "session_id": "other", "prompt": "A"}, tmp_path, USER_LANG="en", STC_CORE=str(REPO / "core"))
+    assert "```decision" in own.stdout
+    assert foreign.stdout.strip() == ""
+    missing = _run("decision-record.sh", {"transcript_path": str(p), "prompt": "A"}, tmp_path, USER_LANG="en", STC_CORE=str(REPO / "core"))
+    assert missing.stdout.strip() == ""
+
+
+def test_h23_codex_handles_broken_json_and_long_bounded_turn(tmp_path):
+    """A malformed line is skipped and a turn below the 2 MB tail remains visible."""
+    p = tmp_path / "codex-long.jsonl"
+    rows = [
+        {"type": "session_meta", "payload": {"id": "long", "session_id": "long", "source": "cli"}},
+        *[{"type": "response_item", "payload": {"type": "message", "role": "assistant",
+          "phase": "final_answer", "content": [{"type": "output_text", "text": "промежуточно " + "x" * 100_000}],
+          "internal_chat_message_metadata_passthrough": {"turn_id": f"pad-{i}"}}} for i in range(25)],
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+          "phase": "final_answer", "content": [{"type": "output_text", "text": "🗳️ A или B"}],
+          "internal_chat_message_metadata_passthrough": {"turn_id": "t0"}}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+          "content": [{"type": "input_text", "text": "A"}],
+          "internal_chat_message_metadata_passthrough": {"turn_id": "t1", "content_item_kinds": ["user.text"]}}},
+    ]
+    p.write_text(json.dumps(rows[0], ensure_ascii=False) + "\n{broken\n" + "\n".join(json.dumps(r, ensure_ascii=False) for r in rows[1:]) + "\n", encoding="utf-8")
+    res = _run("decision-record.sh", {"transcript_path": str(p), "session_id": "long", "prompt": "A"}, tmp_path, USER_LANG="en", STC_CORE=str(REPO / "core"))
+    assert res.returncode == 0 and "```decision" in res.stdout
+
+
+def test_h23_codex_skips_native_subagent_without_agent_id(tmp_path):
+    p = tmp_path / "codex-subagent.jsonl"
+    rows = [
+        {"type": "session_meta", "payload": {"id": "child", "session_id": "child", "source": {"kind": "subagent"}}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+          "content": [{"type": "output_text", "text": "🗳️ A или B"}],
+          "internal_chat_message_metadata_passthrough": {"turn_id": "t0"}}},
+    ]
+    p.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in rows) + "\n", encoding="utf-8")
+    res = _run("decision-record.sh", {"transcript_path": str(p), "session_id": "child", "prompt": "A"}, tmp_path, USER_LANG="en", STC_CORE=str(REPO / "core"))
+    assert res.returncode == 0 and res.stdout.strip() == ""
+
+
+def test_h23_long_claude_tail_does_not_reopen_old_fork(tmp_path):
+    p = tmp_path / "claude-long.jsonl"
+    rows = [
+        {"message": {"role": "assistant", "content": [{"type": "text", "text": "🗳️ старый A или B"}]}},
+        *[{"message": {"role": "assistant", "content": [{"type": "text", "text": "работа " + "x" * 100_000}]}} for _ in range(25)],
+        {"message": {"role": "assistant", "content": [{"type": "text", "text": "обычный новый ответ"}]}},
+    ]
+    p.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in rows) + "\n", encoding="utf-8")
+    res = _run("decision-record.sh", {"transcript_path": str(p), "prompt": "новая задача"}, tmp_path, USER_LANG="en", STC_CORE=str(REPO / "core"))
+    assert res.returncode == 0 and res.stdout.strip() == ""
+
+
+def test_h23_codex_emits_structured_additional_context(tmp_path):
+    """Native Codex must receive the hint through its documented JSON envelope."""
+    p = tmp_path / "codex-wire.jsonl"
+    rows = [
+        {"type": "session_meta", "payload": {"id": "wire", "source": "exec"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+          "phase": "final_answer", "content": [{"type": "output_text", "text": "🗳️ A или B"}]}},
+    ]
+    p.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in rows) + "\n", encoding="utf-8")
+    payload = {"transcript_path": str(p), "session_id": "wire", "prompt": "A"}
+    res = _run("decision-record.sh", payload, tmp_path, HARNESS_NAME="codex", USER_LANG="ru")
+    assert res.returncode == 0
+    output = json.loads(res.stdout)
+    assert set(output) == {"hookSpecificOutput"}
+    specific = output["hookSpecificOutput"]
+    assert specific["hookEventName"] == "UserPromptSubmit"
+    assert "```decision" in specific["additionalContext"]
+    assert "причину" in specific["additionalContext"].lower()
+    question = _run("decision-record.sh", {**payload, "prompt": "Сколько стоит A?"},
+                    tmp_path, HARNESS_NAME="codex", USER_LANG="ru")
+    assert question.returncode == 0 and question.stdout.strip() == ""

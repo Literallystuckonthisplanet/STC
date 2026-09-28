@@ -30,9 +30,10 @@
 # блоком, доля отказов без названной причины). База на 17.09: 56 развилок за
 # 76 дней, размечено 0.
 #
-# Render-time vars: ${USER_LANG}, ${STC_CORE}.
+# Render-time vars: ${USER_LANG}, ${STC_CORE}, ${HARNESS_NAME}.
 
 USER_LANG="${USER_LANG:-ru}"
+HARNESS_NAME="${HARNESS_NAME:-claude}"
 # Как в остальных хуках: ${STC_CORE} подставляется при сборке в ТЕКСТ
 # скрипта, в окружении его нет. Первая редакция читала os.environ и
 # потому в бою молчала всегда — тесты этого не поймали: они задавали её сами.
@@ -79,6 +80,29 @@ except OSError:
 lines = chunk.splitlines()
 if size > TAIL and lines:
     lines = lines[1:]          # первая строка хвоста обрезана посередине
+    # Codex keeps the session discriminator in the first session_meta record.
+    # Re-read that one small line so a long conversation is still recognized
+    # as Codex after the bounded tail has dropped its header.
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            header = fh.readline(TAIL + 1).rstrip("\n")
+        candidate = json.loads(header)
+        payload = candidate.get("payload") if isinstance(candidate, dict) else None
+        if (isinstance(candidate, dict) and candidate.get("type") == "session_meta"
+                and isinstance(payload, dict)):
+            lines.insert(0, header)
+    except OSError:
+        pass
+
+# Codex native sessions must be scoped to the caller.  Claude legacy
+# transcripts have no session_id and retain their historical behavior.
+if not data.get("session_id"):
+    try:
+        first = json.loads(lines[0]) if lines else {}
+        if isinstance(first, dict) and first.get("type") == "session_meta":
+            sys.exit(0)
+    except Exception:
+        pass
 
 sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
 try:
@@ -86,13 +110,14 @@ try:
 except Exception:
     sys.exit(0)                # счётчик недоступен — молчим, а не гадаем
 prompt = data.get("prompt") or ""
-turn = fork_turn_in_tail(lines, prompt)
+turn = fork_turn_in_tail(lines, prompt, data.get("session_id") or "")
 if turn and reply_kind(prompt, turn) != "question":
     print("fork")
 ' "$STC_CORE" 2>/dev/null)
 
 [ "$FORK" = "fork" ] || exit 0
 
+HINT=$(
 if [ "$USER_LANG" = "ru" ]; then
   cat <<'EOF'
 
@@ -134,6 +159,21 @@ If the message makes NO choice — a clarification, a question, a new task — d
 NOT add the block: a recorded "decision" that never happened is worse than a
 missing one.
 EOF
+fi
+)
+
+if [ "$HARNESS_NAME" = "codex" ]; then
+  # Use the native envelope: the leading [решение] plain-text hint was
+  # produced by the hook but absent from Codex's model-visible context.
+  printf '%s' "$HINT" | python3 -c '
+import json, sys
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": sys.stdin.read(),
+}}, ensure_ascii=False))
+'
+else
+  printf '%s\n' "$HINT"
 fi
 
 exit 0

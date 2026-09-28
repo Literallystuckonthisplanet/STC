@@ -61,7 +61,7 @@ sys.path.insert(0, str(HERE))
 
 import lens_rules  # noqa: E402  нормализация двойников кириллица↔латиница
 
-RAW_DEFAULT = Path.home() / "Work" / "transcripts" / "raw" / "claude"
+RAW_DEFAULT = Path.home() / "Work" / "transcripts" / "raw"
 
 FORK_MARK = "🗳"          # без вариационного селектора: он в тексте не всегда
 # Маркер ПОСЛЕ отсылающего слова — это разговор о маркере, а не предъявленный
@@ -290,7 +290,7 @@ def open_fork_in_tail(lines: list[str], current_prompt: str = "") -> bool:
     return bool(fork_turn_in_tail(lines, current_prompt))
 
 
-def fork_turn_in_tail(lines: list[str], current_prompt: str = "") -> str:
+def fork_turn_in_tail(lines: list[str], current_prompt: str = "", session_id: str = "") -> str:
     """Текст хода с открытой развилкой, либо пустая строка.
 
     Ход — все мои реплики с текстом после предыдущей реплики человека. Ревью
@@ -308,22 +308,9 @@ def fork_turn_in_tail(lines: list[str], current_prompt: str = "") -> str:
     и ход тянется до реплики человека, которая вопросом не была.
     """
     events: list[tuple[str, str]] = []
-    for line in lines:
-        if '"message"' not in line and '"queued_command"' not in line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        said = human_text(obj)
-        if said is not None:
-            events.append(("human", said.strip()))
-            continue
-        msg = obj.get("message")
-        if isinstance(msg, dict) and msg.get("role") == "assistant":
-            text = _text(msg.get("content"))
-            if text.strip():
-                events.append(("assistant", text))
+    for role, text, _ in _iter_events(lines, session_id or None):
+        if text.strip():
+            events.append((role, text.strip()))
     if current_prompt and events and events[-1] == ("human", current_prompt.strip()):
         events.pop()
     # Прямой проход тем же порядком, что `scan`: каждый старый ответ судится
@@ -354,9 +341,12 @@ def _text(content) -> str:
     """
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        return _text(content.get("content") or content.get("text") or "")
     if isinstance(content, list):
         return "\n".join(p.get("text", "") for p in content
-                         if isinstance(p, dict) and p.get("type") == "text")
+                         if isinstance(p, dict) and p.get("type") in
+                         {"text", "input_text", "output_text"})
     return ""
 
 
@@ -400,27 +390,119 @@ def parse_block(body: str) -> dict:
     return {"kept": kept, "dropped": dropped}
 
 
-def _events(path: Path):
+def _codex_event(obj: dict, session: str, cwd, turn_id):
+    """One human/final event with its native provenance and representation."""
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    representation = obj.get("type")
+    meta = payload.get("internal_chat_message_metadata_passthrough")
+    meta = meta if isinstance(meta, dict) else {}
+    if representation == "event_msg":
+        role = {"user_message": "human", "agent_message": "assistant"}.get(payload.get("type"))
+        if role is None or payload.get("phase") in {"commentary", "analysis"}:
+            return None
+        text = _text(payload.get("message") or payload.get("content"))
+    elif representation == "response_item" and payload.get("type") == "message":
+        kinds = meta.get("content_item_kinds")
+        if payload.get("role") == "user" and isinstance(kinds, list) and "user.text" in kinds:
+            role = "human"
+        elif payload.get("role") == "assistant" and payload.get("phase") == "final_answer":
+            role = "assistant"
+        else:
+            return None
+        text = _text(payload.get("content"))
+    else:
+        return None
+    event = {"sessionId": session, "timestamp": obj.get("timestamp"),
+             "turn_id": meta.get("turn_id") or payload.get("turn_id") or turn_id,
+             "cwd": payload.get("cwd") or cwd, "harness": "codex"}
+    return role, text, event, representation
+
+
+def _codex_mirrors(left, right) -> bool:
+    """Only different representations of one adjacent event are mirrors.
+
+    Identical real messages, including choices without turn ids, must survive.
+    When turn identity is missing, require the same native timestamp instead.
+    """
+    if left[3] == right[3] or left[0] != right[0] or left[1].strip() != right[1].strip():
+        return False
+    a, b = left[2], right[2]
+    if a["turn_id"] and b["turn_id"]:
+        return a["turn_id"] == b["turn_id"]
+    return bool(a["timestamp"] and a["timestamp"] == b["timestamp"])
+
+
+def _iter_events(lines, expected_session: str | None = None):
+    """Stream Claude/Codex events; keep at most one possible Codex mirror."""
+    codex = False
+    session = cwd = turn_id = None
+    pending = None
+    for line in lines:
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        payload = obj.get("payload")
+        if obj.get("type") == "session_meta":
+            codex = True
+            if not isinstance(payload, dict):
+                return
+            session = payload.get("session_id") or payload.get("id")
+            cwd = payload.get("cwd")
+            source = payload.get("source")
+            child = source == "subagent" or (isinstance(source, dict) and
+                       (source.get("kind") == "subagent" or "subagent" in source))
+            if not isinstance(session, str) or not session or child \
+                    or (expected_session and session != expected_session):
+                return
+            continue
+        if not codex:
+            said = human_text(obj)
+            if said is not None:
+                yield "human", said, obj
+                continue
+            msg = obj.get("message")
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                yield "assistant", _text(msg.get("content")), obj
+            continue
+        if not isinstance(payload, dict):
+            continue
+        event_session = obj.get("session_id") or payload.get("session_id")
+        if event_session and event_session != session:
+            continue
+        if obj.get("type") == "turn_context":
+            turn_id = payload.get("turn_id") or turn_id
+            cwd = payload.get("cwd") or cwd
+            continue
+        if obj.get("type") == "event_msg" and payload.get("type") == "task_started":
+            turn_id = payload.get("turn_id") or turn_id
+            continue
+        event = _codex_event(obj, session, cwd, turn_id)
+        if event is None or not event[1].strip():
+            continue
+        if pending is not None and _codex_mirrors(pending, event):
+            if event[3] == "response_item":
+                pending = event        # prefer native metadata over its legacy mirror
+            continue
+        if pending is not None:
+            yield pending[0], pending[1], pending[2]
+        pending = event
+    if pending is not None:
+        yield pending[0], pending[1], pending[2]
+
+
+def _events(path: Path, expected_session: str | None = None):
     """Реплики одной сессии по порядку: ('human'|'assistant', текст, запись)."""
     try:
         fh = path.open(encoding="utf-8", errors="replace")
     except OSError:
         return
     with fh:
-        for line in fh:
-            if '"message"' not in line and '"queued_command"' not in line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            said = human_text(obj)
-            if said is not None:
-                yield "human", said, obj
-                continue          # промпт субагенту, ретрай, координатор — не человек
-            msg = obj.get("message")
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                yield "assistant", _text(msg.get("content")), obj
+        yield from _iter_events(fh, expected_session)
 
 
 def scan(raw_root: Path, since: datetime | None):
@@ -454,6 +536,7 @@ def scan(raw_root: Path, since: datetime | None):
     # Самая полная копия — первой: короткая копия того же разговора обрывается
     # раньше записи, и итог зависел от имён файлов (ревью 26.09, вторая волна).
     for path in sorted(raw_root.rglob("*.jsonl"), key=lambda f: (-f.stat().st_size, str(f))):
+        harness = "codex" if any(part == "codex" for part in path.parts) else "claude"
         turn: list[str] = []    # мои реплики с текстом после последней реплики человека
         awaiting = None         # человек ответил на развилку; ждём блок в моём ходе
         carry = ""              # развилка, на которую человек пока только спросил
@@ -466,6 +549,7 @@ def scan(raw_root: Path, since: datetime | None):
                 unclear += 1
 
         for role, text, obj in _events(path):
+            harness = obj.get("harness", harness)
             ts = _parse_ts(obj.get("timestamp"))
             if since and ts and ts < since:
                 continue
@@ -481,7 +565,8 @@ def scan(raw_root: Path, since: datetime | None):
                 carry = ""
                 if not fork_text:
                     continue
-                key = (obj.get("sessionId"), obj.get("timestamp"))
+                key = (harness, obj.get("sessionId"), obj.get("timestamp"),
+                       obj.get("turn_id"))
                 if key in seen:
                     continue            # тот же разговор из копии файла
                 seen.add(key)
@@ -509,6 +594,7 @@ def scan(raw_root: Path, since: datetime | None):
                 continue                # блок-пример из объяснения формата
             kind = awaiting.pop("kind")
             rec.update(awaiting)
+            rec["harness"] = harness
             awaiting = None
             if kind == "question":
                 phantom += 1

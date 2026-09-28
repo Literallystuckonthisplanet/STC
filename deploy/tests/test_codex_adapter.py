@@ -184,7 +184,6 @@ def test_codex_native_routing_and_hook_bindings_are_explicit():
         "PreToolUse": "Agent",
         "SubagentStart": ".*",
     }
-
     h17 = [
         entry
         for entries in hooks.values()
@@ -195,6 +194,22 @@ def test_codex_native_routing_and_hook_bindings_are_explicit():
     assert {"Bash", "exec", "unified_exec", "unifiedExec"} <= set(h17[0]["matcher"].split("|"))
     assert h17[0]["hooks"][0]["command"].endswith("/block-secret-read.stc.sh")
 
+
+def test_codex_decision_journal_is_bound_to_user_prompt_submit():
+    _, _, adapter, rr = _load_codex()
+    cap = adapter["hooks"]["capabilities"]["H23_decision_record"]
+    assert cap["supported"] is True
+    assert cap["event"] == "UserPromptSubmit"
+    assert cap["binding"]["file"] == "decision-record.sh"
+    hooks = rr.json_patches["hooks.json"]["hooks"]["UserPromptSubmit"]
+    assert any(entry.get("_stc_cap") == "H23_decision_record"
+               and any(h.get("command", "").endswith("decision-record.stc.sh")
+                       for h in entry.get("hooks", []))
+               for entry in hooks)
+    script = next(text for path, text in rr.files.items()
+                  if path.endswith("decision-record.stc.sh"))
+    assert 'HARNESS_NAME="codex"' in script
+    assert '"hookSpecificOutput"' in script
 
 def test_codex_agent_toml_has_required_fields():
     """Each *.stc.toml has name/description/developer_instructions and NO tools field."""

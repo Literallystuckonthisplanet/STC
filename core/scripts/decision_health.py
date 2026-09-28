@@ -224,6 +224,9 @@ def names_option(words: str, fork_text: str) -> bool:
         name = _norm(OPTION_LABEL.sub("", raw))
         if name and said == name:
             return True           # «Паста» на карточке «Паста / Суп» (проба 28.09)
+        # «Тогда паста.» — название целым словом в короткой фразе (до трёх слов).
+        if name and len(said.split()) <= 3 and f" {name} " in f" {said} ":
+            return True
         if len(said) >= 8 and len(name) >= 8 and (name in said or said in name):
             return True
     return False

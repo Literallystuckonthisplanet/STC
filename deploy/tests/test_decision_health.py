@@ -544,3 +544,11 @@ def test_an_option_named_in_a_plain_numbered_card_is_a_choice():
             "2. Суп — готовится дольше.\n\nТвой выбор: паста или суп?")
     assert dh.reply_kind("Суп. Сколько его варить?", fork) == "choice"
     assert dh.reply_kind("А суп долго варится?", fork) == "question"
+
+
+def test_a_short_sentence_with_the_option_name_is_a_choice():
+    """Живая проба Codex 28.09: «Тогда паста.» ушло в неясные."""
+    fork = "🗳️ Ужин?\n\n1. **Паста (советую)** — быстрее.\n2. **Суп** — дольше."
+    assert dh.reply_kind("Тогда паста.", fork) == "choice"
+    assert dh.reply_kind("Давай суп", fork) == "choice"
+    assert dh.reply_kind("Паста у нас закончилась вчера вечером", fork) == "unclear"

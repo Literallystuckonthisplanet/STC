@@ -987,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 7}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 161
+    assert len(findings) == 162
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1027,12 +1027,12 @@ def test_a_finding_may_only_be_assigned_to_a_block_still_open():
 # по чужой причине. Пофамильный замок называет ИМЕННО подменённую запись.
 FINDING_PINS = {
     "R12-1": ("d42435e985cb", "47f0fb0e39bc"),
-    "R12-2": ("0564a10f5873", "69abc15709b7"),
-    "R12-3": ("dcf654104cbe", "49359eb63ad0"),
+    "R12-2": ("0564a10f5873", "9de06c2ce087"),
+    "R12-3": ("dcf654104cbe", "e173a2874f02"),
     "R12-4": ("4d5e8e6c7b4f", "8203d1780a9c"),
-    "R12-5": ("88870441b246", "d2adb66fecfb"),
-    "R13-1": ("f4a1639d8eb9", "daac94d1a879"),
-    "R13-2": ("0d92d292b923", "87b917cdae7a"),
+    "R12-5": ("88870441b246", "538f2142283b"),
+    "R13-1": ("f4a1639d8eb9", "ed1f59c2795a"),
+    "R13-2": ("0d92d292b923", "42eefe36abaa"),
     "R13-3": ("f8066d738986", "7020e9135d15"),
     "R13-4": ("419f575afe06", "cc6a5fc005ff"),
     "R13-5": ("9eafa61d5627", "4f88b03248cf"),
@@ -1046,27 +1046,27 @@ FINDING_PINS = {
     "R14-5": ("ac422876d92e", "4f88b03248cf"),
     "R14-6": ("cb6dc064ffbd", "59ee143f6595"),
     "R14-7": ("ccb9c39d9248", "130a30a902f7"),
-    "R14-8": ("5467b0850b03", "5caa504f9d55"),
+    "R14-8": ("5467b0850b03", "39673398b0d3"),
     "R14-9": ("e1366bbbbbbb", "7020e9135d15"),
     "R14-10": ("f50bb3e9a008", "9512f329eb20"),
     "R14-11": ("8180865842d5", "1c38a9362331"),
     "R15-1": ("1c104b3fc7e7", "2ee762796553"),
     "R15-2": ("9d98cc6bd966", "21fcaa3d3373"),
-    "R15-3": ("e01825a51396", "8a13d4a06981"),
+    "R15-3": ("e01825a51396", "e5b35d0472e6"),
     "R15-4": ("db5173af613a", "9eb37aef1baf"),
     "R15-5": ("0737cccb138c", "616b705cc1de"),
     "R15-6": ("07ec9b9f9bed", "9a4caf58c3dc"),
     "R15-7": ("92450cbbfbdd", "874dfc52afb1"),
-    "R15-8": ("47885c40a92b", "8696927d13fa"),
+    "R15-8": ("47885c40a92b", "cbb5b76f0639"),
     "R15-9": ("2fe280ccf96d", "130a30a902f7"),
     "R15-10": ("38b913648760", "1760c70038c6"),
     "R16-1": ("a1d424315908", "bc0690af21eb"),
     "R16-2": ("cea556de1fbc", "9ae5c4dd83a4"),
-    "R16-3": ("1bd741f174cb", "e12c610faf33"),
+    "R16-3": ("1bd741f174cb", "c3b98cf6afca"),
     "R16-4": ("0b8e109c78c0", "4a92fa7800dc"),
     "R16-5": ("9bf55e10b199", "ffaecc1dd0d3"),
     "R16-6": ("944e866fbb12", "e47ebbc027c1"),
-    "R16-7": ("9db50d82952b", "5caa504f9d55"),
+    "R16-7": ("9db50d82952b", "39673398b0d3"),
     "R16-8": ("7d5aceae7883", "e14e5061d017"),
     "R17-1": ("cb5780caccf1", "4545c8a3af83"),
     "R17-2": ("c0aab0411a78", "042a0b8ab63d"),
@@ -1093,7 +1093,7 @@ FINDING_PINS = {
     "R21-2": ("9374a33f13e2", "5af7747f5f79"),
     "R21-3": ("423e84c75283", "ab7d603ae34c"),
     "R21-4": ("a716e3ecc86b", "30119aa7f3ab"),
-    "R21-5": ("3bf8811d6d49", "7628650c351d"),
+    "R21-5": ("3bf8811d6d49", "5a1875815b3b"),
     "R22-1": ("e6d64e6d4e48", "53b44945d9f4"),
     "R22-2": ("a6bfae47ddbb", "30119aa7f3ab"),
     "R22-3": ("71cb12d78bf4", "d6ffad4b2500"),
@@ -1183,10 +1183,11 @@ FINDING_PINS = {
     "R43-1": ("353df124bfa2", "5d2eaa3550c3"),
     "R43-2": ("d96eeb7b3600", "65d73785bce9"),
     "R43-3": ("e14b8b4af2a1", "f85c79aef1ed"),
-    "R43-4": ("8fd8cc88f56f", "d2adb66fecfb"),
+    "R43-4": ("8fd8cc88f56f", "7fbd86755953"),
     "R43-5": ("9d3569021b43", "2bbb7f8e0912"),
     "R43-6": ("7db34b5d4fe6", "4157396fa693"),
     "R43-7": ("d9906afc7353", "6ac14a979656"),
+    "R43-8": ("85a47b65d568", "cd9305aafc05"),
 }
 
 
@@ -2150,6 +2151,34 @@ def test_authority_records_and_the_source_rule_have_closed_fields():
             module.Tables.from_raw(raw).check()
 
 
+def test_a_section_the_check_reads_first_is_refused_by_name():
+    """Пропажа раздела, который проверка читает первым, — названный отказ.
+
+    🚩 Круг 43 (R43-8): после того как загрузка стала выполнять полную
+    проверку, удаление подраздела словаря роняло её сырым KeyError, а пропажу
+    подразделов исполнения ловила только безымянная сетка «план не
+    разбирается». Сетка — последний рубеж, а не способ ловить.
+    """
+    module = import_tables_module()
+    cases = [
+        ("vocabulary", ["состояния_прогона", "рабочие"], "vocabulary.состояния_прогона"),
+        ("vocabulary", ["состояния_блока", "терминальные"], "vocabulary.состояния_блока"),
+        ("blocks", ["исполнение", "выполнено"], "blocks.исполнение"),
+        ("blocks", ["исполнение", "блоки"], "blocks.исполнение"),
+    ]
+    for table, path, named in cases:
+        raw = copy.deepcopy(module.load().raw)
+        node = raw[table]
+        for step in path[:-1]:
+            node = node[step]
+        del node[path[-1]]
+        with pytest.raises(module.ContractError) as error:
+            module.Tables.from_raw(raw).check()
+        message = str(error.value)
+        assert named in message and not message.startswith("blocks: план не разбирается"), (
+            f"{table}.{'.'.join(path)}: отказ не назван — {message[:120]}")
+
+
 def test_a_negative_claim_about_an_event_needs_the_raw_source():
     # Cost a whole round: a filtered search dropped a message that existed, and
     # I reported "не нашёл" as "не существует".
@@ -2900,7 +2929,7 @@ def test_the_break_list_itself_is_pinned():
     records = sorted([case[0], case[3], case[4]] for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "ab17da9fa1d9db4a208cab6b91318d023224b3bb8fb8487c52bf0bb099385828", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "132015a1fa7c2ffe008d89e5ec1a6c1337fb42fa23869e8aef533a8951af205b", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

@@ -975,6 +975,16 @@ class Tables:
     def check(self) -> list[str]:
         """Every invariant the engine itself depends on. Returns what it checked."""
         checked = []
+        # Круг 43 (R43-8): с полной проверкой в загрузке удаление подраздела
+        # словаря роняло загрузку сырым KeyError — мимо сетки, ещё до неё.
+        # Что проверка читает первым, объявлено обязательным и названо.
+        for section in ("состояния_прогона", "состояния_блока"):
+            spec = self.vocabulary.get(section)
+            if not isinstance(spec, dict):
+                raise ContractError(f"vocabulary.{section}: ожидалась карта, получено {spec!r}")
+            _require(spec, {"рабочие", "терминальные"}, set(), f"vocabulary.{section}")
+            for key in ("рабочие", "терминальные"):
+                _string_list(spec[key], f"vocabulary.{section}.{key}")
         working = set(self.vocabulary["состояния_прогона"]["рабочие"])
 
         self._check_codes()
@@ -1156,6 +1166,14 @@ class Tables:
     def _check_plan(self) -> list[str]:
         checked = []
         plan = self.plan
+        # Круг 43 (R43-8): раздел исполнения читается шлюзами раньше, чем его
+        # разбирает `_check_execution`; без этого пропажа `выполнено` или
+        # `блоки` ловилась только сеткой, безымянным KeyError.
+        execution = plan.get("исполнение")
+        if not isinstance(execution, dict):
+            raise ContractError(f"blocks.исполнение: ожидалась карта, получено {execution!r}")
+        _require(execution, {"роли", "проверки", "шаги", "блоки", "выполнено"}, set(),
+                 "blocks.исполнение")
         # БТ2-4 rework: `check()` now runs on every `load()`, so a
         # malformed `отпечаток_изоляции` must fail as `ContractError` here,
         # before `closed()`/`gate_violations()` index into it further down

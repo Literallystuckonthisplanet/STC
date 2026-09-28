@@ -24,6 +24,7 @@ is *when* an operation is a repeat, a conflict or a revocation (§7.1).
 from __future__ import annotations
 
 import base64
+import binascii
 import errno
 import fcntl
 import hashlib
@@ -154,6 +155,26 @@ class RunLock:
         """
         return self._held and self._owner_pid == os.getpid()
 
+    def holds(self, directory: Path) -> bool:
+        """Whether this instance holds the lock of `directory`, as it is on disk now.
+
+        Круг 44: `is_held()` видел процесс, но не файл. Файл замка удалили
+        посреди работы — второй вызов создал новый и взял его, и писали оба;
+        а замок другого каталога, переданный магазину, открывал чужой прогон.
+        Держим мы открытый файл, а не имя: сверяется, что под именем замка
+        этого каталога лежит ровно тот файл, который заперт.
+        """
+        if not self.is_held() or self._handle is None:
+            return False
+        if Path(os.path.abspath(self.path)) != Path(os.path.abspath(Path(directory) / LOCK)):
+            return False
+        try:
+            on_disk = os.stat(self.path)
+        except FileNotFoundError:
+            return False
+        ours = os.fstat(self._handle.fileno())
+        return (on_disk.st_dev, on_disk.st_ino) == (ours.st_dev, ours.st_ino)
+
 
 # --------------------------------------------------------------------------
 # records
@@ -254,6 +275,24 @@ class RunState:
         }
 
 
+def _card_bytes(encoded) -> bytes:
+    """Байты карточки идеи из журнала — или отказ, но не пустая карточка.
+
+    Круг 44: нестрогий `b64decode` молча выбрасывал недопустимые знаки, и
+    испорченная запись читалась как пустая карточка. Годится только то, что
+    строгое чтение принимает и что кодируется обратно в ту же строку.
+    """
+    if not isinstance(encoded, str) or not encoded:
+        raise StateError(f"журнал: байты карточки идеи не записаны — {encoded!r}")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise StateError(f"журнал: байты карточки идеи повреждены — {encoded!r}") from None
+    if base64.b64encode(decoded).decode("ascii") != encoded:
+        raise StateError(f"журнал: байты карточки идеи записаны не канонично — {encoded!r}")
+    return decoded
+
+
 # --------------------------------------------------------------------------
 # the store
 # --------------------------------------------------------------------------
@@ -279,7 +318,7 @@ class RunStore:
         Asking the lock itself whether it is held *right now* closes all
         three: no lock at all, and a lock already released, both say no.
         """
-        if self._lock is None or not self._lock.is_held():
+        if self._lock is None or not self._lock.holds(self.directory):
             raise StateError(
                 f"{what}: изменяющий RunStore получают только под держимой блокировкой (open_run)")
 
@@ -357,11 +396,17 @@ class RunStore:
             os.close(directory_fd)
 
     def _append(self, entry: dict) -> dict:
-        """Append one journal entry and get it onto the disk before returning."""
+        """Append one journal entry and get it onto the disk before returning.
+
+        Право записи сверяется ещё раз прямо перед записью (круг 44): между
+        проверкой в начале операции и дописыванием замок могли увести.
+        """
+        self._require_live("append")
         self.directory.mkdir(parents=True, exist_ok=True)
         self._repair_tail()
         entry = {"seq": self._next_seq(), "at": _now(), **entry}
         line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+        self._require_live("append")
         with open(self.journal_path, "a", encoding="utf-8") as handle:
             handle.write(line)
             handle.flush()
@@ -477,7 +522,7 @@ class RunStore:
         elif kind == "idea_candidates_assigned":
             state.idea_candidates = tuple(
                 IdeaCandidate(candidate_id=c["candidate_id"], source=c["source"],
-                              canonical_bytes=base64.b64decode(c["canonical_bytes_b64"]))
+                              canonical_bytes=_card_bytes(c.get("canonical_bytes_b64")))
                 for c in entry["candidates"])
             state.idea_candidates_permutation = tuple(entry["permutation"])
         else:
@@ -513,10 +558,14 @@ class RunStore:
             self.tables.vocabulary["стадии"]["вне_MVP"])
         if stage not in stages:
             raise StateError(f"неизвестная стадия {stage!r}")
-        with RunLock(self.directory):
+        with RunLock(self.directory) as lock:
             if self.journal_path.exists() and self._entries():
                 raise StateError(f"{self.directory}: прогон уже создан")
-            self._append({"kind": "run_created", "run_id": run_id, "stage": stage})
+            previous, self._lock = self._lock, lock
+            try:
+                self._append({"kind": "run_created", "run_id": run_id, "stage": stage})
+            finally:
+                self._lock = previous
             state = self.load()
             self._write_snapshot(state)
         return state

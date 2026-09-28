@@ -6,6 +6,7 @@ by actually killing a process with SIGKILL and by actually holding the lock from
 a second process. A mocked crash proves the mock.
 """
 
+import base64
 import json
 import os
 import signal
@@ -798,3 +799,67 @@ def test_reassigning_a_different_set_of_idea_candidates_is_refused_and_source_st
     blind = [c.blind() for c in state.idea_candidates]
     assert all("source" not in b for b in blind)
     assert [b["candidate_id"] for b in blind] == ["C1", "C2"]
+
+
+def test_a_lock_whose_file_was_deleted_no_longer_backs_writes(run):
+    """Круг 44: замок проверял процесс, но не то, что он всё ещё держит ТОТ
+    файл. Файл замка удалили посреди работы первого вызова — второй взял
+    новый замок на тот же прогон, и оба записали. Теперь первый, чей файл
+    исчез, теряет право записи: писатель на прогон снова один."""
+    first_lock = S.RunLock(run.directory).__enter__()
+    first = S.RunStore(run.directory, TABLES, _lock=first_lock)
+    first.submit("start")                                     # контроль: пишет, пока замок цел
+
+    (run.directory / S.LOCK).unlink()                         # вмешательство извне
+    with S.RunLock(run.directory) as second_lock:
+        second = S.RunStore(run.directory, TABLES, _lock=second_lock)
+        with pytest.raises(S.StateError, match="блокировкой"):
+            first.set_flag("пауза", True)
+        second.set_flag("пауза", True)                        # писатель остался один
+    first_lock.__exit__(None, None, None)
+
+    kinds = [e["kind"] for e in run._entries()]
+    assert kinds.count("flag") == 1, kinds
+
+
+def test_a_lock_replaced_by_another_file_under_the_same_name_is_not_ours(run):
+    """То же, но файл не просто удалён, а подменён новым с тем же именем:
+    имя совпадает, а держим мы уже не его."""
+    lock = S.RunLock(run.directory).__enter__()
+    store = S.RunStore(run.directory, TABLES, _lock=lock)
+    path = run.directory / S.LOCK
+    path.unlink()
+    path.write_text("чужой\n", encoding="utf-8")
+    with pytest.raises(S.StateError, match="блокировкой"):
+        store.submit("start")
+    lock.__exit__(None, None, None)
+    assert [e["kind"] for e in run._entries()] == ["run_created"]
+
+
+def test_a_lock_of_another_run_directory_does_not_open_this_one(run, tmp_path):
+    """Круг 44: магазину прогона можно было передать замок ДРУГОГО каталога —
+    замок держится, значит «можно писать», хотя этот прогон занят кем-то ещё."""
+    elsewhere = tmp_path / "other"
+    with S.RunLock(run.directory):                             # прогон занят честным вызовом
+        with S.RunLock(elsewhere) as foreign:
+            store = S.RunStore(run.directory, TABLES, _lock=foreign)
+            with pytest.raises(S.StateError, match="блокировкой"):
+                store.submit("start")
+    assert [e["kind"] for e in run._entries()] == ["run_created"]
+
+
+def test_a_corrupt_card_encoding_is_refused_not_read_as_an_empty_card(run):
+    """Круг 44: байты карточки идеи хранятся в журнале в кодировке base64, и
+    нестрогое чтение превращало испорченную запись в пустую карточку —
+    содержимое пропадало без единого слова. Испорченное — отказ."""
+    run.assign_idea_candidates([S.IdeaCandidate("C1", "автор", b"one")])
+    good = run.journal_path.read_text(encoding="utf-8")
+    encoded = base64.b64encode(b"one").decode("ascii")
+    for broken in ("!!!!", encoded + "!", encoded[:-1], "", 7):
+        forged = good.replace(json.dumps(encoded), json.dumps(broken))
+        assert forged != good, broken
+        run.journal_path.write_text(forged, encoding="utf-8")
+        with pytest.raises(S.StateError, match="карточк"):
+            run.load()
+    run.journal_path.write_text(good, encoding="utf-8")
+    assert run.load().idea_candidates[0].canonical_bytes == b"one"   # контроль

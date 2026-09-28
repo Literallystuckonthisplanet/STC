@@ -156,12 +156,11 @@ NOTES = {
 # against deletion while staying blind to a class that mutates it a
 # different way, and pretending otherwise would hide exactly that gap.
 #
-# Finding 4: this dict is pinned BY NAME in
-# test_the_class_exclusions_are_named_and_nothing_more (test_roundtable_decide.py) —
-# spelled out one entry at a time, the same shape the findings registry uses,
-# so a silently-added or silently-widened entry fails a test instead of
-# passing "100 %" unnoticed. Full parity with blocks.yaml is impossible from
-# here (R38-9); this is the parity this file CAN own.
+# Every entry is named, with the same reason, in blocks.yaml
+# (`порядок_критики.вне_замера_по_классам`): test_what_the_ratchet_does_not_
+# measure_is_named checks both directions, test_the_class_exclusions_are_named_
+# and_nothing_more (test_roundtable_decide.py) checks code ⊆ table — a
+# silently-added entry fails a test instead of passing "100 %" unnoticed.
 CLASS_EXCLUSIONS = {
     "убрать_правило": {
         # `почему` (precheck.yaml) is prose explaining to a HUMAN why the
@@ -633,13 +632,21 @@ def main(verbose=False, only=None, only_class=None) -> int:
             print("которым 02.09 было получено ложное «322/322».")
             return 2
         print(f"✓ контрольная база зелёная на копии {scratch}")
+        print(f"\nразделы вне замера целиком ({len(NOTES)}, названы в таблице плана):")
+        for table, section in sorted(NOTES):
+            print(f"     {table}:{section}")
 
         originals = {p: p.read_text(encoding="utf-8") for p in scratch.glob("*.yaml")}
 
         # раздельные знаменатели по таблице, полю и классу (БТ2-8)
         totals = {name: 0 for name in CLASSES}
         caught_counts = {name: 0 for name in CLASSES}
+        # Круг 44: «исключено» смешивало два разных случая — строки, которые
+        # таблица плана вывела из-под замера с причиной, и значения, у которых
+        # такого вида подмены просто нет (у булева нет «недопустимого»).
+        # Отчёт называет первые поимённо: «100 %» верно только вместе с ними.
         excluded = {name: [] for name in CLASSES}
+        inapplicable = {name: [] for name in CLASSES}
         missed = {name: [] for name in CLASSES}
         guards = {}
 
@@ -664,7 +671,7 @@ def main(verbose=False, only=None, only_class=None) -> int:
                     new_value, gen_reason = _run_generator(mutate, value, label)
 
                     if new_value is None:
-                        excluded[class_name].append((label, gen_reason))
+                        inapplicable[class_name].append((label, gen_reason))
                         continue
 
                     mutated = _apply(data, target_path, new_value)
@@ -705,13 +712,17 @@ def main(verbose=False, only=None, only_class=None) -> int:
             print(f"\n[{class_name}]")
             print(f"  мутировано  : {total}")
             print(f"  замечено    : {caught} ({percent}%)")
-            print(f"  исключено   : {len(excluded[class_name])}")
+            print(f"  неприменимо : {len(inapplicable[class_name])}"
+                  f" (у значения нет такого вида подмены)")
+            print(f"  вне замера  : {len(excluded[class_name])} (названы в таблице плана)")
             print(f"  не замечено : {len(missed[class_name])}")
             for row in missed[class_name]:
                 print("     не проверяется:", row)
+            for row, why in excluded[class_name]:
+                print(f"     вне замера: {row} — {why}")
             if verbose:
-                for row, why in excluded[class_name]:
-                    print(f"     исключено: {row} — {why}")
+                for row, why in inapplicable[class_name]:
+                    print(f"     неприменимо: {row} — {why}")
             if total > 0 and not percent == 100:
                 all_green = False
 

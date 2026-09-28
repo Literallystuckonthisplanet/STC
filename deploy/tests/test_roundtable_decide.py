@@ -771,69 +771,30 @@ def test_a_generator_returning_none_without_a_reason_is_a_ratchet_defect():
 # --------------------------------------------------------------------------
 
 def test_the_class_exclusions_are_named_and_nothing_more():
-    # Named one by one, the same shape the findings registry uses — not a
-    # hash. A silently added or silently widened entry fails this by name.
+    # Каждое поклассовое исключение названо в таблице плана той же причиной:
+    # дописать его только в код храповика, сохранив «100 %», нельзя.
+    #
+    # Круг 44: раньше здесь стоял отдельный буквальный список. Он повторял
+    # сверку с таблицей (её держит тест таблиц в обе стороны) и не давал
+    # снять устаревшее исключение одной правкой — список и таблица лежат в
+    # областях разных блоков. Направление «код ⊆ таблица» остаётся здесь.
     ratchet = _ratchet_module()
-    expected = {
-        "убрать_правило": {
-            ("precheck.yaml", "почему"),
-        },
-        "подменить_значение_на_допустимое": {
-            ("vocabulary.yaml", "коды_условий", "run_finished"),
-        },
-        "подсунуть_недопустимое": {
-            ("framing.yaml", "хранение"),
-            ("issues.yaml", "валидация"),
-            ("precheck.yaml", "классы_файлов"),
-            ("precheck.yaml", "фикстуры", "не_смешивать_с"),
-            ("precheck.yaml", "почему"),
-            ("stages.yaml", "стадии", "идея"),
-            ("stages.yaml", "стадии", "план"),
-            ("stages.yaml", "стадии", "ревью"),
-            ("stages.yaml", "слепой_вопрос"),
-            ("stages.yaml", "сигнал_нежизнеспособности"),
-            ("stages.yaml", "метрика_цены_понимания"),
-            ("stages.yaml", "приоритет_расхода"),
-            ("blocks.yaml", "заключения_ревью", 0),
-            ("blocks.yaml", "разрешения_исполнения", 0),
-            ("blocks.yaml", "разрешения_исполнения", 1),
-            ("blocks.yaml", "история_разрешений", 0),
-            ("blocks.yaml", "история_разрешений", 1),
-            ("blocks.yaml", "история_разрешений", 2),
-            ("blocks.yaml", "шлюзы", "ремонт_после_ревью_12"),
-            ("blocks.yaml", "шлюзы", "изоляция_подтверждена"),
-            ("blocks.yaml", "исполнение", "роли"),
-            ("blocks.yaml", "исполнение", "проверки"),
-            ("blocks.yaml", "сверка_записи", "код_движка"),
-            ("blocks.yaml", "порядок_критики", "почему"),
-            ("vocabulary.yaml", "операции", 2),
-            ("vocabulary.yaml", "операции", 4),
-            ("vocabulary.yaml", "операции", 5),
-            ("vocabulary.yaml", "операции", 6),
-            ("vocabulary.yaml", "операции", 7),
-            ("vocabulary.yaml", "операции", 8),
-            ("vocabulary.yaml", "операции", 9),
-            ("vocabulary.yaml", "операции", 10),
-            ("vocabulary.yaml", "схемы_контрактов", 0),
-            ("vocabulary.yaml", "схемы_контрактов", 1),
-            ("vocabulary.yaml", "схемы_контрактов", 2),
-            ("vocabulary.yaml", "схемы_контрактов", 3),
-            ("vocabulary.yaml", "схемы_контрактов", 4),
-            ("vocabulary.yaml", "схемы_контрактов", 5),
-            ("vocabulary.yaml", "схемы_контрактов", 6),
-            ("vocabulary.yaml", "схемы_контрактов", 7),
-            ("vocabulary.yaml", "схемы_контрактов", 8),
-            ("vocabulary.yaml", "попытка", "почему"),
-            ("vocabulary.yaml", "повтор_невалидного_ответа", "порядок"),
-            ("vocabulary.yaml", "повтор_невалидного_ответа", "оба_невалидны"),
-            ("findings.yaml", "находки"),
-        },
-    }
-    actual = {cls: set(entries) for cls, entries in ratchet.CLASS_EXCLUSIONS.items()}
-    assert actual == expected
+    named = T.load().plan["порядок_критики"]["вне_замера_по_классам"]
+
+    def key(entry):
+        table, *path = entry
+        rendered = ""
+        for part in path:
+            rendered += f"[{part}]" if isinstance(part, int) else (
+                f".{part}" if rendered else part)
+        return f"{table}:{rendered}"
+
     for cls, entries in ratchet.CLASS_EXCLUSIONS.items():
+        in_table = named.get(cls) or {}
         for entry, reason in entries.items():
             assert reason and reason.strip(), f"{cls}:{entry} исключён без причины"
+            assert in_table.get(key(entry)) == reason, (
+                f"{cls}: {key(entry)} исключён храповиком, но не назван в таблице той же причиной")
 
 
 # --------------------------------------------------------------------------
@@ -1005,3 +966,72 @@ def test_the_prose_and_the_structural_route_are_pinned_as_one_pair():
     ]
     actual_framing = [(t.source, t.event, t.condition) for t in TABLES.framing_transitions]
     assert actual_framing == pinned_framing_prose
+
+
+# --------------------------------------------------------------------------
+# Круг 44 — выдуманное поле на любой глубине любой таблицы
+# --------------------------------------------------------------------------
+
+def _dict_nodes(value, path=()):
+    if isinstance(value, dict):
+        yield path
+        for key, item in value.items():
+            yield from _dict_nodes(item, path + (key,))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _dict_nodes(item, path + (index,))
+
+
+def test_an_invented_field_is_refused_at_every_depth_of_every_table():
+    """Критик дописал в правило проверки замечаний выдуманное поле — загрузка
+    приняла. Сплошной обход нашёл то же ещё в девяноста видах вложенных строк.
+    Здесь каждая карта каждой таблицы получает выдуманное поле, и проверка
+    формы обязана назвать его — ни одной карты, где оно проходит молча."""
+    import copy
+    import dataclasses
+    tables = T.load()
+    accepted = []
+    total = 0
+    for table in T.TABLE_NAMES:
+        for path in _dict_nodes(tables.raw[table]):
+            total += 1
+            raw = copy.deepcopy(tables.raw)
+            node = raw[table]
+            for part in path:
+                node = node[part]
+            node["ВЫДУМАННОЕ_ПОЛЕ"] = True
+            try:
+                dataclasses.replace(tables, raw=raw)._check_shapes()
+            except T.ContractError:
+                continue
+            accepted.append((table,) + path)
+    assert total > 600, f"обход не дошёл до строк: {total}"
+    assert not accepted, f"выдуманное поле принято: {accepted[:5]}"
+
+
+def test_load_refuses_an_invented_field_in_a_validation_rule(tmp_path):
+    """Ровно случай критика, через настоящую загрузку с диска."""
+    directory = _copy(tmp_path)
+    assert T.load(directory), "контроль: копия грузится"
+    _edit(directory, "issues",
+          lambda data: data["валидация"][0].__setitem__("строгость", "да"))
+    error = _raises(T.ContractError, T.load, directory)
+    assert "issues.валидация[0]: выдуманные поля ['строгость']" in str(error)
+
+
+def test_every_shaped_section_is_a_real_section():
+    """Форма, объявленная для раздела с опечаткой в имени, не проверяла бы
+    ничего — и молчала бы об этом."""
+    for table, sections in T.SHAPES.items():
+        assert table in T.TOP_LEVEL, table
+        stray = set(sections) - T.TOP_LEVEL[table]
+        assert not stray, f"{table}: форма для несуществующих разделов {sorted(stray)}"
+    assert set(T.SHAPES) == set(T.TABLE_NAMES)
+
+
+def test_a_block_entry_that_is_not_a_mapping_is_refused_by_name(tmp_path):
+    """`Б99: true` среди блоков роняло загрузку сырым TypeError."""
+    directory = _copy(tmp_path)
+    _edit(directory, "blocks", lambda data: data["блоки"].__setitem__("Б99", True))
+    error = _raises(T.ContractError, T.load, directory)
+    assert "blocks.блоки.Б99: ожидалась карта полей" in str(error)

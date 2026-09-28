@@ -536,12 +536,203 @@ def _nonempty_string(value, where: str) -> None:
 
 
 def _require(row: dict, mandatory: set, optional: set, where: str) -> None:
+    # Круг 44: запись-не-карта (`Б99: true` среди блоков) роняла загрузку
+    # сырым TypeError на `set(row)` — повреждение обязано быть названным.
+    if not isinstance(row, dict):
+        raise ContractError(f"{where}: ожидалась карта полей, получено {row!r}")
     missing = mandatory - set(row)
     if missing:
         raise ContractError(f"{where}: row is missing {sorted(missing)} — {row}")
     unknown = set(row) - mandatory - optional
     if unknown:
         raise ContractError(f"{where}: unknown fields {sorted(unknown)} — {row}")
+
+
+# --------------------------------------------------------------------------
+# the closed shape of every table
+# --------------------------------------------------------------------------
+# Круг 44: выдуманное поле рядом с правилом проверки замечаний загрузка
+# принимала молча, а замер выводил такие строки из-под класса «подсунуть
+# недопустимое» — хотя приёмка БТ2-5 обещает обратное. Проверка по всем
+# таблицам нашла то же ещё в девяноста видах вложенных строк. Поэтому форма
+# каждой таблицы объявлена здесь целиком: запись — закрытый набор полей,
+# справочник — карта с ключами из названного перечня, список — одинаковые
+# элементы. Отсутствие поля и значения здесь не проверяются — их называют
+# разборы строк и проверки выше, точнее; здесь только то, чего не бывает.
+
+class Record:
+    """Запись: закрытый набор полей, у каждого своя форма."""
+
+    def __init__(self, *names: str, **shapes):
+        self.fields = {name: ANY for name in names} | shapes
+
+
+class Mapping:
+    """Справочник: ключи — данные (ID, стадии, коды); значения одной формы."""
+
+    def __init__(self, value, keys: str | None = None):
+        self.value, self.keys = value, keys
+
+
+class Sequence:
+    """Список одинаковых элементов."""
+
+    def __init__(self, item):
+        self.item = item
+
+
+ANY, TEXT, LIST = "любое", "строка", "список"
+
+_TRANSITION = Record("из", "событие", "в", "действия", "отказ", "кто", "условие",
+                     условия=Mapping(ANY, keys="условия"),
+                     исходы=Sequence(Record("в", условия=Mapping(ANY, keys="условия"))))
+_BASIS = Record("вид", "путь", "восстановлен", "sha256", "сессия", "native_uuid",
+                "цитата", "контекст", "подвид")
+
+SHAPES = {
+    "vocabulary": {
+        "состояния_прогона": Record("рабочие", "терминальные"),
+        "состояния_блока": Record("рабочие", "терминальные"),
+        "статусы_issue": Record("ждут_автора", "ждут_критика", "ждут_Антона", "терминальные"),
+        "статусы_возражения": Record("активные", "терминальные"),
+        "стадии": Record("в_MVP", "вне_MVP"),
+        "отпечаток": Mapping(LIST),
+        "создатели_доказательства": Mapping(LIST, keys="доказательства"),
+        "пакет": Record("предел_файла_байт", "предел_пакета_байт", "отвергается",
+                        "не_попадает", "реестры", "виды_решений_в_реестре", "канонизация"),
+        "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
+        "коды_условий": Mapping(LIST),
+        "повтор_невалидного_ответа": Record(
+            "максимум_на_ответ", "область", "тратит_бюджет", "порядок", "оба_невалидны",
+            "сохранённый_валидный_ответ_не_повторять", "после_исчерпания",
+            "счётчик_живёт_в"),
+    },
+    "run": {
+        "переходы": Sequence(_TRANSITION),
+        "действия": Mapping(TEXT, keys="действия"),
+        "revoke_operation": Record("цель", "разрешено_если", "зависимое_событие", "иначе",
+                                   "компенсация", "отката_истории"),
+    },
+    "issues": {
+        "коды_условий": Mapping(LIST),
+        "переходы": Sequence(_TRANSITION),
+        "кто_завершает": Record("поднявший_критик", "Антон", "никто_иной"),
+        "допустимые_решения": Mapping(LIST),
+        "вердикт": Sequence(Record("условие", "вердикт")),
+        "вердикт_вне_таблицы": Mapping(TEXT),
+        "обязательства": Record("что_входит", "куда"),
+        "валидация": Sequence(Record("правило", "исход")),
+    },
+    "framing": {
+        "переходы": Sequence(_TRANSITION),
+        "влияние_по_стадиям": Mapping(TEXT, keys="стадии"),
+        "права_по_стадиям": Mapping(
+            Record("постановка", "смена_решения", "buy_vs_build", "область_находок"),
+            keys="стадии"),
+        "критерии_решения": Sequence(Record("код", "проверка")),
+        "критерии_постановки": Sequence(Record("код", "проверка")),
+        "ограничитель_смены_решения": Record("сколько", "за", "исход_второй", "природа",
+                                             "почему"),
+        "хранение": Mapping(Record("поля", "срок")),
+    },
+    "precheck": {
+        "коды": Sequence(Record("код", "срабатывает", "фикстура")),
+        "классы_файлов": Record("existing_evidence", "planned_output"),
+        "фикстуры": Record("каталог", "эталон", "правило", "не_смешивать_с"),
+    },
+    "blocks": {
+        "вне_порядка": Mapping(TEXT, keys="блоки"),
+        "блоки": Mapping(Record(
+            "что", "зависит", "читает", "пишет", "внешние_действия", "состояние",
+            "блокер", "переоткрыт_из_за", "объединён_с", "поглощает", "вне_MVP", "коммиты",
+            приёмка=Sequence(Record("id", "условие")),
+            объявленное_количество=Mapping(ANY, keys="количества"))),
+        "заключения_ревью": Sequence(Record("круг", "блоки", "дата", основание=_BASIS)),
+        "разрешения_исполнения": Sequence(Record(
+            "кем", "блоки", "дата", "алгоритм_отпечатка", "объём_пересчитан",
+            scope_sha256=Mapping(TEXT, keys="блоки"), основание=_BASIS)),
+        "история_разрешений": Sequence(Record("кем", "блоки", "дата", основание=_BASIS)),
+        "согласия": Record("правило", "сколько", "почему_два", "передача", "история",
+                           "обязательный_сценарий",
+                           цепочка=Sequence(Record("этап", "принимается", "разрешает",
+                                                   "аннулируется_при_правке"))),
+        "шлюзы": Mapping(Record("блокирует", "до_закрытия", "почему")),
+        "отпечаток_изоляции": Record(
+            "проверяет_блок", "блок_запуска", "успешный_вердикт", "отчёт",
+            "требуются_всегда", "входит_в_отпечаток", "подтверждение_действует",
+            "входы", "расхождение",
+            версии_команд=Mapping(LIST), артефакты=Mapping(TEXT),
+            пока_не_вычисляется=Mapping(Record("почему", "закрывает"))),
+        "исполнение": Record(
+            "шаги", роли=Mapping(TEXT), проверки=Mapping(TEXT),
+            выполнено=Mapping(ANY, keys="блоки"),
+            блоки=Mapping(Record("волна", "исполнитель", "изоляция", "ревью"),
+                          keys="блоки")),
+        "сверка_записи": Record(
+            "трейлер", "код_движка", "тесты", "до_правила",
+            откачено_без_трейлера=Mapping(Record("откат", "заново", "почему"))),
+        "проверка_памяти": Record("файлы", "канон", "ведутся_записями"),
+        "порядок_критики": Record(
+            "правило", "классы_мутаций", "чего_не_найдёт", "почему",
+            шаги=Sequence(Record("прогнать_имеющееся", "ломать_на_временной_копии",
+                                 "отчёт_таблицей")),
+            вне_замера=Mapping(TEXT),
+            вне_замера_по_классам=Mapping(Mapping(TEXT), keys="классы_мутаций")),
+        "проверки_источников": Record(
+            отрицательное_утверждение_о_событии=Record("источник", "запрещено", "почему")),
+        "списки": Record("пункты_плана_PEV", "таблицы", "фикстуры_репетиции", "исходы_идеи"),
+    },
+    "stages": {
+        "стадии": Mapping(Record(
+            "первый_вопрос", "второй_вопрос", "итог", "критиков", "вызовов_типично",
+            "постановка", "смена_решения", "buy_vs_build", "область_находок",
+            "возражение_к_постановке"), keys="стадии"),
+        "слепой_вопрос": Record("показываем", "прячем", "почему", "ограничение"),
+        "сигнал_нежизнеспособности": Record("условие", "действие", "до", "почему"),
+        "метрика_цены_понимания": Record(
+            "что_пишем", "когда", "зачем",
+            базовая_точка=Record("проект", "стадия", "круг", "источник")),
+        "приоритет_расхода": Record("правило", "экономим_на", "почему", "отменяет"),
+    },
+    "findings": {
+        "находки": Sequence(Record("id", "круг", "что", "статус", "тест", "поломка",
+                                   "почему_без_поломки", "критерий", "почему")),
+    },
+}
+
+
+def _check_shape(value, shape, where: str, domains: dict) -> None:
+    """Refuse what the declared shape does not allow — nothing more."""
+    if shape is ANY:
+        return
+    if shape is TEXT:
+        if not isinstance(value, str):
+            raise ContractError(f"{where}: ожидалась строка, получено {value!r}")
+        return
+    if shape is LIST or isinstance(shape, Sequence):
+        if not isinstance(value, list):
+            raise ContractError(f"{where}: ожидался список, получено {value!r}")
+        if isinstance(shape, Sequence):
+            for index, item in enumerate(value):
+                _check_shape(item, shape.item, f"{where}[{index}]", domains)
+        return
+    if not isinstance(value, dict):
+        raise ContractError(f"{where}: ожидалась карта, получено {value!r}")
+    if isinstance(shape, Record):
+        unknown = set(value) - set(shape.fields)
+        if unknown:
+            raise ContractError(f"{where}: выдуманные поля {sorted(map(str, unknown))}")
+        for name, inner in shape.fields.items():
+            if name in value:
+                _check_shape(value[name], inner, f"{where}.{name}", domains)
+        return
+    if shape.keys is not None:
+        unknown = set(value) - domains[shape.keys]
+        if unknown:
+            raise ContractError(
+                f"{where}: ключи {sorted(map(str, unknown))} вне перечня «{shape.keys}»")
+    for key, item in value.items():
+        _check_shape(item, shape.value, f"{where}.{key}", domains)
 
 
 # --------------------------------------------------------------------------
@@ -1463,7 +1654,36 @@ class Tables:
                     raise ContractError(
                         f"{name}: объявлено {declared} {key}, в списке {actual}")
         checked.append("объявленные количества сходятся с длиной списков")
+
+        self._check_shapes()
+        checked.append(f"{len(SHAPES)} таблиц: выдуманных полей нет ни на какой глубине")
         return checked
+
+    def _shape_domains(self) -> dict:
+        """Перечни, из которых берутся ключи справочников."""
+        try:
+            vocabulary, plan = self.vocabulary, self.plan
+            return {
+                "стадии": set(vocabulary["стадии"]["в_MVP"]) | set(vocabulary["стадии"]["вне_MVP"]),
+                "блоки": set(plan["блоки"]),
+                "действия": set(vocabulary["коды_действий"]),
+                "доказательства": set(vocabulary["отпечаток"]),
+                "классы_мутаций": set(plan["порядок_критики"]["классы_мутаций"]),
+                "количества": ({"схемы_контрактов", "операции", "коды_предпроверки"}
+                               | set(plan["списки"])),
+                "условия": (set(vocabulary["коды_условий"]) | set(self._issue_codes())
+                            | {"framing_decision"}),
+            }
+        except (KeyError, TypeError) as error:
+            raise ContractError(f"перечень ключей для формы таблиц не разбирается — "
+                                f"{type(error).__name__}: {error}") from None
+
+    def _check_shapes(self) -> None:
+        domains = self._shape_domains()
+        for table, sections in SHAPES.items():
+            names = TOP_LEVEL[table] | {"версия_контракта"}
+            shape = Record(*names, **{k: v for k, v in sections.items() if k in names})
+            _check_shape(self.raw[table], shape, table, domains)
 
     def _check_no_cycles(self) -> None:
         colour = {}

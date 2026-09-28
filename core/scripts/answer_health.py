@@ -233,7 +233,8 @@ def _is_anton(rec: dict, strict: bool) -> bool:
 
 def _empty_row() -> dict[str, int]:
     return {"anton_msgs": 0, "confused": 0, "answers": 0, "long": 0,
-            "with_code": 0, "forks": 0, "blind_forks": 0, "no_advice": 0}
+            "with_code": 0, "forks": 0, "blind_forks": 0, "no_advice": 0,
+            "final": 0, "final_long": 0, "final_with_code": 0}
 
 
 def _read_claude(rec: dict, strict: bool):
@@ -245,17 +246,19 @@ def _read_claude(rec: dict, strict: bool):
         role = "agent"
     else:
         return None
-    text = _text((rec.get("message") or {}).get("content")).strip()
-    key = rec.get("uuid") or (rec.get("message") or {}).get("id")
-    return role, text, key
+    msg = rec.get("message") or {}
+    text = _text(msg.get("content")).strip()
+    key = rec.get("uuid") or msg.get("id")
+    # Реплика перед вызовом инструмента — промежуточная, остальное — итог хода.
+    return role, text, key, msg.get("stop_reason") != "tool_use"
 
 
 def _read_codex(rec: dict, strict: bool):
     """То же для Codex: разговор лежит в `response_item` → `payload.message`.
 
     `origin` у Codex нет вовсе, поэтому --strict его реплики Антона не считает
-    (знаменатель честнее пустого). Промпты субагентам приезжают ролью
-    `developer`, а не `user`, и отсекаются сами.
+    (знаменатель честнее пустого). Сессии дочерних агентов отсекает `scan` по
+    `session_meta`: их задание приходит ролью user (ревью 27.09).
     """
     if rec.get("type") != "response_item":
         return None
@@ -269,10 +272,18 @@ def _read_codex(rec: dict, strict: bool):
                      if isinstance(p, dict) and p.get("type", "").endswith("text")).strip()
     if role == "anton" and any(mark in text for mark in SERVICE + CODEX_SERVICE):
         return None
-    return role, text, payload.get("id")
+    return role, text, payload.get("id"), payload.get("phase") != "commentary"
 
 
 READERS = {"claude": _read_claude, "codex": _read_codex}
+
+
+def _is_subagent_session(rec: dict) -> bool:
+    """Шапка сессии Codex, запущенной другим агентом."""
+    if rec.get("type") != "session_meta":
+        return False
+    source = (rec.get("payload") or {}).get("source")
+    return isinstance(source, dict) and "subagent" in source
 
 
 def scan(raw_dir: Path, since: str | None, strict: bool,
@@ -294,6 +305,8 @@ def scan(raw_dir: Path, since: str | None, strict: bool,
                 rec = json.loads(line)
             except ValueError:
                 continue
+            if _is_subagent_session(rec):
+                break                 # разговор агента с агентом, не с Антоном
             stamp = rec.get("timestamp") or ""
             if not stamp:
                 continue
@@ -306,7 +319,7 @@ def scan(raw_dir: Path, since: str | None, strict: bool,
             parsed = read(rec, strict)
             if parsed is None:
                 continue
-            role, text, key = parsed
+            role, text, key, final = parsed
             if not text:
                 continue              # шаг с одними вызовами инструментов — не ответ
             # Одна реплика — один раз: каталог хранит копии одних разговоров.
@@ -322,10 +335,13 @@ def scan(raw_dir: Path, since: str | None, strict: bool,
                     row["confused"] += 1
                 continue
             row["answers"] += 1
-            if len(text) > LONG_ANSWER:
-                row["long"] += 1
-            if CODE.search(text):
-                row["with_code"] += 1
+            long, code = len(text) > LONG_ANSWER, bool(CODE.search(text))
+            row["long"] += long
+            row["with_code"] += code
+            if final:
+                row["final"] += 1
+                row["final_long"] += long
+                row["final_with_code"] += code
             if fork_blocks(text):
                 row["forks"] += 1
                 if is_blind_fork(text):
@@ -391,8 +407,14 @@ def main() -> int:
           f"{_pct(total['with_code'], total['answers']):>10} "
           f"{_pct(total['blind_forks'], total['forks']):>17} "
           f"{_pct(total['no_advice'], total['forks']):>11}")
+    # Единица «ответ» — любая видимая реплика агента, включая промежуточные
+    # («Проверяю…»): код правила вреден и там. Итоговые ответы хода — отдельно,
+    # чтобы не выдавать одно за другое (ревью 27.09).
+    print(f"итоговые ответы хода: {total['final']}; из них длинные "
+          f"{_pct(total['final_long'], total['final'])}, "
+          f"с кодами {_pct(total['final_with_code'], total['final'])}")
     print(f"\nхарнессы: {', '.join(scanned)}; реплик Антона {total['anton_msgs']}, "
-          f"ответов {total['answers']}, развилок {total['forks']}")
+          f"видимых реплик агента {total['answers']}, развилок {total['forks']}")
     # Архив пополняется раз в сутки. Сравнение «после» по архиву, который
     # кончается раньше внедрения, молча вернёт пустоту (ревью 24.09).
     print("последняя запись в архиве: " + ", ".join(

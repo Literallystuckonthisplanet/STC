@@ -166,3 +166,40 @@ def test_service_inserts_are_not_anton(tmp_path):
     ])
 
     assert AH.scan(raw, since=None, strict=False).get("2026-09", {}).get("anton_msgs", 0) == 0
+
+
+def test_codex_subagent_sessions_are_not_anton(tmp_path):
+    """Ревью 27.09: задание дочернему агенту у Codex приходит ролью user, и
+    замер считал его репликой Антона, а отчёт исполнителя — ответом ему. В
+    свежем архиве это больше половины файлов Codex."""
+    raw = tmp_path / "codex"
+    raw.mkdir(parents=True)
+    records = [
+        {"type": "session_meta", "timestamp": "2026-09-25T10:00:00Z",
+         "payload": {"session_id": "child", "source": {"subagent": {"thread_spawn": {}}}}},
+        {"type": "response_item", "timestamp": "2026-09-25T10:00:01Z",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "Техзадание: не понял формат?"}]}},
+        {"type": "response_item", "timestamp": "2026-09-25T10:00:02Z",
+         "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
+                     "content": [{"type": "output_text", "text": "Отчёт по FR-26."}]}},
+    ]
+    (raw / "child.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records),
+                                     encoding="utf-8")
+    assert AH.scan(raw, None, False, harness="codex").get("2026-09") in (None, AH._empty_row())
+
+
+def test_final_answers_are_counted_apart_from_progress_notes(tmp_path):
+    """Промежуточная реплика («Проверяю H14.») и итоговый ответ — разные единицы:
+    итог показывается отдельно (ревью 27.09)."""
+    raw = tmp_path / "claude"
+    _write(raw, [
+        {"type": "assistant", "timestamp": "2026-09-25T10:00:01Z", "uuid": "1",
+         "message": {"stop_reason": "tool_use", "content": [{"type": "text", "text": "Проверяю H14."}]}},
+        {"type": "assistant", "timestamp": "2026-09-25T10:00:02Z", "uuid": "2",
+         "message": {"stop_reason": "end_turn",
+                     "content": [{"type": "text", "text": "Готово. От тебя ничего."}]}},
+    ])
+    row = AH.scan(raw, None, False)["2026-09"]
+    assert row["answers"] == 2 and row["with_code"] == 1
+    assert row["final"] == 1 and row["final_with_code"] == 0

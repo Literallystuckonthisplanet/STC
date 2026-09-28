@@ -403,6 +403,53 @@ def test_reply_kind_reads_only_the_persons_own_words():
     assert dh.reply_kind("<!-- reply -->\n> 🗳️ Развилка: A или B?\n\nвторой") == "choice"
 
 
+def test_own_words_reads_after_a_real_id_bearing_close_tag():
+    """Настоящая вставка закрывается меткой с идентификатором
+    (`</pasted_content id="0c25">`, сырые разговоры 28.09). Образец её не знал,
+    резал до конца реплики — и слова человека после вставки пропадали."""
+    reply = '<pasted_content id="0c25">\nчужой отчёт\n</pasted_content id="0c25">\nвторой'
+    assert "чужой" not in dh.own_words(reply)
+    assert dh.own_words(reply).strip() == "второй"
+    assert dh.reply_kind(reply) == "choice"
+
+
+def test_own_words_close_tag_quoted_inside_paste_is_not_the_end():
+    """Вставленный отчёт цитирует закрывающую метку. Раньше вырезка кончалась
+    на ней, и хвост вставки («берём второй») читался как выбор человека."""
+    reply = ('<pasted_content id="1">\nкритик: метка </pasted_content> ломает '
+             'разбор, берём второй\n</pasted_content id="1">\nа что это значит?')
+    assert "второй" not in dh.own_words(reply)
+    assert dh.reply_kind(reply) == "question"
+
+
+def test_own_words_close_and_reopen_inside_paste_stay_foreign():
+    """Закрыть и снова открыть внутри вставки: слова между метками не
+    доверяются — безопасная сторона, выбор не засчитывается по догадке."""
+    reply = ('<pasted_content id="a">\nначало\n</pasted_content id="a">\nвторой\n'
+             '<pasted_content id="a">\nхвост\n</pasted_content id="a">\nпочему так?')
+    assert "второй" not in dh.own_words(reply)
+    assert dh.reply_kind(reply) == "question"
+
+
+def test_own_words_unclosed_paste_runs_to_the_end():
+    reply = 'объясни, что это?\n<pasted_content id="x">\nда, первый вариант'
+    assert "первый" not in dh.own_words(reply)
+    assert dh.reply_kind(reply) == "question"
+
+
+def test_own_words_stray_close_at_start_hides_everything_before_it():
+    """Первой стоит закрывающая метка — начало вставки потеряно, чужое с нуля."""
+    reply = 'да, берём второй\n</pasted_content id="x">\nчто это значит?'
+    assert "второй" not in dh.own_words(reply)
+    assert dh.reply_kind(reply) == "question"
+
+
+def test_own_words_markers_are_case_insensitive():
+    reply = '<PASTED_CONTENT id="x">\nвторой\n</Pasted_Content id="x">\nпочему?'
+    assert "второй" not in dh.own_words(reply)
+    assert dh.reply_kind(reply) == "question"
+
+
 def test_reply_kind_explicit_option_beats_a_question_mark():
     """Выбор с попутным вопросом — всё равно выбор («1 - вариант 1 … ?»)."""
     assert dh.reply_kind("1 - вариант 1\n2 - а как это будет?") == "choice"

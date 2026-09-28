@@ -139,7 +139,11 @@ CHOICE_CUE = re.compile(
 # ответов в архиве на 26.09 так и классифицировались (ревью 26.09).
 # Предложение с концом: выбор и попутный вопрос судятся по отдельности.
 SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
-PASTED = re.compile(r"<pasted_content[^>]*>.*?(?:</pasted_content>|$)", re.S)
+# Обёртки вставленного чужого текста. Граница вставки не угадывается: у
+# настоящей закрывающей метки бывает идентификатор (`</pasted_content id="0c25">`),
+# а метка внутри самой вставки неотличима от настоящей (круг 44 Roundtable,
+# двойник — `roundtable/tables.py` `own_words`).
+WRAPPERS = ("pasted_content",)
 HTML_NOTE = re.compile(r"<!--.*?-->", re.S)
 # Вставка целиком: начинается с кавычки или значка отчёта агента.
 PASTE_START = re.compile(r"^\s*(?:[\"«“]|🔎|🎯|✅|🔬|🔁|🚩|⚠️|📊|#)")
@@ -196,9 +200,30 @@ def fork_positions(text: str) -> list[int]:
     return found
 
 
+def _strip_wrapped(text: str) -> str:
+    """Вырезать вставленное с запасом: от первой метки вида до последней.
+
+    Если первой стоит закрывающая — чужое с начала реплики, если последней
+    открывающая — до конца. Слова между двумя вставками тоже уходят: выбор
+    тогда не засчитывается, а не засчитывается по догадке.
+    """
+    spans = []
+    for tag in WRAPPERS:
+        marks = list(re.finditer(rf"<(/?){tag}\b[^>]*>", text, flags=re.I))
+        if marks:
+            spans.append((0 if marks[0].group(1) else marks[0].start(),
+                          marks[-1].end() if marks[-1].group(1) else len(text)))
+    kept, cursor = [], 0
+    for start, end in sorted(spans):
+        kept.append(text[cursor:max(cursor, start)])
+        cursor = max(cursor, end)
+    kept.append(text[cursor:])
+    return "\n".join(kept)
+
+
 def own_words(reply: str) -> str:
     """Что человек написал сам: без вставок, цитат и служебной разметки."""
-    text = HTML_NOTE.sub("\n", PASTED.sub("\n", reply))
+    text = HTML_NOTE.sub("\n", _strip_wrapped(reply))
     text = "\n".join(line for line in text.splitlines()
                      if not line.lstrip().startswith(">")).strip()
     if len(text) > PASTE_MIN and PASTE_START.match(text):

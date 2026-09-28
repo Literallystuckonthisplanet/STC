@@ -525,3 +525,13 @@ def test_the_order_of_archive_copies_does_not_change_the_result(tmp_path):
         _write(d, f"{first}-short.jsonl", short)
         _write(d, f"{second}-full.jsonl", full)
         assert dh.scan(d, None)["marked"] == 1, first
+
+
+def test_a_short_option_name_said_on_its_own_is_a_choice():
+    """Живая проба Codex 28.09: «Паста. А что нужно купить?» на карточке
+    «Паста / Суп» сочлась вопросом — название короче восьми букв не узнавалось."""
+    fork = "🗳️ **Развилка: ужин?**\n\n- **Паста (советую)** — быстро.\n- **Суп** — легче."
+    assert dh.reply_kind("Паста. А что нужно купить?", fork) == "choice"
+    assert dh.reply_kind("суп", fork) == "choice"
+    assert dh.reply_kind("Паста?", fork) == "question"
+    assert dh.reply_kind("Суповой набор есть?", fork) == "question"

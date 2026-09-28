@@ -442,6 +442,11 @@ CASES = [
      lambda r: next(f for f in r["findings"]["находки"] if f["статус"] == "назначена_блоку")
      .__setitem__("критерий", "   "),
      "test_every_finding_row_has_exactly_the_fields_its_status_allows", "пустое"),
+    # Круг 43 (R43-4): загрузка выполняет полную проверку — двусмысленная
+    # таблица не грузится, а не ждёт, пока кто-то вспомнит позвать check().
+    ("П91", "продублировать строку перехода замечания",
+     lambda r: r["issues"]["переходы"].append(dict(r["issues"]["переходы"][1])),
+     "загрузчик", "2 outcomes for issue"),
 ]
 
 

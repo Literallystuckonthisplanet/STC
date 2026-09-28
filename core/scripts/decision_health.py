@@ -148,7 +148,7 @@ INTRO_MAX = 80        # вводные слова короче строки
 PASTE_MIN = 400       # вставка длиннее обычной реплики
 # Название варианта в карточке: жирное в начале строки-варианта.
 OPTION_NAME = re.compile(
-    r"^[\s>*•\d.)-]*(?:🗳️?\s*)?\*\*([^*\n]{4,160})\*\*", re.M)
+    r"^[\s>*•\d.)-]*(?:🗳️?\s*)?\*\*([^*\n]{2,160})\*\*", re.M)
 OPTION_LABEL = re.compile(
     r"^\s*(?:\(?[A-DА-Гa-dа-г\d]\)|[A-DА-Г\d][.:—–-]|вариант\s+\S+\s*[—–:-]?)\s*", re.I)
 # Заполнитель из объяснения формата: «принято: <что делаем>», «отклонено:
@@ -213,11 +213,11 @@ def _norm(text: str) -> str:
 def names_option(words: str, fork_text: str) -> bool:
     """Ответ — название варианта из карточки («Влить в ветку ВК сейчас»)."""
     said = _norm(words)
-    if len(said) < 8:
-        return False
     for m in OPTION_NAME.finditer(fork_text):
         name = _norm(OPTION_LABEL.sub("", m.group(1)))
-        if len(name) >= 8 and (name in said or said in name):
+        if name and said == name:
+            return True           # «Паста» на карточке «Паста / Суп» (проба 28.09)
+        if len(said) >= 8 and len(name) >= 8 and (name in said or said in name):
             return True
     return False
 

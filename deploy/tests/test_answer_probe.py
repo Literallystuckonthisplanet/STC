@@ -74,3 +74,31 @@ def test_a_failed_answer_is_shown_so_it_can_be_read(monkeypatch, capsys):
                                       "--scenario", "choice"])
     assert P.main() == 1
     assert "Выбери: автоматически или вручную." in capsys.readouterr().out
+
+
+def test_a_codex_failure_with_a_partial_answer_is_unverified(monkeypatch):
+    """Ревью 27.09: Codex успел сохранить частичный ответ и упал с кодом 1 —
+    проба судила частичный ответ и выходила с успехом."""
+    import subprocess
+    from pathlib import Path
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("--output-last-message") + 1]).write_text(
+            "🎯 Готово.\n🙋 От тебя: ничего.", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ERROR interrupted")
+
+    monkeypatch.setattr(P.subprocess, "run", fake_run)
+    answer, failure = P.ask("codex", "проба", None)
+    assert answer == "" and "interrupted" in failure
+    monkeypatch.setattr(sys, "argv", ["answer_probe.py", "--harness", "codex",
+                                      "--scenario", "report"])
+    assert P.main() == 2
+
+
+def test_a_number_after_the_check_word_is_still_check_reporting():
+    for answer in ("✅ Автопроверки прошли: 635.", "✅ Проверок прошло 635.",
+                   "✅ Тесты: 635 из 635 прошли."):
+        assert any("отчётность" in p for p in P.judge("report", "🙋 От тебя: ничего.\n" + answer)), answer
+    assert P.judge("report", "🙋 От тебя: ничего.\n✅ Прошло 635 проверок.")
+    # Срок и дата рядом со словом «проверка» — не отчётность о проверках.
+    assert P.judge("report", "🙋 От тебя: ничего.\nПроверка займёт 1 день, к 8 октября.") == []

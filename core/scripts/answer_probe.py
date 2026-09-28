@@ -71,6 +71,12 @@ SCENARIOS = {
 # число вообще не запрещено, запрещена отчётность о проверках.
 CHECK_NUMBERS = re.compile(
     r"(\d[\d\s]*(?:провер\w*|тест\w*|автопровер\w*|passed)"
+    # И обратный порядок: «Автопроверки прошли: 635», «Тесты: 635 из 635»
+    # (ревью 27.09). Срок и дата после слова — не отчётность: «Проверка займёт
+    # 1 день, к 8 октября».
+    r"|(?:провер\w*|тест\w*|автопровер\w*)[^.\n\d]{0,20}?\d+(?![\d\s]*"
+    r"(?:%|дн|день|час|мин|сек|недел|месяц|январ|феврал|март|апрел|ма[йя]|июн|июл"
+    r"|август|сентябр|октябр|ноябр|декабр))"
     r"|покрыти\w*\D{0,12}\d|\d+\s*%|exit\s*\d|\bpytest\b|\btsc\b|coverage)",
     re.I,
 )
@@ -83,9 +89,9 @@ def judge(scenario: str, answer: str) -> list[str]:
     if AH.CODE.search(answer):
         problems.append("внутренний код: " + AH.CODE.search(answer).group(0))
     if scenario == "report":
-        hit = CHECK_NUMBERS.search(answer)
-        if hit:
-            problems.append(f"отчётность о проверках: «{hit.group(0).strip()}»")
+        hits = list(dict.fromkeys(m.group(0).strip() for m in CHECK_NUMBERS.finditer(answer)))
+        if hits:
+            problems.append("отчётность о проверках: «" + "», «".join(hits) + "»")
         if not FOR_YOU.search(answer):
             problems.append("нет строки «от тебя»")
         if len(answer) > AH.LONG_ANSWER:
@@ -125,7 +131,10 @@ def ask(harness: str, prompt: str, codex_model: str | None) -> tuple[str, str]:
         run = subprocess.run(cmd + ["-"], input=prompt, capture_output=True, text=True,
                              cwd=tmp, timeout=900)
         answer = out.read_text(encoding="utf-8").strip() if out.exists() else ""
-        return answer, "" if answer else _failure(run)
+        # Частичный ответ упавшего запуска — не ответ (ревью 27.09).
+        if run.returncode != 0 or not answer:
+            return "", _failure(run) or "пустой ответ без ошибки"
+        return answer, ""
 
 
 def _failure(run: subprocess.CompletedProcess) -> str:

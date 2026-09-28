@@ -535,3 +535,12 @@ def test_a_short_option_name_said_on_its_own_is_a_choice():
     assert dh.reply_kind("суп", fork) == "choice"
     assert dh.reply_kind("Паста?", fork) == "question"
     assert dh.reply_kind("Суповой набор есть?", fork) == "question"
+
+
+def test_an_option_named_in_a_plain_numbered_card_is_a_choice():
+    """Живая проба Codex 28.09: варианты «1. Паста **(советую)** — …»,
+    «2. Суп — …» без жирного названия, ответ «Суп. Сколько его варить?»."""
+    fork = ("🗳️ Что приготовить на ужин?\n\n1. Паста **(советую)** — быстрее.\n\n"
+            "2. Суп — готовится дольше.\n\nТвой выбор: паста или суп?")
+    assert dh.reply_kind("Суп. Сколько его варить?", fork) == "choice"
+    assert dh.reply_kind("А суп долго варится?", fork) == "question"

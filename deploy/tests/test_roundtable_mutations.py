@@ -506,7 +506,12 @@ def run_case(case, scratch):
             module.load(scratch)
         assert fragment in str(error.value), f"{identifier}: {what} — чужая причина: {error.value}"
     elif guard == "контракт":
-        module.load(scratch)          # форма обязана остаться валидной
+        # Форма обязана остаться валидной: таблицы читаются и собираются в
+        # типизированные строки. Спрашивается сборка, а не load(): загрузка
+        # обещает полную проверку контракта (БТ2-4, находка R43-4), и тогда
+        # опыт не отличил бы «форма сломана» от «форма цела, контракт отказал».
+        module.Tables.from_raw({name: module.load_table(name, scratch)
+                                for name in module.TABLE_NAMES})
         with pytest.raises(module.ContractError) as error:
             module.load(scratch).check()
         assert fragment in str(error.value), f"{identifier}: {what} — чужая причина: {error.value}"

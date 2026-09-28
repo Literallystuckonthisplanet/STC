@@ -599,7 +599,7 @@ def cmd_apply(args):
         if ac_file:
             touch_files.append(ac_file)
         if touch_files and os.path.isdir(native_dir):
-            ts, dest, saved = C.backup_snapshot(native_dir, touch_files, BACKUPS)
+            ts, dest, saved = C.backup_snapshot(native_dir, touch_files, BACKUPS, t)
             saved += C.backup_private_sources(REPO, BACKUPS, ts)
             if saved:
                 _record_backup(ts, t, native_dir, saved)
@@ -884,7 +884,7 @@ def cmd_restore(args):
     if not native_dir:
         print(f"✗ backup '{args.backup_id}' not found in ledger ({BACKUPS}/_ledger.json)")
         return 1
-    C.restore(args.backup_id, native_dir, BACKUPS)
+    C.restore(args.backup_id, native_dir, BACKUPS, files=_files_for_backup(args.backup_id))
     print(f"✓ restored {args.backup_id} → {native_dir}")
     return 0
 
@@ -966,6 +966,17 @@ def _record_backup(ts, target, native_dir, files):
             ledger = {}
     ledger[ts] = {"target": target, "native_dir": native_dir, "files": files}
     json.dump(ledger, open(ledger_path, "w", encoding="utf-8"), indent=2)
+
+
+def _files_for_backup(ts):
+    """Files the ledger registered for this backup (without private sources)."""
+    ledger_path = os.path.join(BACKUPS, "_ledger.json")
+    try:
+        ledger = json.load(open(ledger_path, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    files = (ledger.get(ts) or {}).get("files")
+    return [f for f in files if "/" not in f] if isinstance(files, list) else None
 
 
 def _native_dir_for_backup(ts):

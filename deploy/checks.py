@@ -689,11 +689,25 @@ def report_collisions(collisions):
 # backup + restore
 # ---------------------------------------------------------------------------
 
-def backup_snapshot(native_dir, files_to_touch, backups_root):
-    """Copy each existing JSON in files_to_touch into backups_root/<ts>/."""
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    dest = os.path.join(backups_root, ts)
-    os.makedirs(dest, exist_ok=True)
+def backup_snapshot(native_dir, files_to_touch, backups_root, target=None):
+    """Copy each existing file in files_to_touch into its own backup folder.
+
+    The id is the time plus the target, and the folder is claimed atomically: a
+    second-precision timestamp alone gave `apply --target claude,codex` ONE
+    shared folder, the ledger kept only the last target, and `restore` for
+    Claude wrote Claude's files into Codex (review 2026-09-27).
+    """
+    base = time.strftime("%Y%m%d-%H%M%S") + (f"-{target}" if target else "")
+    os.makedirs(backups_root, exist_ok=True)
+    ts, n = base, 1
+    while True:
+        dest = os.path.join(backups_root, ts)
+        try:
+            os.mkdir(dest)
+            break
+        except FileExistsError:
+            n += 1
+            ts = f"{base}-{n}"
     saved = []
     for fname in files_to_touch:
         src = os.path.join(native_dir, fname)
@@ -761,11 +775,19 @@ def backup_private_sources(repo, backups_root, ts):
     return saved
 
 
-def restore(backup_id, native_dir, backups_root):
+def restore(backup_id, native_dir, backups_root, files=None):
+    """Copy the backup back. `files` — what the ledger registered for this
+    backup: anything else in the folder belongs to another target (folders
+    shared by two targets exist from before 2026-09-27) and stays put."""
     dest = os.path.join(backups_root, backup_id)
     if not os.path.isdir(dest):
         raise FileNotFoundError(f"no backup: {dest}")
-    for fname in os.listdir(dest):
+    for fname in sorted(os.listdir(dest)):
+        if files is not None and fname not in files \
+                and not os.path.isdir(os.path.join(dest, fname)):
+            print(f"   skipped {fname} — not registered for this backup "
+                  f"(another target's file in a shared folder)")
+            continue
         path = os.path.join(dest, fname)
         if os.path.isdir(path):
             # Source snapshots (user/) are NOT the rollback path: they are taken

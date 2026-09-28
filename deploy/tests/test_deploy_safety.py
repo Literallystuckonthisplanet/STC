@@ -174,3 +174,50 @@ def test_backup_skips_a_markdown_note_that_carries_a_key(tmp_path, capsys):
 
     assert saved == ["user/profile.md"]
     assert "skipped user/draft.md" in capsys.readouterr().out
+
+
+def test_two_targets_backed_up_in_the_same_second_do_not_mix(tmp_path, monkeypatch):
+    """Ревью 27.09: `apply --target claude,codex` делал обе копии в одну секунду,
+    в одну папку и под одним именем. Реестр помнил только Codex, и restore для
+    Claude писал файлы Claude в каталог Codex, а Claude не возвращал."""
+    import checks as C
+
+    claude, codex, backups = tmp_path / "claude", tmp_path / "codex", tmp_path / "backups"
+    claude.mkdir()
+    codex.mkdir()
+    (claude / "settings.json").write_text('{"v": "claude-before"}')
+    (codex / "config.toml").write_text('v = "codex-before"')
+    monkeypatch.setattr(D, "BACKUPS", str(backups))
+    monkeypatch.setattr(C.time, "strftime", lambda *a: "20260927-010101")
+
+    a, _, files = C.backup_snapshot(str(claude), ["settings.json"], str(backups), "claude")
+    D._record_backup(a, "claude", str(claude), files)
+    b, _, files = C.backup_snapshot(str(codex), ["config.toml"], str(backups), "codex")
+    D._record_backup(b, "codex", str(codex), files)
+    again, _, _ = C.backup_snapshot(str(codex), ["config.toml"], str(backups), "codex")
+    assert len({a, b, again}) == 3
+
+    (claude / "settings.json").write_text('{"v": "claude-after"}')
+    (codex / "config.toml").write_text('v = "codex-after"')
+    monkeypatch.setattr(D.sys, "argv", ["deploy.py", "restore", a])
+    assert D.cmd_restore(type("A", (), {"backup_id": a})()) == 0
+
+    assert json.loads((claude / "settings.json").read_text())["v"] == "claude-before"
+    assert (codex / "config.toml").read_text() == 'v = "codex-after"'
+    assert not (codex / "settings.json").exists()
+
+
+def test_restore_copies_only_the_files_registered_for_that_backup(tmp_path, capsys):
+    """Уже смешанная старая папка: чужой файл внутри не восстанавливается."""
+    import checks as C
+
+    backups = tmp_path / "backups"
+    snap = backups / "20260927-010101"
+    snap.mkdir(parents=True)
+    (snap / "settings.json").write_text("{}")
+    (snap / "config.toml").write_text("x = 1")
+    native = tmp_path / "native"
+    native.mkdir()
+    C.restore("20260927-010101", str(native), str(backups), files=["settings.json"])
+    assert (native / "settings.json").exists() and not (native / "config.toml").exists()
+    assert "config.toml" in capsys.readouterr().out

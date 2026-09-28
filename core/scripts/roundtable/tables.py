@@ -1582,6 +1582,19 @@ class Tables:
             if code and not tests:
                 raise ContractError(
                     f"{name}: пишет код движка {code}, но файл тестов не объявлен")
+        # Круг 44: код_движка и тесты — образцы путей, и образец, под которым
+        # ни один блок ничего не пишет, делал правило о тестах пустым: подмена
+        # на несуществующий каталог проходила, а требование исчезало молча.
+        every_write = [path for block in self.blocks.values() for path in block.writes]
+        if not any(path.startswith(rule["код_движка"]) and path.endswith(".py")
+                   for path in every_write):
+            raise ContractError(
+                f"blocks.сверка_записи.код_движка: ни один блок не пишет код под "
+                f"{rule['код_движка']!r} — правило о тестах ничего бы не проверяло")
+        if not any(path.startswith(rule["тесты"]) for path in every_write):
+            raise ContractError(
+                f"blocks.сверка_записи.тесты: ни один блок не пишет тесты под "
+                f"{rule['тесты']!r} — правило о тестах ничего бы не проверяло")
         checked.append(f"сверка записи: закрытые блоки называют коммиты, "
                        f"до правила — {len(grandfathered)}")
 
@@ -2394,11 +2407,35 @@ INJECTED = ("system-reminder", "command-name", "command-message", "command-args"
 
 
 def own_words(text: str) -> str:
-    """Реплика без служебных вставок и вставленного чужого текста."""
+    """Реплика без служебных вставок и вставленного чужого текста.
+
+    🚩 Круг 44: вставка вырезалась до ПЕРВОЙ закрывающей метки, а настоящую
+    закрывающую метку с меткой-идентификатором (`</pasted_content id="…">`)
+    образец не узнавал вовсе — вставленный текст засчитывался словами
+    человека. Метка внутри самой вставки неотличима от настоящей, поэтому
+    граница не угадывается: чужим считается всё от первой метки вида до
+    последней, а если первой стоит закрывающая или последней открывающая —
+    до края реплики. Слова между двумя вставками тоже уходят: основание
+    тогда отвергается, а не засчитывается по догадке.
+    """
+    spans = []
     for tag in INJECTED:
-        text = re.sub(rf"<{tag}\b.*?</{tag}>", " ", text, flags=re.S)
-        text = re.sub(rf"<{tag}\b[^>]*>", " ", text)
-    return text
+        marks = list(re.finditer(rf"<(/?){tag}\b[^>]*>", text, flags=re.I))
+        if not marks:
+            continue
+        start = 0 if marks[0].group(1) else marks[0].start()
+        end = marks[-1].end() if marks[-1].group(1) else len(text)
+        spans.append((start, end))
+    kept, cursor = [], 0
+    for start, end in sorted(spans):
+        if start > cursor:
+            kept.append(text[cursor:start])
+        cursor = max(cursor, end)
+    kept.append(text[cursor:])
+    # Разделитель, которого не бывает в цитате: цитата обязана стоять в
+    # словах человека подряд, а не собираться из кусков по обе стороны
+    # вырезанной вставки (ревью кода круга 44).
+    return "\x00".join(kept)
 
 
 def resolve_basis(basis: dict, home: Path | None = None) -> str | None:

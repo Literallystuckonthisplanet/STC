@@ -161,6 +161,9 @@ NOTES = {
 # measure_is_named checks both directions, test_the_class_exclusions_are_named_
 # and_nothing_more (test_roundtable_decide.py) checks code ⊆ table — a
 # silently-added entry fails a test instead of passing "100 %" unnoticed.
+PROSE = "проза для человека; движок и тесты её не разбирают — недопустимой строки у прозы нет"
+FUTURE = "правило для будущего блока вердикта словами; потребителя в коде ещё нет"
+
 CLASS_EXCLUSIONS = {
     "убрать_правило": {
         # `почему` (precheck.yaml) is prose explaining to a HUMAN why the
@@ -185,94 +188,34 @@ CLASS_EXCLUSIONS = {
             "ни одна комбинация условий по нему не строится",
     },
     "подсунуть_недопустимое": {
-        # `хранение` is read field-by-field by name (`FRAMING["хранение"][...]
-        # ["срок"]`), never parsed against a closed set of keys — an extra
-        # field next to the ones a test reads is invisible to every test that
-        # exists, and to every check in tables.py. Deletion and the id/text
-        # class still see this row; this one class does not.
-        ("framing.yaml", "хранение"):
-            "читается по конкретному полю (['срок']…), не по закрытому набору ключей",
-        # `валидация` rows are joined into one string by `правило` and matched
-        # with `in` (test_every_constrained_element_has_at_least_one_validation_
-        # rule) — an unrecognised sibling key next to `правило`/`исход` is
-        # never read by anything. Deletion IS read (it shortens the joined
-        # string), so that class still measures this row.
-        ("issues.yaml", "валидация"):
-            "правило/исход читаются построчно; лишний соседний ключ не читает никто",
+        # Круг 44: здесь остались только СТРОКИ, которые класс подменяет
+        # посторонней строкой. Выдуманное поле рядом с ними больше не проходит
+        # нигде: форма каждой таблицы закрыта (tables.SHAPES), и исключения
+        # «читается по именам полей, не строгой схемой» сняты — строки реестров,
+        # шлюзов, исполнения, находок, хранения, проверки замечаний и стадий
+        # теперь в замере.
+        ("blocks.yaml", "порядок_критики", "почему"): PROSE,
         # `классы_файлов` is checked by `set(...) == {"existing_evidence",
         # "planned_output"}` — the KEYS are pinned, the two description
-        # strings are not read by anything. Deletion changes the key set and
-        # is still caught.
+        # strings are not read by anything.
         ("precheck.yaml", "классы_файлов"):
             "пинуются только ключи (set(...) ==); описание-строка не читается",
-        # `фикстуры.не_смешивать_с` is checked by truthiness only
-        # (`assert PRECHECK["фикстуры"]["не_смешивать_с"]`) — a REPLACEMENT
-        # string is still truthy, so only THIS one field is blind; its
-        # siblings (`каталог`, `эталон`, `правило`) are each pinned by
-        # `.endswith(...)`/`in` and stay measured — the exclusion is scoped
-        # to the one sub-key, not the whole `фикстуры` dict.
-        ("precheck.yaml", "фикстуры", "не_смешивать_с"):
-            "проверяется только истинностью значения; любая непустая строка проходит",
-        # `почему` — see the `убрать_правило` exclusion above for the same
-        # key: prose for a human, read by nothing.
         ("precheck.yaml", "почему"):
             "проза для человека; ни один тест не читает наличие или текст поля",
-        # stages.yaml — every row here is read by specific-field assertions
-        # (membership, truthiness, an exact string) in
-        # test_roundtable_tables.py; none of the five sections is parsed
-        # against a closed key set, so an extra field beside the ones a test
-        # names is invisible to all of them. Deletion still lands on a named
-        # field and is caught; this class is the one that is blind here.
-        ("stages.yaml", "стадии", "идея"):
-            "поля читаются по имени, а не строгой схемой строки",
-        ("stages.yaml", "стадии", "план"):
-            "поля читаются по имени, а не строгой схемой строки",
-        ("stages.yaml", "стадии", "ревью"):
-            "поля читаются по имени, а не строгой схемой строки",
-        ("stages.yaml", "слепой_вопрос"):
-            "поля читаются по имени, а не строгой схемой строки",
-        ("stages.yaml", "сигнал_нежизнеспособности"):
-            "поля читаются по имени, а не строгой схемой строки",
-        ("stages.yaml", "метрика_цены_понимания"):
-            "поля читаются по имени, а не строгой схемой строки",
-        ("stages.yaml", "приоритет_расхода"):
-            "поля читаются по имени, а не строгой схемой строки",
-        # blocks.yaml — `_check_plan` (tables.py) and the plan-analysis tests
-        # read these sections by NAMED sub-field (`entry["основание"]`,
-        # `entry["дата"]`, `spec["блокирует"]`, `row["исполнитель"]`…), never
-        # by closing the row's field set the way `Block.parse`/`_require`
-        # does for `блоки` itself — an unrecognised sibling key is invisible
-        # to every one of those reads. Deletion still removes a NAMED field
-        # and is caught; this class alone is blind here.
-        ("blocks.yaml", "заключения_ревью", 0):
-            "читается по named-полям (основание, блоки…), не строгой схемой",
-        ("blocks.yaml", "разрешения_исполнения", 0):
-            "читается по named-полям (основание, scope_sha256…), не строгой схемой",
-        ("blocks.yaml", "разрешения_исполнения", 1):
-            "читается по named-полям (основание, scope_sha256…), не строгой схемой",
-        ("blocks.yaml", "история_разрешений", 0):
-            "читается по named-полям, не строгой схемой",
-        ("blocks.yaml", "история_разрешений", 1):
-            "читается по named-полям, не строгой схемой",
-        ("blocks.yaml", "история_разрешений", 2):
-            "читается по named-полям, не строгой схемой",
-        ("blocks.yaml", "шлюзы", "ремонт_после_ревью_12"):
-            "spec['блокирует']/['до_закрытия'] читаются по имени",
-        ("blocks.yaml", "шлюзы", "изоляция_подтверждена"):
-            "spec['блокирует']/['до_закрытия'] читаются по имени",
-        ("blocks.yaml", "исполнение", "роли"):
-            "читается по named-полям (row['исполнитель']…), не строгой схемой",
-        ("blocks.yaml", "исполнение", "проверки"):
-            "читается по named-полям, не строгой схемой",
-        ("blocks.yaml", "сверка_записи", "код_движка"):
-            "читается по named-полям, не строгой схемой",
-        ("blocks.yaml", "порядок_критики", "почему"):
-            "проза, объясняющая правило человеку, не разбирается движком",
-        # vocabulary.yaml — `операции` is pinned only for the THREE names that
-        # also appear in `операции_без_бюджета` (test_the_budget_exempt_
-        # operations_are_named); the other eight are read only through
-        # `len(...)` (test_declared_counts_match_the_lists_they_describe),
-        # which a same-length substitution does not change.
+        # `фикстуры.не_смешивать_с` is checked by truthiness only.
+        ("precheck.yaml", "фикстуры", "не_смешивать_с"):
+            "проверяется только истинностью значения; любая непустая строка проходит",
+        ("stages.yaml", "метрика_цены_понимания", "когда"): PROSE,
+        ("stages.yaml", "метрика_цены_понимания", "зачем"): PROSE,
+        ("stages.yaml", "приоритет_расхода", "отменяет"): PROSE,
+        ("stages.yaml", "приоритет_расхода", "почему"): PROSE,
+        ("stages.yaml", "приоритет_расхода", "правило"): PROSE,
+        ("stages.yaml", "сигнал_нежизнеспособности", "действие"): FUTURE,
+        ("stages.yaml", "сигнал_нежизнеспособности", "до"): FUTURE,
+        ("stages.yaml", "сигнал_нежизнеспособности", "почему"): PROSE,
+        ("stages.yaml", "сигнал_нежизнеспособности", "условие"): FUTURE,
+        ("stages.yaml", "слепой_вопрос", "ограничение"): PROSE,
+        ("stages.yaml", "слепой_вопрос", "почему"): PROSE,
         ("vocabulary.yaml", "операции", 2):
             "не входит в операции_без_бюджета — единственную проверку по значению этого списка",
         ("vocabulary.yaml", "операции", 4):
@@ -289,9 +232,6 @@ CLASS_EXCLUSIONS = {
             "не входит в операции_без_бюджета — единственную проверку по значению этого списка",
         ("vocabulary.yaml", "операции", 10):
             "не входит в операции_без_бюджета — единственную проверку по значению этого списка",
-        # `схемы_контрактов` is checked only for disjointness with
-        # `схемы_вне_контрактов` (one name, "precheck_frontmatter") and by
-        # `len(...)` — no test reads any of these nine names by value.
         ("vocabulary.yaml", "схемы_контрактов", 0):
             "проверяется только непересечением со схемы_вне_контрактов и длиной списка",
         ("vocabulary.yaml", "схемы_контрактов", 1):
@@ -310,29 +250,12 @@ CLASS_EXCLUSIONS = {
             "проверяется только непересечением со схемы_вне_контрактов и длиной списка",
         ("vocabulary.yaml", "схемы_контрактов", 8):
             "проверяется только непересечением со схемы_вне_контрактов и длиной списка",
-        # `попытка.почему` — prose for a human; the sibling fields
-        # (`ключ`, `состояния`, `флаг_неопределённого_окна`) are each pinned
-        # by value, this one is not.
         ("vocabulary.yaml", "попытка", "почему"):
             "проза для человека; ни один тест не читает содержимое поля",
-        # `повтор_невалидного_ответа.порядок`/`.оба_невалидны` — checked by
-        # truthiness only (`assert budget["порядок"]`); a replacement string
-        # is still truthy. Their siblings are pinned by exact value.
         ("vocabulary.yaml", "повтор_невалидного_ответа", "порядок"):
             "проверяется только истинностью значения; любая непустая строка проходит",
         ("vocabulary.yaml", "повтор_невалидного_ответа", "оба_невалидны"):
             "проверяется только истинностью значения; любая непустая строка проходит",
-        # findings.yaml — NEW gap this rework's scalar/nested walk surfaced,
-        # NOT one of the seven named findings and NOT fixed here: every one
-        # of the 135 `находки` rows is a bare dict with no `_require`-style
-        # field closure (unlike `блоки`, `переходы`, `исходы` — each parsed
-        # by a typed class in tables.py). An unrecognised sibling field next
-        # to `id`/`круг`/`что`/`статус`/`критерий` is invisible to every test
-        # and every check. findings.yaml is not among БТ2's five writable
-        # files and this table's schema belongs to the block that owns the
-        # findings registry — flagged in the block report, not fixed here.
-        ("findings.yaml", "находки"):
-            "находки — свободные словари без строгой схемы полей; чужая область (БК/учёт)",
     },
 }
 

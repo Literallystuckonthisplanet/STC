@@ -701,9 +701,21 @@ SHAPES = {
 }
 
 
+def _refuse_nested_mapping(value, where: str) -> None:
+    if isinstance(value, dict):
+        raise ContractError(f"{where}: карта, форма которой не объявлена — {value!r}")
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _refuse_nested_mapping(item, f"{where}[{index}]")
+
+
 def _check_shape(value, shape, where: str, domains: dict) -> None:
     """Refuse what the declared shape does not allow — nothing more."""
     if shape is ANY:
+        # «Любое» — значение без собственных полей: строка, число, список из
+        # них. Карта здесь — новая, никем не объявленная форма (ревью кода
+        # круга 44): её поля не проверял бы никто, поэтому и она отвергается.
+        _refuse_nested_mapping(value, where)
         return
     if shape is TEXT:
         if not isinstance(value, str):
@@ -712,7 +724,9 @@ def _check_shape(value, shape, where: str, domains: dict) -> None:
     if shape is LIST or isinstance(shape, Sequence):
         if not isinstance(value, list):
             raise ContractError(f"{where}: ожидался список, получено {value!r}")
-        if isinstance(shape, Sequence):
+        if shape is LIST:
+            _refuse_nested_mapping(value, where)
+        else:
             for index, item in enumerate(value):
                 _check_shape(item, shape.item, f"{where}[{index}]", domains)
         return

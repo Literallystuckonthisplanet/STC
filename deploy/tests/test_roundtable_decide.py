@@ -1029,6 +1029,23 @@ def test_every_shaped_section_is_a_real_section():
     assert set(T.SHAPES) == set(T.TABLE_NAMES)
 
 
+def test_a_mapping_where_the_shape_expects_a_plain_value_is_refused():
+    """Ревью кода круга 44: «любое значение» пропускало вложенную карту, и
+    её поля не проверял бы никто. Значение без объявленной формы — только
+    строка, число или список из них."""
+    import copy
+    import dataclasses
+    tables = T.load()
+    raw = copy.deepcopy(tables.raw)
+    raw["issues"]["валидация"][0]["исход"] = {"отказ": True, "строгость": "да"}
+    error = _raises(T.ContractError, dataclasses.replace(tables, raw=raw)._check_shapes)
+    assert "issues.валидация[0].исход: карта, форма которой не объявлена" in str(error)
+    raw = copy.deepcopy(tables.raw)
+    raw["vocabulary"]["коды_условий"]["verdict"].append({"скрыто": True})
+    error = _raises(T.ContractError, dataclasses.replace(tables, raw=raw)._check_shapes)
+    assert "карта, форма которой не объявлена" in str(error)
+
+
 def test_a_block_entry_that_is_not_a_mapping_is_refused_by_name(tmp_path):
     """`Б99: true` среди блоков роняло загрузку сырым TypeError."""
     directory = _copy(tmp_path)

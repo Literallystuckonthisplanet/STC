@@ -403,6 +403,29 @@ def test_input_3_issue_anton_decision_separates_refusal_from_breakage():
             "вынесен_Антону", "anton-decision", {"decision": "передумать"})
 
 
+# --------------------------------------------------------------------------
+# БТ2-2 rework, finding 1 — omitting the type on anton-decision is not a
+# quiet pass. DECIDED: a caller that skips `блокер` has sent a malformed
+# call (nobody legitimately "chooses" not to state which issue type a
+# decision is answering) — that is the same class as an unknown condition
+# code, so it is a ContractError, not Outcome.refusal. The type itself still
+# comes from the CALLER's parameter, not from a stored issue record: this
+# block has no card registry to read it from (see the block report for that
+# boundary — it belongs to whichever block owns the issue registry).
+# --------------------------------------------------------------------------
+
+def test_omitting_the_blocker_on_anton_decision_is_refused_not_silently_accepted():
+    _raises(T.ContractError, TABLES.decide_issue_transition,
+            "вынесен_Антону", "anton-decision", {"decision": "изменить_цель"})
+    # the same decision, with a type that does not admit it, is the
+    # LEGITIMATE refusal path (input 3) — proving the guard above is about
+    # the MISSING type, not about type mismatches in general
+    refused = TABLES.decide_issue_transition(
+        "вынесен_Антону", "anton-decision",
+        {"decision": "изменить_цель", "блокер": "сменой_решения"})
+    assert refused.refusal == "РЕШЕНИЕ_ВНЕ_ТИПА"
+
+
 def test_input_4_framing_anton_decision_separates_refusal_from_breakage():
     outcome = TABLES.decide_framing_transition(
         "открыто", "anton-decision", {"framing_decision": "подтвердить_постановку"})
@@ -625,7 +648,8 @@ def test_admissible_decision_code_swap_changes_the_route_and_only_a_pin_catches_
                      # IS "an admissible substitution", by construction
 
     swapped = mutated.decide_issue_transition(
-        "вынесен_Антону", "anton-decision", {"decision": "принять_риск"})
+        "вынесен_Антону", "anton-decision",
+        {"decision": "принять_риск", "блокер": "сменой_решения"})
     assert swapped.to == "остановлено", "the swap moved silently until this pin"
 
     after = {o.conditions["decision"]: o.target for t in mutated.issue_transitions
@@ -866,10 +890,21 @@ def test_every_issue_and_framing_route_is_pinned_end_to_end():
         for t in TABLES.framing_transitions for o in t.outcomes}
     assert actual_framing == framing_pins
 
-    for pins, decide in ((issue_pins, TABLES.decide_issue_transition),
-                        (framing_pins, TABLES.decide_framing_transition)):
+    # anton-decision on the issue side now REQUIRES a type (finding 1,
+    # БТ2-2 rework) — supply one that admits the pinned decision, so this
+    # loop tests ROUTING, not the type-check refusal from input 3.
+    blocker_for_decision = {
+        "принять_риск": "сменой_решения", "остановить": "сменой_решения",
+        "изменить_цель": "только_сменой_цели", "сменить_решение": "сменой_решения",
+        "запросить_ещё_правку": "правкой_круги_исчерпаны",
+    }
+    for pins, decide, is_issue in ((issue_pins, TABLES.decide_issue_transition, True),
+                                  (framing_pins, TABLES.decide_framing_transition, False)):
         for (source, event, conditions), target in pins.items():
-            assert decide(source, event, dict(conditions)).to == target
+            call = dict(conditions)
+            if is_issue and event == "anton-decision":
+                call["блокер"] = blocker_for_decision[call["decision"]]
+            assert decide(source, event, call).to == target
 
 
 def test_swapping_two_outcomes_inside_one_critic_outcome_row_is_caught(tmp_path):

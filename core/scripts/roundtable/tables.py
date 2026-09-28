@@ -724,10 +724,18 @@ class Tables:
 
         # Контракт E / БТ2-2: "решение Антона вне списка допустимых для типа
         # issue" — это отказ пользователя (Outcome.refusal), не поломка
-        # движка. `блокер` необязателен структурно, но реальный вызов на
-        # `вынесен_Антону` обязан его передать; иначе решение не той формы
-        # молча проходит бы дальше (БТ2-3).
-        if event == "anton-decision" and "блокер" in conditions:
+        # движка. `блокер` ОБЯЗАТЕЛЕН для этого события — БТ2-2 (rework):
+        # пропустить тип и получить решение без сверки был обход правила, а
+        # не легитимный путь. Отсутствие типа — это сломанный вызов (никто
+        # не "выбирает" не передать тип, это ошибка звонящего), поэтому
+        # опущенный `блокер` — ContractError, не отказ пользователя; сам тип
+        # приходит параметром вызова, а не из сохранённой карточки issue —
+        # реестра карточек в этом блоке нет (граница блока, см. отчёт).
+        if event == "anton-decision":
+            if "блокер" not in conditions:
+                raise ContractError(
+                    "issue anton-decision requires 'блокер' to check contract E "
+                    f"against the issue's type — none given for {conditions!r}")
             issue_type = self.ISSUE_TYPE_BY_BLOCKER[conditions["блокер"]]
             allowed = self.issues["допустимые_решения"][issue_type]
             if conditions.get("decision") not in allowed:
@@ -750,6 +758,12 @@ class Tables:
                     for key in outcome.conditions:
                         if key not in keys:
                             keys.append(key)
+        # anton-decision now REQUIRES `блокер` (finding 1, БТ2-2 rework) even
+        # though no single outcome's own `условия` declares it — without this,
+        # the combination sweep below would call `decide_issue_transition`
+        # with `decision` alone and trip the new mandatory-type check itself.
+        if event == "anton-decision" and "блокер" not in keys:
+            keys.append("блокер")
         return tuple(keys)
 
     def _issue_combinations(self, state, event) -> list[dict]:

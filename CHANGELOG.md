@@ -18,6 +18,11 @@ release notes.
   records of one event, and hands the hint to Codex as `hookSpecificOutput`
   (plain stdout never reached the model). `decision_health.py` now reads both
   harnesses by default. Codex asks to trust the new hook once (`/hooks`).
+- A live Codex run after trusting the hook found that short option names
+  ("Паста"), plain numbered options without bold ("2. Суп — …") and a short
+  phrase with the name ("Тогда паста.") were not read as a choice; all three
+  are now. After the fix the live run records the decision, stays silent on a
+  clarifying question and does not ask again after a closed choice.
 
 ### Fixed — backups of two targets no longer mix
 - `apply --target claude,codex` within one second wrote both backups into one

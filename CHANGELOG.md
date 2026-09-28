@@ -11,6 +11,29 @@ release notes.
 
 ## [Unreleased]
 
+### Added — the decision journal runs in Codex
+- Codex `UserPromptSubmit` supplies `transcript_path` and `session_id`, so the
+  old reason to keep H23 off no longer holds. The hook reads only the caller's
+  own session, skips sub-agent sessions and service messages, collapses mirror
+  records of one event, and hands the hint to Codex as `hookSpecificOutput`
+  (plain stdout never reached the model). `decision_health.py` now reads both
+  harnesses by default. Codex asks to trust the new hook once (`/hooks`).
+
+### Fixed — backups of two targets no longer mix
+- `apply --target claude,codex` within one second wrote both backups into one
+  folder under one id; the ledger kept only Codex, and `restore` for Claude
+  wrote Claude's files into Codex. The id is now time plus target, the folder
+  is claimed atomically, and `restore` copies only the files the ledger
+  registered for that backup.
+
+### Fixed — answer measurement counted agent-to-agent talk
+- Codex sub-agent sessions (their brief arrives as a user message) were counted
+  as the user's messages and the reports as answers to him — over half of the
+  fresh Codex files. They are skipped now, and final answers of a turn are
+  reported apart from progress notes. `answer_probe.py` treats a partial answer
+  of a failed Codex run as unverified and catches check counts after the word
+  ("tests passed: 635").
+
 ### Fixed — the decision journal judges the person's own words
 - Two external reviews (2026-09-26/27) found the "choice or question" rule
   wrong on live replies. It now reads only what the person wrote (pasted

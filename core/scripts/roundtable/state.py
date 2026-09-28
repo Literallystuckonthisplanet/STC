@@ -100,6 +100,7 @@ class RunLock:
         self.path = Path(directory) / LOCK
         self._handle = None
         self._held = False
+        self._owner_pid = None
 
     def __enter__(self) -> "RunLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,12 +118,20 @@ class RunLock:
         self._handle.write(f"{os.getpid()} {_now()}\n")
         self._handle.flush()
         self._held = True
+        self._owner_pid = os.getpid()
         return self
 
     def __exit__(self, *exc_info):
         self._held = False
         if self._handle is not None:
-            fcntl.flock(self._handle, fcntl.LOCK_UN)
+            # `flock(2)`: locks obtained via `fork()`-inherited descriptors are
+            # associated with the *open file description*, which parent and
+            # child share — calling `LOCK_UN` from either releases it for
+            # both (review #22 finding 2). Only the owning process may do
+            # that; a child closes its own inherited copy of the descriptor,
+            # which does not touch the lock the parent is still holding.
+            if os.getpid() == self._owner_pid:
+                fcntl.flock(self._handle, fcntl.LOCK_UN)
             self._handle.close()
             self._handle = None
         return False
@@ -136,8 +145,14 @@ class RunLock:
         operation) must never have had it in the first place. Checking where
         the store came from proved neither of those — only asking the lock
         itself, right now, does.
+
+        Also checks the owning PID (review #22 finding 2): a `fork()`ed
+        child inherits `_held=True` by copying the parent's memory, but it
+        never took the lock itself — treating that inherited flag as real
+        would let the child believe it may write, and would let its
+        `__exit__` release a lock it never earned.
         """
-        return self._held
+        return self._held and self._owner_pid == os.getpid()
 
 
 # --------------------------------------------------------------------------
@@ -292,6 +307,14 @@ class RunStore:
         which truncates it to zero bytes before a single repaired byte is
         written; a second crash in that window erased every entry that was
         already durable (finding 3).
+
+        A file that already ends with `\\n` is left untouched here even if
+        its last line is corrupt (review #22 finding 1) — that is not a torn
+        tail, there is nothing to repair, and there must be no path that
+        quietly drops it. `_append` calls this and then `_next_seq` →
+        `_entries`, which now refuses such a file outright, so a write onto
+        a corrupted-but-terminated journal is refused too, not silently
+        appended past.
         """
         if not self.journal_path.exists():
             return
@@ -349,22 +372,31 @@ class RunStore:
         return len(self._entries()) + 1
 
     def _entries(self) -> list:
-        """Read the journal, ignoring a torn final line.
+        """Read the journal, ignoring a torn final line — but only a *torn* one.
 
         Bytes, decoded line by line — not the whole file at once. Decoding
         the whole file in one call turned a crash mid a multi-byte character
         (e.g. a Cyrillic letter cut in half) into an uncaught
         `UnicodeDecodeError` that buried an otherwise intact run (review #14
-        finding 1). Only the *last* line may be dropped this way: a broken
-        line anywhere else means the file was damaged by something other
-        than a crash, and quietly skipping it would silently lose a
-        rule-bearing event.
+        finding 1).
+
+        An unterminated tail — bytes after the last `\\n`, or the whole file
+        if it has none — is what a crash mid-`write()` leaves, so it alone
+        may be dropped silently. A line that already ends with `\\n` is a
+        *complete* record: if it fails to parse, that is corruption, not an
+        interrupted write, and review #22 finding 1 caught this module
+        treating it the same as a torn tail — the last surviving line was
+        dropped without a word whenever it happened to be broken, even when
+        the file plainly ended in `\\n` right after it. Only the byte range
+        that could not possibly have been fsynced gets the benefit of the
+        doubt; anything the file itself claims is finished must actually be.
         """
         if not self.journal_path.exists():
             return []
         raw = self.journal_path.read_bytes()
         if not raw:
             return []
+        terminated = raw.endswith(b"\n")
         lines = raw.split(b"\n")
         if lines[-1] == b"":
             lines = lines[:-1]
@@ -375,8 +407,9 @@ class RunStore:
             try:
                 entries.append(json.loads(raw_line.decode("utf-8")))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                if index == len(lines) - 1:
-                    break  # torn tail from a kill -9 — the write never completed
+                is_last = index == len(lines) - 1
+                if is_last and not terminated:
+                    break  # a real torn tail from a kill -9 — the write never completed
                 raise StateError(f"{self.journal_path}: повреждена строка {index + 1}")
         return entries
 

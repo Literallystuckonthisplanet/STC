@@ -525,6 +525,25 @@ def test_a_real_sigkill_mid_tail_repair_does_not_erase_prior_entries(run):
     assert S.RunStore(run.directory, TABLES).load().state == "создан"
 
 
+def test_a_terminated_but_corrupt_line_is_an_error_not_a_silently_dropped_tail(run):
+    """Review #22 finding 1: `_entries()` first strips the empty piece after
+    the final `\\n`, then allows the *remaining* last line to be dropped on a
+    parse error — so a line that already ends with `\\n` but is corrupt gets
+    treated as an "unfinished write" and silently disappears. Only bytes
+    that never got a trailing `\\n` may be torn; anything the file itself
+    marks as finished must actually parse, or the load must refuse."""
+    run.set_flag("до")
+    with open(run.journal_path, "ab") as handle:
+        handle.write(b"{broken JSON}\n")            # завершённая, но повреждённая строка
+
+    with pytest.raises(S.StateError):
+        run.load()
+
+    # запись тоже должна отказать, а не тихо дописаться поверх порчи (§Б1-7)
+    with pytest.raises(S.StateError):
+        run.set_flag("после-порчи")
+
+
 # --------------------------------------------------------------------------
 # Б1-2 — the hash covers the operation, conditions, target and body
 # --------------------------------------------------------------------------
@@ -650,6 +669,34 @@ def test_a_leaked_store_loses_write_access_the_moment_open_run_exits(run):
         store.submit("start")             # works: the lock is still held here
     with pytest.raises(S.StateError):
         leaked[0].set_flag("после-выхода")  # the same object, lock now released
+
+
+def test_a_forked_childs_exit_does_not_release_the_parents_lock(tmp_path):
+    """Review #22 finding 2: `RunLock` tracked *whether* it was held but not
+    *which process* took it. A `fork()`ed child inherits both the open
+    descriptor and `_held=True` by copying the parent's memory; its own
+    `__exit__` calling `LOCK_UN` releases the lock for the shared open file
+    description — the parent's, too — even though the parent's own `_held`
+    stays True and a second, independent lock must still be refused."""
+    directory = tmp_path / "run"
+    directory.mkdir()
+    lock = S.RunLock(directory)
+    lock.__enter__()
+
+    pid = os.fork()
+    if pid == 0:
+        lock.__exit__(None, None, None)   # child: must not release the parent's lock
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, "ребёнок должен завершиться чисто"
+
+    assert lock.is_held() is True, "чужой __exit__ не должен снимать владение у родителя"
+    with pytest.raises(S.Refusal) as refused:
+        with S.RunLock(directory):
+            pass                          # второй, независимый замок не должен взяться
+    assert refused.value.code == "ПРОГОН_ЗАНЯТ"
+
+    lock.__exit__(None, None, None)       # настоящий владелец освобождает как положено
 
 
 def test_a_racing_create_never_produces_two_run_created_entries(tmp_path):

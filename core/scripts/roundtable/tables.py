@@ -1011,7 +1011,21 @@ class Tables:
                 self.decide_framing_transition(state, event, conditions)
                 framing_combinations += 1
         checked.append(f"{framing_combinations} комбинаций автомата возражений: ровно один исход")
-        checked.extend(self._check_plan())
+        # БТ2-4 rework: `check()` now runs on every `load()`, so a
+        # malformed plan MUST fail as `ContractError`. `_check_plan` reads
+        # blocks.yaml by direct indexing in dozens of places — each one that
+        # already had a named guard raises `ContractError` on its own; this
+        # net is for the rest, so a mutation the mutation ratchet finds
+        # tomorrow still refuses cleanly instead of surfacing a bare
+        # `KeyError`/`TypeError`/`IndexError`/`AttributeError` that the
+        # ratchet (rightly) cannot count as a caught mutant.
+        try:
+            checked.extend(self._check_plan())
+        except ContractError:
+            raise
+        except (KeyError, TypeError, IndexError, AttributeError) as error:
+            raise ContractError(
+                f"blocks: план не разбирается — {type(error).__name__}: {error}") from error
         return checked
 
     # -- the work plan -------------------------------------------------------
@@ -1142,6 +1156,29 @@ class Tables:
     def _check_plan(self) -> list[str]:
         checked = []
         plan = self.plan
+        # БТ2-4 rework: `check()` now runs on every `load()`, so a
+        # malformed `отпечаток_изоляции` must fail as `ContractError` here,
+        # before `closed()`/`gate_violations()` index into it further down
+        # and hit a bare `KeyError` instead — the mutation ratchet caught
+        # exactly this for `проверяет_блок`.
+        fingerprint_required = {
+            "проверяет_блок", "подтверждение_действует", "входы",
+            "артефакты", "входит_в_отпечаток", "требуются_всегда",
+            "пока_не_вычисляется", "отчёт", "успешный_вердикт", "версии_команд",
+        }
+        missing_fingerprint = fingerprint_required - set(plan["отпечаток_изоляции"])
+        if missing_fingerprint:
+            raise ContractError(
+                f"blocks.отпечаток_изоляции: отсутствует {sorted(missing_fingerprint)}")
+        # `артефакты` maps a field name to a relative PATH — `isolation_drift`
+        # divides `ROOT / relative`, which needs a string, not just a
+        # present key. A non-string value used to reach that division as a
+        # bare `TypeError`.
+        for field_name, relative in plan["отпечаток_изоляции"]["артефакты"].items():
+            if not isinstance(relative, str) or not relative.strip():
+                raise ContractError(
+                    f"blocks.отпечаток_изоляции.артефакты.{field_name}: "
+                    f"ожидался непустой путь строкой, получено {relative!r}")
         names = set(self.blocks)
         listed = set(plan["порядок"]) | set(plan["вне_порядка"])
         if listed != names:
@@ -1356,6 +1393,11 @@ class Tables:
         # его вычислит, и этот блок обязан держать шлюз изоляции.
         criteria = {item.id: (name, item.condition)
                     for name, block in self.blocks.items() for item in block.acceptance}
+        # БТ2-4 rework: `check()` now runs on every `load()`, so a missing
+        # gate here must fail as `ContractError`, not as a bare `KeyError` —
+        # the mutation ratchet caught exactly this.
+        if "изоляция_подтверждена" not in plan["шлюзы"]:
+            raise ContractError("blocks.шлюзы: отсутствует изоляция_подтверждена")
         gate_blocks = set(plan["шлюзы"]["изоляция_подтверждена"]["до_закрытия"])
         for field_name, entry in fingerprint["пока_не_вычисляется"].items():
             if not isinstance(entry, dict) or not str(entry.get("почему", "")).strip():
@@ -2175,17 +2217,24 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
 def load(directory: Path = TABLES_DIR) -> Tables:
     """Load, type and cross-check every table in `directory`.
 
-    БТ2-4 (closing R12-5): the closed-code closure of all three automata is
-    checked here, on every load — a typo in a condition code fails the load
-    instead of silently disabling the transition it broke. The heavier plan
-    analysis (`_check_plan`, folded into `Tables.check`) stays a deliberate
-    second step: test_roundtable_mutations.py relies on a structurally valid
-    table with a broken *plan* still loading, so a mutant can be told apart
-    by which of the two guards actually caught it.
+    БТ2-4: `load()` runs the FULL `check()` — literally, not just the
+    closed-code closure of the three automata. A typo in a condition code, a
+    missing row, or a duplicated one that leaves two outcomes for the same
+    (status, event, conditions) all fail the LOAD, not just an explicit
+    `.check()` call someone has to remember to make (R12-5, and the
+    duplicated-row gap found in the rework: a structurally valid but
+    ambiguous table used to load cleanly and only `.check()` rejected it).
+
+    This used to be a lighter `_check_codes()` only, split out because
+    folding `check()` in broke `test_roundtable_mutations.py`'s "контракт"
+    guard cases, which called `module.load(scratch)` expecting it to stay
+    lenient. That harness now builds `Tables` directly via
+    `Tables.from_raw(...)` for its positive control instead of going through
+    `load()`, so the split is no longer needed here.
     """
     raw = {name: load_table(name, directory) for name in TABLE_NAMES}
     tables = Tables.from_raw(raw)
-    tables._check_codes()
+    tables.check()
     return tables
 
 

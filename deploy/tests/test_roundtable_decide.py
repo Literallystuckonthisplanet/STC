@@ -170,9 +170,9 @@ def test_two_matching_rows_are_an_error_and_never_a_first_match_win(tmp_path):
         data["переходы"].append(twin)
 
     _edit(directory, "run", duplicate_a_transition)
-    tables = T.load(directory)
-    error = _raises(T.ContractError, tables.decide, "идёт_круг", "вердикт",
-                    {"verdict": "ОДОБРЕНО"})
+    # load() now runs the full check() (БТ2-4 rework), which itself sweeps
+    # every combination through decide() — the duplicate is caught at load.
+    error = _raises(T.ContractError, T.load, directory)
     assert "2 outcomes" in str(error)
 
 
@@ -201,11 +201,30 @@ def test_swapping_the_target_of_a_transition_does_not_survive(tmp_path):
 
 
 def test_a_missing_row_is_an_error_and_never_a_silent_no_op(tmp_path):
+    # БТ2-4 rework: `load()` now runs the FULL `check()`, so a missing row
+    # is caught at LOAD — a stronger guarantee than the earlier split
+    # (load() only failed `.check()`, never `load()` itself).
     directory = _copy(tmp_path)
     _edit(directory, "run", lambda data: data["переходы"].pop(2))
-    tables = T.load(directory)
-    _raises(T.ContractError, tables.decide, "идёт_круг", "вердикт", {"verdict": "ОДОБРЕНО"})
-    _raises(T.ContractError, tables.check)
+    error = _raises(T.ContractError, T.load, directory)
+    assert "идёт_круг" in str(error) or "вердикт" in str(error) or "ОДОБРЕНО" in str(error)
+
+
+def test_a_duplicated_issue_transition_row_fails_load_not_just_check(tmp_path):
+    # БТ2-4 rework, finding 2: `load()` promised to run the full `check()`
+    # ("load() сам зовёт check()"), but only ran `_check_codes()` — a
+    # duplicated `lead-response` row (still every code declared, still a
+    # structurally valid row) loaded fine and only `check()` rejected it.
+    directory = _copy(tmp_path)
+
+    def duplicate_lead_response(data):
+        row = next(r for r in data["переходы"]
+                  if r.get("событие") == "lead-response" and r.get("из") == "открыт")
+        data["переходы"].append(dict(row))
+
+    _edit(directory, "issues", duplicate_lead_response)
+    error = _raises(T.ContractError, T.load, directory)
+    assert "2 outcomes for issue" in str(error)
 
 
 # --------------------------------------------------------------------------
@@ -225,7 +244,9 @@ def test_every_working_state_has_a_continuation(tmp_path):
         data["переходы"] = [row for row in data["переходы"] if row["событие"] != "resume"]
 
     _edit(directory, "run", strip_resume)
-    error = _raises(T.ContractError, T.load(directory).check)
+    # load() now runs the full check() (БТ2-4 rework) — the missing
+    # continuation is caught at load, not only on an explicit .check().
+    error = _raises(T.ContractError, T.load, directory)
     assert "неполный" in str(error)
 
 

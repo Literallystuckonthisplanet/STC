@@ -1826,9 +1826,16 @@ def memory_receipt(plan: dict, home: Path | None = None) -> list[str]:
         if day is None:
             problems.append("не удалось спросить git о дате канона")
             continue
-        dates = re.findall(r"\b(20\d\d-\d\d-\d\d)\b", text)
-        if not any(found >= day for found in dates):
-            problems.append(f"{path.name}: нет записи с датой не раньше {day} — "
+        # 🚩 Критик, круг 43 (R43-6): годилась ЛЮБАЯ дата в тексте — несвязанная
+        # дата встречи рядом со старым смыслом проходила. Теперь нужна одна
+        # запись журнала «- ГГГГ-ММ-ДД …», которая сама называет этот канон и
+        # датирована не раньше него и не позже сегодняшнего дня.
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        entries = re.findall(r"^- (20\d\d-\d\d-\d\d)\b(.*)$", text, flags=re.M)
+        if not any(day <= found <= today and expected[:7] in rest for found, rest in entries):
+            problems.append(f"{path.name}: нет записи журнала «- ГГГГ-ММ-ДД …» с датой не раньше "
+                            f"{day} и не позже сегодня, называющей канон {expected[:7]} — "
                             f"назван новый канон, а содержимое не менялось")
     return problems
 
@@ -1993,7 +2000,10 @@ def _blob(commit: str, path: str) -> str | None:
     out = _git("ls-tree", "-z", commit, "--", path)
     if out is None:
         return None
-    return out.split("\t", 1)[0].split()[2] if out.strip() else ""
+    # 🚩 Критик, круг 43 (R43-5): одного содержимого мало — ссылка и
+    # исполняемый файл с теми же байтами различаются режимом. Сравнивается
+    # запись дерева целиком: режим, тип и объект.
+    return out.split("\t", 1)[0] if out.strip() else ""
 
 
 def _exemption_problems(sha: str, unparsed: list, exempt: dict, trailer: str) -> list[str]:

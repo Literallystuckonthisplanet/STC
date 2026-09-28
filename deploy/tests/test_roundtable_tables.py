@@ -987,9 +987,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 6}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 154
+    assert len(findings) == 160
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1180,6 +1180,12 @@ FINDING_PINS = {
     "R42-17": ("dc938034f06f", "4f1c27bc2949"),
     "R42-18": ("83b77d2a67fb", "a4f6de7e87e3"),
     "R42-19": ("27748f00cecf", "8ff74f4b377e"),
+    "R43-1": ("353df124bfa2", "69abc15709b7"),
+    "R43-2": ("d96eeb7b3600", "87b917cdae7a"),
+    "R43-3": ("e14b8b4af2a1", "e12c610faf33"),
+    "R43-4": ("8fd8cc88f56f", "d2adb66fecfb"),
+    "R43-5": ("9d3569021b43", "2bbb7f8e0912"),
+    "R43-6": ("7db34b5d4fe6", "4157396fa693"),
 }
 
 
@@ -2431,6 +2437,43 @@ def test_an_exemption_is_proven_by_content_not_by_file_names(tmp_path, monkeypat
         "перекладка с другим содержимым принята за ту же работу")
 
 
+def test_an_exemption_compares_the_file_type_not_only_its_bytes(tmp_path, monkeypatch):
+    """Ссылка и исполняемый файл с теми же байтами — разная работа.
+
+    🚩 Критик, круг 43 (R43-5): доказательство перекладки сравнивало только
+    содержимое. Исходная правка превратила файл в символическую ссылку, а
+    «повтор» положил исполняемый файл с теми же байтами — и исключение было
+    принято, хотя это другое поведение и другой риск.
+    """
+    import os
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    work = tmp_path / "core/scripts/roundtable/state.py"
+    commit({"README": "x", "core/scripts/roundtable/state.py": "v0"}, "init")
+    work.unlink()
+    os.symlink("target-bytes", work)
+    git("add", "-A")
+    git("commit", "-q", "-m", "Б1: работа\n\nRoundtable-Block: Б1\n\nCo-Authored-By: X <x@y>")
+    torn = git("rev-parse", "HEAD")
+    work.unlink()
+    work.write_text("v0", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "откат")
+    undone = git("rev-parse", "HEAD")
+    work.write_text("target-bytes", encoding="utf-8")
+    os.chmod(work, 0o755)
+    git("add", "-A")
+    git("commit", "-q", "-m", "Б1: повтор\n\nRoundtable-Block: Б1\nCo-Authored-By: X <x@y>")
+    redone = git("rev-parse", "HEAD")
+
+    raw = copy.deepcopy(module.load().raw)
+    raw["blocks"]["сверка_записи"]["откачено_без_трейлера"] = {
+        torn: {"откат": undone, "заново": redone, "почему": "x"}}
+    problems = [p for p in module.write_scope_receipt(module.Tables.from_raw(raw)) if torn[:7] in p]
+    assert problems, "ссылка, заменённая исполняемым файлом, принята за ту же работу"
+
+
 def test_every_block_mark_in_the_real_history_is_parsed_or_exempted():
     """В настоящей истории нет коммита с пометкой, которую git не разобрал.
 
@@ -3038,7 +3081,8 @@ def test_memory_is_not_fresh_just_because_a_hash_was_pasted_in(tmp_path, monkeyp
     for relative in plan["проверка_памяти"]["файлы"]:
         path = home / str(relative).replace("~/", "")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"память\n- {day}, свежая запись\nканон {canon}\n", encoding="utf-8")
+        path.write_text(f"память\n- {day}, свежая запись о каноне {canon[:7]}\nканон {canon}\n",
+                        encoding="utf-8")
     assert module.memory_receipt(plan, home) == [], "контроль: свежая память проходит"
 
     kept = plan["проверка_памяти"]["ведутся_записями"]
@@ -3048,6 +3092,18 @@ def test_memory_is_not_fresh_just_because_a_hash_was_pasted_in(tmp_path, monkeyp
     problems = module.memory_receipt(plan, home)
     assert any("не раньше" in p for p in problems), (
         f"хеш дописан в старый текст — принято за обновление: {problems}")
+
+    # 🚩 Критик, круг 43 (R43-6): свежесть подтверждала ЛЮБАЯ дата в тексте.
+    # Запись журнала должна быть одна и связывать дату с этим каноном.
+    for label, text in [
+            ("несвязанная дата рядом со старым смыслом",
+             f"старый смысл от 2026-08-01\nВстреча назначена на {day}.\nКанон {canon[:7]}.\n"),
+            ("запись нужной даты не называет канон",
+             f"память\n- {day}, запись ни о чём\nканон {canon}\n"),
+            ("дата из будущего",
+             f"память\n- 2099-01-01, запись о каноне {canon[:7]}\nканон {canon}\n")]:
+        stale.write_text(text, encoding="utf-8")
+        assert module.memory_receipt(plan, home), f"{label}: принято за обновление памяти"
 
 
 def test_a_block_row_with_a_broken_acceptance_list_is_refused():

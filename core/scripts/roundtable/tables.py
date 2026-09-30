@@ -2438,7 +2438,74 @@ def own_words(text: str) -> str:
     return "\x00".join(kept)
 
 
-def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
+# Круг 45: записи типа `user`, которые пишет не человек. Результат команды,
+# пересказ беседы при сжатии (его пишет модель — и цитирует в нём Антона),
+# служебные вставки харнесса, уведомления фоновых задач и реплики внутри
+# дочерних агентов (их пишет главный агент).
+NOT_HUMAN_FLAGS = ("isMeta", "isCompactSummary", "isVisibleInTranscriptOnly", "isSidechain")
+PLAN_APPROVAL = "User has approved your plan"
+# Отрицание, отказ, запрет — отдельным словом. Шире нужного нарочно: лишний
+# отказ исправляется новой репликой, лишнее «согласие» — нет.
+NEGATION = re.compile(r"(?<![а-яёa-z])(не|нет|ни|нельзя|запрещ\w*|стоп|отмен\w*|откаж\w*|"
+                      r"отказ\w*|против|no|not|don'?t)(?![а-яёa-z])", re.I)
+CLAUSE_LEFT = re.compile(r"(?:^|[.!;\n])\s*$")
+CLAUSE_RIGHT = re.compile(r"^\s*(?:$|[.!;\n])")
+
+
+def _human_text(record: dict, transcript: Path, wanted: str) -> tuple[str | None, str | None]:
+    """(текст для поиска цитаты, отказ). Годится только то, что написал человек."""
+    if any(record.get(flag) for flag in NOT_HUMAN_FLAGS):
+        return None, f"{wanted}: не реплика человека — служебная запись харнесса"
+    origin = record.get("origin")
+    if origin is not None and (not isinstance(origin, dict) or origin.get("kind") != "human"):
+        return None, f"{wanted}: не реплика человека — источник {origin!r}"
+    content = record.get("message", {}).get("content")
+    if isinstance(content, str):
+        return content, None
+    if not isinstance(content, list):
+        return None, f"{wanted}: реплика без текста"
+    results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+    if not results:
+        return "\n".join(str(b.get("text", "")) for b in content
+                         if isinstance(b, dict) and b.get("type") == "text"), None
+    # Из результатов инструментов основанием годится только одобрение плана:
+    # его пишет харнесс на нажатие человека, и только в ответ на ExitPlanMode.
+    calls = {}
+    for line in transcript.open(encoding="utf-8"):
+        if '"tool_use"' not in line:
+            continue
+        entry = json.loads(line)
+        for block in entry.get("message", {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                calls[block.get("id")] = block.get("name")
+    texts = []
+    for block in results:
+        body = block.get("content")
+        if isinstance(body, list):
+            body = "\n".join(str(b.get("text", "")) for b in body if isinstance(b, dict))
+        if calls.get(block.get("tool_use_id")) != "ExitPlanMode" \
+                or not str(body).startswith(PLAN_APPROVAL):
+            return None, f"{wanted}: результат инструмента, а не слова человека"
+        texts.append(str(body))
+    return "\n".join(texts), None
+
+
+def _unambiguous_yes(own: str, quote: str) -> str | None:
+    """Цитата действующего разрешения — целая фраза без отрицания и не вопрос."""
+    if NEGATION.search(quote):
+        return "в цитате отрицание — это не согласие"
+    start = own.find(quote)
+    while start != -1:
+        end = start + len(quote)
+        if CLAUSE_LEFT.search(own[:start]) and CLAUSE_RIGHT.search(own[end:]):
+            return None
+        start = own.find(quote, start + 1)
+    return ("цитата — не целая фраза: вокруг неё слова, вопрос или условие, "
+            "и согласием её не прочесть")
+
+
+def resolve_basis(basis: dict, home: Path | None = None, *,
+                  consent: bool = False) -> str | None:
     """Actually open what the permission points at. Returns the failure, or None.
 
     Structure checks proved a string was non-empty. That is what let a citation
@@ -2476,6 +2543,8 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
     candidates = list(home.glob(f".claude/projects/*/{session}.jsonl"))
     if not candidates:
         return f"сессии нет: {session}"
+    if len(candidates) > 1:
+        return f"сессия {session} записана в нескольких каталогах — какую читать, не доказать"
     # 🚩 Ревью #39: файл переписки мог оказаться ярлыком наружу — и «основание»
     # читалось из чего угодно.
     transcript = candidates[0]
@@ -2490,13 +2559,20 @@ def resolve_basis(basis: dict, home: Path | None = None) -> str | None:
             continue
         if record.get("type") != "user":
             return f"{wanted}: не реплика пользователя"
-        content = record.get("message", {}).get("content")
-        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        text, refusal = _human_text(record, transcript, wanted)
+        if refusal:
+            return refusal
         # 🚩 Ревью #39: «разрешаю» засчитывалось, даже когда стояло в служебной
         # вставке или в чужом тексте, вставленном в реплику, — а собственные
         # слова Антона говорили обратное. Разрешение даёт человек, а не обвязка.
         own = own_words(text)
         if quote in own:
+            # Круг 45: наличие цитаты — не согласие. Действующее разрешение
+            # требует очевидного «да»; запись прошлого — только происхождения.
+            if consent:
+                problem = _unambiguous_yes(own, quote)
+                if problem:
+                    return f"{wanted}: {problem}"
             return None
         return (f"{wanted}: цитата есть только в служебной вставке, не в словах человека"
                 if quote in text else f"{wanted}: цитата не найдена в реплике")
@@ -2913,7 +2989,8 @@ def main(argv: list[str] | None = None) -> int:
             for registry in ("заключения_ревью", "разрешения_исполнения",
                              "история_разрешений"):
                 for entry in plan[registry]:
-                    problem = resolve_basis(entry["основание"])
+                    problem = resolve_basis(entry["основание"],
+                                            consent=registry == "разрешения_исполнения")
                     label = f"{registry} {entry['блоки']}"
                     if problem:
                         problems.append(f"{label}: {problem}")

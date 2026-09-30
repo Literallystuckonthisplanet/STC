@@ -135,21 +135,14 @@ def _module():
 # are excluded from the denominator instead of being pinned by a change
 # detector — a test that only notices edited prose is noise, and noise is how
 # a suite stops being read.
-NOTES = {
-    ("blocks.yaml", "вне_порядка"),
-    ("framing.yaml", "критерии_решения"),
-    ("framing.yaml", "критерии_постановки"),
-    ("framing.yaml", "права_по_стадиям"),
-    ("framing.yaml", "флаг_обязателен_в"),
-    ("issues.yaml", "обязательства"),
-    ("precheck.yaml", "вне_возможностей"),
-    ("precheck.yaml", "коды"),          # covered field-wise by the suite
-    ("vocabulary.yaml", "классы_находки"),
-    ("vocabulary.yaml", "существенность"),
-    ("vocabulary.yaml", "уверенность"),
-    ("vocabulary.yaml", "отпечаток"),
-    ("vocabulary.yaml", "создатели_доказательства"),
-}
+# Круг 45: разделы, выведенные из замера ЦЕЛИКОМ, больше не нужны. Критик
+# показал, что под видом «пояснений» здесь лежали действующие правила — поля
+# слепка доказательства, закрытые перечни ответа критика. Каждый бывший
+# раздел теперь либо ловится сам, либо закреплён целиком
+# (test_the_contract_vocabularies_are_pinned_whole); множество оставлено
+# пустым, чтобы вывод раздела из-под замера снова был виден правкой здесь и
+# в таблице плана.
+NOTES = set()
 
 # Exclusions that hold for only ONE class, not all four — the whole point of
 # per-class denominators (БТ2-8) is that a row can be genuinely covered
@@ -446,17 +439,34 @@ CLASSES = {
 #     tripped `_require`.
 # --------------------------------------------------------------------------
 
+def _nested_items(value, path):
+    """Every list element at any depth under `value`, as a path suffix.
+
+    Круг 45: замер менял строки раздела на один уровень, а элементы
+    вложенных списков не трогал вовсе — критик убрал «хеш вывода» из полей
+    доказательства команды, и не заметил никто. Элемент списка на любой
+    глубине — теперь своя цель. (`исходы` внутри строки перехода — частный
+    случай этого правила; раньше он был единственным.)
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _nested_items(item, path + (key,))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield path + (index,)
+            yield from _nested_items(item, path + (index,))
+
+
 def _walk(value):
     """Yield path SUFFIXES under `value` (not including `value` itself)."""
     if isinstance(value, list):
         for i, item in enumerate(value):
             yield (i,)
-            if isinstance(item, dict) and isinstance(item.get("исходы"), list):
-                for j in range(len(item["исходы"])):
-                    yield (i, "исходы", j)
+            yield from _nested_items(item, (i,))
     elif isinstance(value, dict):
-        for k in value:
+        for k, item in value.items():
             yield (k,)
+            yield from _nested_items(item, (k,))
 
 
 def _targets(data, path_name):

@@ -242,6 +242,9 @@ class IssueTransition:
         if "условия" in row and "исходы" in row:
             raise ContractError(f"issues.переходы: и условия, и исходы разом — {row}")
         _string_list(row["в"], "issues.переходы.в")
+        # Круг 45: пустой список «куда» ронял загрузку сырым IndexError ниже.
+        if not row["в"]:
+            raise ContractError(f"issues.переходы: переход никуда не ведёт — {row}")
         targets = tuple(row["в"])
         if "исходы" in row:
             outcomes = []

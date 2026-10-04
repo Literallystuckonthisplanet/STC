@@ -992,7 +992,11 @@ def test_an_active_grant_needs_an_unambiguous_yes(tmp_path):
         "продолжение_словом": f"{quote} не будет",
         "склеено_слева": f"да{quote}",
         "целиком": quote,
-        "отдельной_фразой": f"Хорошо. {quote}.\nДальше сам.",
+        "отдельной_строкой": f"Хорошо.\n{quote}.\nДальше сам.",
+        # круг 46: без слова согласия и с условием следующим предложением
+        "без_согласия": "Сейчас обсуждаем расширение работы",
+        "условие_следом": f"{quote}. Только после моего отдельного подтверждения",
+        "внутри_строки": f"Хорошо. {quote}.",
     }
     ids = {name: f"aaaaaaaa-bbbb-cccc-dddd-{i:012d}" for i, name in enumerate(texts)}
     negated = "не разрешаю расширение работы"
@@ -1009,13 +1013,66 @@ def test_an_active_grant_needs_an_unambiguous_yes(tmp_path):
                                     tmp_path, consent=consent)
 
     assert verdict("целиком") is None
-    assert verdict("отдельной_фразой") is None
+    assert verdict("отдельной_строкой") is None
     for name in ("отрицание_перед", "вопрос", "с_условием", "продолжение_словом",
-                 "склеено_слева"):
-        assert "не целая фраза" in (verdict(name) or ""), f"{name}: часть фразы засчитана согласием"
+                 "склеено_слева", "условие_следом", "внутри_строки"):
+        assert "не целая строка" in (verdict(name) or ""), f"{name}: часть фразы засчитана согласием"
+    # круг 46: целая строка, но без слова согласия или с условием — отказ
+    assert "нет слова согласия" in (
+        verdict("без_согласия", "Сейчас обсуждаем расширение работы") or "")
+    assert "условие" in (verdict("условие_следом",
+                                 f"{quote}. Только после моего отдельного подтверждения") or "")
     assert "отрицание" in (verdict("отрицание_внутри", negated) or "")
     # запись прошлого проверяется на происхождение, не на согласие
     assert verdict("отрицание_внутри", negated, consent=False) is None
+
+
+def test_a_chosen_option_counts_only_if_it_is_the_offered_yes(tmp_path):
+    """Круг 46: Антон отвечает на развилку, копируя вариант целиком. Такой
+    ответ — согласие, только если он дословно совпадает с вариантом карточки
+    развилки в предыдущем сообщении ассистента, и в названии варианта есть
+    «да». Копия «нет», копия пункта отчёта и вариант с дописанным словом —
+    отказ."""
+    module = import_tables_module()
+    yes = ("Дать явное «да» (советую) — одной строкой. Для тебя: секунда.")
+    no = "Не давать — дыры остаются. Для тебя: ничего."
+    done = "Разрешение записано на твоё явное «да»."
+    card = (f"🎯 Суть.\n\n✅ Сделано\n- {done}\n\n🗳️ **Развилка**\nВопрос.\n"
+            f"- **Дать явное «да»** (советую) — одной строкой. Для тебя: секунда.\n"
+            f"- **Не давать** — дыры остаются. Для тебя: ничего.\n\nЕсли промолчишь — ничего.")
+    ids = {n: f"aaaaaaaa-bbbb-cccc-dddd-{i:012d}" for i, n in enumerate(
+        ("вопрос_человека", "карточка", "да", "нет", "отчёт", "с_добавкой"))}
+    records = [
+        {"uuid": ids["вопрос_человека"], "type": "user", "message": {"content": "что дальше"}},
+        {"uuid": ids["карточка"], "parentUuid": ids["вопрос_человека"], "type": "assistant",
+         "message": {"content": [{"type": "text", "text": card}]}},
+    ]
+    for name, text in (("да", yes), ("нет", no), ("отчёт", done), ("с_добавкой", yes + " Но позже.")):
+        records.append({"uuid": ids[name], "parentUuid": ids["карточка"], "type": "user",
+                        "message": {"content": text}})
+    session = _transcript(tmp_path, records)
+
+    def verdict(name, quote):
+        return module.resolve_basis(
+            {"вид": "событие_транскрипта", "подвид": "выбор_варианта", "сессия": session,
+             "native_uuid": ids[name], "цитата": quote}, tmp_path, consent=True)
+
+    assert verdict("да", "Дать явное «да»") is None
+    assert "без согласия" in (verdict("нет", "Не давать — дыры остаются") or "")
+    assert "не вариант" in (verdict("отчёт", "Разрешение записано") or "")
+    assert "не вариант" in (verdict("с_добавкой", "Дать явное «да»") or "")
+
+
+def test_an_active_grant_rests_on_the_persons_words_not_on_a_file(tmp_path):
+    """Круг 46: файл плана с верным хешем признавался действующим разрешением —
+    хеш доказывает, что файл не подменили, а не что человек согласился."""
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    grant = raw["blocks"]["разрешения_исполнения"][-1]
+    grant["основание"] = {"вид": "план_артефакт", "путь": "docs/roundtable.md",
+                          "sha256": "0" * 64}
+    with pytest.raises(module.ContractError, match="действующее разрешение — реплика"):
+        module.Tables.from_raw(raw).check()
 
 
 def test_a_transcript_that_links_outside_the_transcripts_is_refused(tmp_path):
@@ -1193,9 +1250,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 181
+    assert len(findings) == 184
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1406,13 +1463,16 @@ FINDING_PINS = {
     "R45-2": ("6d1804fa76a8", "fb34c293aebc"),
     "R45-3": ("c087e1ab8d60", "6f55b18bec48"),
     "R45-4": ("d0117ff5fe4a", "ae557c6966cb"),
-    "R45-5": ("5a70de7a0e9f", "1760c70038c6"),
-    "R45-6": ("0d14f44e9851", "1760c70038c6"),
+    "R45-5": ("5a70de7a0e9f", "d7bb35de6713"),
+    "R45-6": ("0d14f44e9851", "f01600568f5f"),
     "R45-7": ("958998c93a34", "00ddea7ef34f"),
     "R45-8": ("006e0e52d127", "d3b1fdb773ff"),
     "R45-9": ("b5ea7848150e", "89f4d09c5c57"),
     "R45-10": ("46b5686cc455", "4fd741b431a9"),
     "R45-11": ("edf7c55abc4b", "6c6ead1f54df"),
+    "R46-1": ("4013f5113bed", "117323c3e4c8"),
+    "R46-2": ("245186a563bb", "6f55b18bec48"),
+    "R46-3": ("b74cbf2eafc1", "7208c4c25413"),
 }
 
 
@@ -3181,7 +3241,7 @@ def test_a_permission_cannot_be_rewritten_in_place():
     # Круг 46: разрешение от 02.09 (реплика-жалоба, не «да») сознательно
     # перенесено в историю и заменено явным «да» Антона от 04.10 — это и
     # меняет слепок; запись перенесена целиком, а не переписана.
-    assert digest == "527c11c1c3121e12f3c3ce29542f8bc51f2b5ed442d57a67503304f398d4ab66", (
+    assert digest == "95568650d06e9a3aebe825a9e6e808bcaa16823ac6c25013dac0d8f5b3b8b1b4", (
         "выданное разрешение переписано: хеш объёма, список блоков или основание")
 
 
@@ -3313,7 +3373,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "1a401b3f77f7e4f2fc19b1c774c5ef741bdd4d5af5aecb99177755d7424de975", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "5e63add840e9dcb63adc780102bfb7e5bef1a478c59a45d424c931ddc058b82b", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

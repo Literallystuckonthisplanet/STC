@@ -1474,6 +1474,17 @@ class Tables:
                 if basis["вид"] == "событие_транскрипта" \
                         and not _is_uuid(basis["native_uuid"]):
                     raise ContractError(f"{registry}: native_uuid не похож на uuid")
+        # Круг 46: файл плана с верным хешем признавался действующим
+        # разрешением — хеш доказывает целость файла, а не согласие человека.
+        for grant in plan["разрешения_исполнения"]:
+            if grant["основание"]["вид"] != "событие_транскрипта":
+                raise ContractError(
+                    f"разрешения_исполнения {grant['блоки']}: действующее разрешение — реплика "
+                    f"человека, а не {grant['основание']['вид']}")
+            if grant["основание"].get("подвид") not in (None, "выбор_варианта"):
+                raise ContractError(
+                    f"разрешения_исполнения {grant['блоки']}: подвид "
+                    f"{grant['основание'].get('подвид')!r} — не согласие")
         for grant in plan["разрешения_исполнения"]:
             recorded = grant.get("scope_sha256")
             if not isinstance(recorded, dict):
@@ -2451,8 +2462,17 @@ PLAN_APPROVAL = "User has approved your plan"
 # отказ исправляется новой репликой, лишнее «согласие» — нет.
 NEGATION = re.compile(r"(?<![а-яёa-z])(не|нет|ни|нельзя|запрещ\w*|стоп|отмен\w*|откаж\w*|"
                       r"отказ\w*|против|no|not|don'?t)(?![а-яёa-z])", re.I)
-CLAUSE_LEFT = re.compile(r"(?:^|[.!;\n])\s*$")
-CLAUSE_RIGHT = re.compile(r"^\s*(?:$|[.!;\n])")
+# Круг 46: «целая фраза без отрицания» пропускала и «Сейчас обсуждаем
+# расширение работы», и «ОК… Только после моего подтверждения» — условие
+# уходило в следующее предложение. Согласие — целая СТРОКА реплики, которая
+# начинается словом согласия и не содержит ни отрицания, ни вопроса, ни
+# условия. Остальное программа согласием не читает.
+CONSENT_WORD = re.compile(r"^(ок|ok|окей|да|разрешаю|согласен|согласна|одобряю)(?![а-яёa-z])",
+                          re.I)
+CONDITION = re.compile(r"(?<![а-яёa-z])(но|только|если|после|кроме|когда|позже|потом|"
+                       r"подожди|пока|однако|but|only|if|after|unless)(?![а-яёa-z])", re.I)
+CONSENT_ANYWHERE = re.compile(r"(?<![а-яёa-z])(ок|ok|окей|да|разрешаю|согласен|согласна|"
+                              r"одобряю)(?![а-яёa-z])", re.I)
 
 
 def _human_text(record: dict, transcript: Path, wanted: str) -> tuple[str | None, str | None]:
@@ -2493,18 +2513,74 @@ def _human_text(record: dict, transcript: Path, wanted: str) -> tuple[str | None
     return "\n".join(texts), None
 
 
+def _plain(text: str) -> str:
+    """Текст без разметки и лишних пробелов — для сверки дословной копии."""
+    return re.sub(r"\s+", " ", re.sub(r"[*`]", "", text)).strip()
+
+
 def _unambiguous_yes(own: str, quote: str) -> str | None:
-    """Цитата действующего разрешения — целая фраза без отрицания и не вопрос."""
+    """Цитата действующего разрешения — целая строка-согласие (круг 46)."""
+    lines = [line.strip().rstrip(".!").strip() for line in own.split("\n")]
+    if quote.strip().rstrip(".!").strip() not in lines:
+        return "цитата — не целая строка реплики, и согласием её не прочесть"
     if NEGATION.search(quote):
         return "в цитате отрицание — это не согласие"
-    start = own.find(quote)
-    while start != -1:
-        end = start + len(quote)
-        if CLAUSE_LEFT.search(own[:start]) and CLAUSE_RIGHT.search(own[end:]):
-            return None
-        start = own.find(quote, start + 1)
-    return ("цитата — не целая фраза: вокруг неё слова, вопрос или условие, "
-            "и согласием её не прочесть")
+    if "?" in quote:
+        return "цитата — вопрос, а не согласие"
+    if CONDITION.search(quote):
+        return "в цитате условие — это не безоговорочное согласие"
+    if not CONSENT_WORD.search(quote.strip()):
+        return "в цитате нет слова согласия в начале (ОК, да, разрешаю, согласен)"
+    return None
+
+
+def _assistant_turn(record: dict, transcript: Path) -> str:
+    """Текст ответа ассистента, на который отвечает эта реплика."""
+    records = {}
+    for line in transcript.open(encoding="utf-8"):
+        entry = json.loads(line)
+        if entry.get("uuid"):
+            records[entry["uuid"]] = entry
+    texts, current = [], record.get("parentUuid")
+    while current in records:
+        entry = records[current]
+        if entry.get("type") == "user" and isinstance(entry.get("message", {}).get("content"), str):
+            break
+        if entry.get("type") == "assistant":
+            for block in entry.get("message", {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+        current = entry.get("parentUuid")
+    return "\n".join(reversed(texts))
+
+
+def _chosen_yes(own: str, record: dict, transcript: Path) -> str | None:
+    """Ответ копией варианта развилки — согласие, только если это вариант «да».
+
+    Круг 46: Антон отвечает на карточку развилки, копируя вариант целиком.
+    Засчитывается, только если реплика дословно совпадает с вариантом из
+    блока развилки (🗳️) в предыдущем ответе ассистента и в названии варианта
+    есть слово согласия без отрицания.
+    """
+    turn = _assistant_turn(record, transcript)
+    if "🗳" not in turn:
+        return "в предыдущем ответе нет развилки — выбирать было не из чего"
+    card = turn[turn.index("🗳"):]
+    options = []
+    for line in card.splitlines()[1:]:
+        if line.startswith(("📚", "✅", "🎯", "🙋", "```")):
+            break                                    # следующий раздел ответа
+        # Вариант карточки развилки всегда говорит, что он значит для Антона
+        # (формат ответа); пояснения-пункты рядом вариантами не считаются.
+        if line.startswith("- ") and "Для тебя" in line:
+            options.append(_plain(line[2:]))
+    reply = _plain(own)
+    if reply not in options:
+        return "реплика не вариант развилки дословно — выбор не доказан"
+    label = re.split(r" — |\(", reply, maxsplit=1)[0]
+    if NEGATION.search(label) or not CONSENT_ANYWHERE.search(label):
+        return "выбран вариант без согласия в названии"
+    return None
 
 
 def resolve_basis(basis: dict, home: Path | None = None, *,
@@ -2573,7 +2649,9 @@ def resolve_basis(basis: dict, home: Path | None = None, *,
             # Круг 45: наличие цитаты — не согласие. Действующее разрешение
             # требует очевидного «да»; запись прошлого — только происхождения.
             if consent:
-                problem = _unambiguous_yes(own, quote)
+                problem = (_chosen_yes(own, record, transcript)
+                           if basis.get("подвид") == "выбор_варианта"
+                           else _unambiguous_yes(own, quote))
                 if problem:
                     return f"{wanted}: {problem}"
             return None

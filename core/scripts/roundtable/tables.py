@@ -603,7 +603,12 @@ SHAPES = {
         "отпечаток": Mapping(LIST),
         "создатели_доказательства": Mapping(LIST, keys="доказательства"),
         "пакет": Record("предел_файла_байт", "предел_пакета_байт", "отвергается",
-                        "не_попадает", "реестры", "виды_решений_в_реестре", "канонизация"),
+                        "не_попадает", "реестры", "виды_решений_в_реестре", "канонизация",
+                        "видимые_слепому_статусы_решений", "видимые_слепому_создатели",
+                        "мин_длина_следа", "запрещённые_пути", "разделы",
+                        "предел_раздела_байт", "предел_числа_файлов",
+                        схемы_записей=Record("решения", "области", "журнал_общие",
+                                             "журнал_необязательные")),
         "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
         "коды_условий": Mapping(LIST),
         "повтор_невалидного_ответа": Record(
@@ -1697,9 +1702,79 @@ class Tables:
                         f"{name}: объявлено {declared} {key}, в списке {actual}")
         checked.append("объявленные количества сходятся с длиной списков")
 
+        self._check_package_rules()
+        checked.append("правила пакета: схемы, пределы, пути и разделы согласованы")
+
         self._check_shapes()
         checked.append(f"{len(SHAPES)} таблиц: выдуманных полей нет ни на какой глубине")
         return checked
+
+    def _check_package_rules(self) -> None:
+        """Круг 3: правила пакета (§6.9) — значения и сверки между перечнями."""
+        package = self.vocabulary.get("пакет")
+        if not isinstance(package, dict):
+            raise ContractError(f"vocabulary.пакет: ожидалась карта, получено {package!r}")
+        where = "vocabulary.пакет"
+
+        def need(key):
+            if key not in package:
+                raise ContractError(f"{where}: нет правила {key}")
+            return package[key]
+
+        def number(key):
+            value = need(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ContractError(f"{where}.{key}: ожидалось положительное целое, получено {value!r}")
+            return value
+
+        def names(value, label):
+            _string_list(value, label)
+            if not value or len(set(value)) != len(value):
+                raise ContractError(f"{label}: список пуст или с повторами")
+            return value
+
+        for key in ("предел_раздела_байт", "предел_числа_файлов", "мин_длина_следа"):
+            number(key)
+        if package["мин_длина_следа"] < 8:
+            raise ContractError(f"{where}.мин_длина_следа: короче 8 знаков след ловит любое слово")
+
+        schemas = need("схемы_записей")
+        if not isinstance(schemas, dict):
+            raise ContractError(f"{where}.схемы_записей: ожидалась карта")
+        for key in ("решения", "области", "журнал_общие", "журнал_необязательные"):
+            if key not in schemas:
+                raise ContractError(f"{where}.схемы_записей: нет {key}")
+            names(schemas[key], f"{where}.схемы_записей.{key}")
+        if not {"decision_id", "kind"} <= set(schemas["решения"]):
+            raise ContractError(f"{where}.схемы_записей.решения: нужны decision_id и kind")
+        if "status" not in schemas["решения"]:
+            raise ContractError(f"{where}.схемы_записей.решения: нужен status — по нему слепой отбирает")
+        if "area_id" not in schemas["области"]:
+            raise ContractError(f"{where}.схемы_записей.области: нужен area_id")
+        if not {"тип", "создатель"} <= set(schemas["журнал_общие"]):
+            raise ContractError(f"{where}.схемы_записей.журнал_общие: нужны тип и создатель")
+        fingerprint_fields = {f for fields in self.vocabulary["отпечаток"].values() for f in fields}
+        overlap = (set(schemas["журнал_необязательные"]) | set(schemas["журнал_общие"])) & fingerprint_fields
+        if overlap:
+            raise ContractError(f"{where}.схемы_записей.журнал: {sorted(overlap)} — поля отпечатка, не общие")
+        if set(schemas["журнал_необязательные"]) & set(schemas["журнал_общие"]):
+            raise ContractError(f"{where}.схемы_записей.журнал: поле и обязательное, и необязательное")
+
+        names(need("видимые_слепому_статусы_решений"), f"{where}.видимые_слепому_статусы_решений")
+        creators = names(need("видимые_слепому_создатели"), f"{where}.видимые_слепому_создатели")
+        known = {c for allowed in self.vocabulary["создатели_доказательства"].values() for c in allowed}
+        if not set(creators) <= known:
+            raise ContractError(f"{where}.видимые_слепому_создатели: {sorted(set(creators) - known)} никто не создаёт")
+
+        names(need("запрещённые_пути"), f"{where}.запрещённые_пути")
+        sections = names(need("разделы"), f"{where}.разделы")
+        blind = self.stages["слепой_вопрос"]
+        outside = (set(blind["показываем"]) | set(blind["прячем"])) - set(sections)
+        if outside:
+            raise ContractError(f"{where}.разделы: нет разделов слепого вопроса {sorted(outside)}")
+        banned = set(sections) & set(package["не_попадает"])
+        if banned:
+            raise ContractError(f"{where}.разделы: {sorted(banned)} объявлены и допустимыми, и вне пакета")
 
     def _shape_domains(self) -> dict:
         """Перечни, из которых берутся ключи справочников."""

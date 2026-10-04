@@ -645,6 +645,102 @@ def test_the_package_rules_are_complete_and_pinned():
         "the reason two builds must hash the same has to stay written down")
 
 
+PACKAGE_RULES = {
+    "схемы_записей": {
+        "решения": ["decision_id", "kind", "text_hash", "status"],
+        "области": ["area_id"],
+        "журнал_общие": ["тип", "создатель"],
+        "журнал_необязательные": ["id", "время"]},
+    "видимые_слепому_статусы_решений": ["закрыто"],
+    "видимые_слепому_создатели": ["предпроверка"],
+    "мин_длина_следа": 40,
+    "запрещённые_пути": [".git", ".claude", ".codex", "CLAUDE.md", "AGENTS.md", ".env",
+                         ".env.*", "*.pem", "*.key"],
+    "разделы": ["задача", "ограничения", "критерий_успеха", "уже_закрытые_решения",
+                "предложенное_решение", "автор", "второй_критик"],
+    "предел_раздела_байт": 65536,
+    "предел_числа_файлов": 64,
+}
+
+
+def test_the_round_3_package_rules_are_pinned_to_their_exact_values():
+    # Each value is a rule the package code reads. A deleted key, or another
+    # perfectly valid value, would silently change what reaches a critic.
+    package = _at(VOCAB, "пакет")
+    for key, expected in PACKAGE_RULES.items():
+        assert package.get(key) == expected, key
+
+
+def _package_variant(mutate):
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    mutate(raw["vocabulary"]["пакет"], raw)
+    return module, raw
+
+
+@pytest.mark.parametrize("key", sorted(PACKAGE_RULES))
+def test_deleting_a_package_rule_fails_the_load(key):
+    module, raw = _package_variant(lambda package, _raw: package.pop(key))
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("key,bad", [
+    ("мин_длина_следа", 0), ("мин_длина_следа", 7), ("мин_длина_следа", "40"), ("мин_длина_следа", True),
+    ("предел_раздела_байт", 0), ("предел_раздела_байт", -1),
+    ("предел_раздела_байт", "много"),
+    ("предел_числа_файлов", 0), ("предел_числа_файлов", 1.5), ("предел_числа_файлов", None),
+    ("запрещённые_пути", []), ("запрещённые_пути", ".git"), ("запрещённые_пути", [".git", ".git"]),
+    ("запрещённые_пути", [""]),
+    ("разделы", []), ("разделы", "задача"), ("разделы", ["задача"]),
+    ("разделы", PACKAGE_RULES["разделы"] + ["git_история"]),
+    ("видимые_слепому_статусы_решений", []), ("видимые_слепому_статусы_решений", "закрыто"),
+    ("видимые_слепому_создатели", []), ("видимые_слепому_создатели", ["никто"]),
+    ("схемы_записей", []), ("схемы_записей", {}),
+])
+def test_an_invalid_package_rule_fails_the_load(key, bad):
+    module, raw = _package_variant(lambda package, _raw: package.__setitem__(key, bad))
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("part,bad", [
+    ("решения", ["decision_id", "kind"]),           # no status: the blind filter has nothing to read
+    ("решения", ["kind", "text_hash", "status"]),   # no id
+    ("решения", []),
+    ("области", ["title"]),
+    ("журнал_общие", ["тип"]),
+    ("журнал_общие", ["тип", "создатель", "путь"]),  # a fingerprint field is not a common one
+    ("журнал_необязательные", ["тип"]),              # already mandatory
+    ("журнал_необязательные", ["якорь"]),            # a fingerprint field
+    ("журнал_необязательные", []),
+])
+def test_an_invalid_record_schema_fails_the_load(part, bad):
+    module, raw = _package_variant(
+        lambda package, _raw: package["схемы_записей"].__setitem__(part, bad))
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+    module, raw = _package_variant(lambda package, _raw: package["схемы_записей"].pop(part))
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+
+
+def test_an_invented_package_rule_is_not_accepted():
+    module, raw = _package_variant(lambda package, _raw: package.__setitem__("выдуманное", 1))
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_blind_question_sections_must_be_declared_package_sections():
+    for listing in ("показываем", "прячем"):
+        def drop(package, raw, listing=listing):
+            package["разделы"] = [s for s in package["разделы"]
+                                  if s != raw["stages"]["слепой_вопрос"][listing][0]]
+        module, raw = _package_variant(drop)
+        with pytest.raises(module.ContractError, match="слепого вопроса"):
+            module.Tables.from_raw(raw).check()
+
+
 def test_the_attempt_journal_declares_its_key_states_and_flag():
     # Б1 reads all four out of the table: a private copy inside state.py would
     # be the "two sources" shape again, and this journal is what decides whether

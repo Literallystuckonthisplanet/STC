@@ -51,6 +51,21 @@ def _build(root, files=None, **kwargs):
                            **options)
 
 
+SHOWN = list(TABLES.stages["слепой_вопрос"]["показываем"])
+HIDDEN = list(TABLES.stages["слепой_вопрос"]["прячем"])
+WITHHELD = {"предложенное_решение": "построить всё на очереди сообщений и воркерах фонового режима",
+            "автор": "Лунтик", "второй_критик": "Бибигон"}
+BLIND_REGISTRIES = {"решения": [{"decision_id": "D-2", "kind": "closed_decision",
+                                 "text_hash": "b" * 8, "status": "закрыто"}],
+                    "области": [{"area_id": "A-1"}], "журнал_доказательств": []}
+
+
+def _blind(root, sections=None, files=(), withheld=WITHHELD, registries=BLIND_REGISTRIES):
+    sections = {n: "общий контекст задачи" for n in SHOWN} if sections is None else sections
+    return C.build_package(root, list(files), sections=sections, registries=registries,
+                           stage="идея", blind=True, tables=TABLES, withheld=withheld)
+
+
 # --------------------------------------------------------------------------
 # guarantee 1: two builds, one hash
 # --------------------------------------------------------------------------
@@ -276,19 +291,12 @@ def test_the_evidence_journal_reaches_the_package_with_its_fingerprints(root):
 # --------------------------------------------------------------------------
 
 def test_the_blind_package_hides_the_solution_and_nothing_else(root):
-    shown = set(TABLES.stages["слепой_вопрос"]["показываем"])
-    package = C.build_package(root, [],
-                              sections={name: "…" for name in shown},
-                              registries=REGISTRIES, stage="идея", blind=True,
-                              tables=TABLES)
-    assert set(package.sections) == shown
+    package = _blind(root)
+    assert set(package.sections) == set(SHOWN)
 
-    for hidden in TABLES.stages["слепой_вопрос"]["прячем"]:
+    for hidden in HIDDEN:
         with pytest.raises(C.PackageRefused) as refused:
-            C.build_package(root, [],
-                            sections={**{n: "…" for n in shown}, hidden: "…"},
-                            registries=REGISTRIES, stage="идея", blind=True,
-                            tables=TABLES)
+            _blind(root, sections={**{n: "…" for n in SHOWN}, hidden: "…"})
         assert refused.value.reason in ("слепой_вопрос_показывает_лишнее",
                                         "раздел_вне_пакета"), hidden
 
@@ -399,10 +407,11 @@ def test_b2_3_a_file_replaced_right_after_the_open_does_not_enter_the_package(ro
         return descriptor
 
     monkeypatch.setattr(C.os, "open", swapping)
-    package = _build(root)
+    # Replaced between the open and the read: the package is refused by name —
+    # neither the substitute nor a half-old file may enter it.
+    assert _reason(root, [("docs/plan.md", "existing_evidence")]) == "файл_изменился"
     assert opens == [1]
-    assert package.files["docs/plan.md"] == original
-    assert "ПОДМЕНА" not in package.material()
+    assert original not in path.read_text(encoding="utf-8")
 
 
 def test_b2_3_a_change_after_the_build_does_not_change_the_built_package(root):
@@ -450,6 +459,7 @@ def test_b2_3_the_file_text_is_what_pushes_the_package_over_its_limit(tmp_path, 
     path = directory / "vocabulary.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     data["пакет"]["предел_пакета_байт"] = base + 200
+    data["пакет"]["предел_раздела_байт"] = base + 200
     path.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     limited = T.load(directory)
     _build(root, files=[("docs/absent.md", "planned_output")], tables=limited)
@@ -458,16 +468,6 @@ def test_b2_3_the_file_text_is_what_pushes_the_package_over_its_limit(tmp_path, 
         _build(root, files=[("docs/long.md", "existing_evidence")], tables=limited)
     assert refused.value.reason == "превышение_размера"
     assert "пакет" in refused.value.detail
-
-
-SHOWN = list(TABLES.stages["слепой_вопрос"]["показываем"])
-HIDDEN = list(TABLES.stages["слепой_вопрос"]["прячем"])
-
-
-def _blind(root, sections, files=()):
-    return C.build_package(root, list(files), sections=sections,
-                           registries=REGISTRIES, stage="идея", blind=True,
-                           tables=TABLES)
 
 
 def test_b2_4_the_blind_package_sections_equal_the_listed_set_exactly(root):
@@ -522,7 +522,7 @@ def test_b2_6_the_hash_does_not_depend_on_the_hash_seed(root):
         "import sys;sys.path.insert(0, sys.argv[1]);"
         "from roundtable import context as C, tables as T;"
         "S={'задача':'a','ограничения':'b','критерий_успеха':'c'};"
-        "R={'решения':[{'decision_id':'D-2','kind':'framing'},{'decision_id':'D-1','kind':'framing'}],"
+        "R={'решения':[{'decision_id':'D-2','kind':'framing','text_hash':'a','status':'x'},{'decision_id':'D-1','kind':'framing','text_hash':'b','status':'y'}],"
         "'области':[{'area_id':'A-2'},{'area_id':'A-1'}],'журнал_доказательств':[]};"
         "print(C.build_package(sys.argv[2],[('docs/plan.md','existing_evidence')],S,R,'план',"
         "tables=T.load()).hash)")
@@ -635,7 +635,8 @@ def test_one_file_under_two_spellings_is_a_duplicate(root):
 
 def test_duplicate_ids_in_a_registry_are_refused(root):
     twice = {**REGISTRIES, "решения": [
-        {"decision_id": "D-1", "kind": "framing"}, {"decision_id": "D-1", "kind": "framing"}]}
+        {"decision_id": "D-1", "kind": "framing", "text_hash": "a", "status": "x"},
+        {"decision_id": "D-1", "kind": "framing", "text_hash": "b", "status": "y"}]}
     assert _reason(root, None, registries=twice) == "дубль_в_реестре"
     twice = {**REGISTRIES, "области": [{"area_id": "A-1"}, {"area_id": "A-1"}]}
     assert _reason(root, None, registries=twice) == "дубль_в_реестре"
@@ -666,10 +667,10 @@ def test_mutating_the_inputs_after_the_build_changes_nothing(root):
 
 
 def test_unserialisable_nan_and_non_string_values_are_refused(root):
-    bad = {**REGISTRIES, "решения": [{"decision_id": "D-1", "kind": "framing", "x": object()}]}
+    bad = {**REGISTRIES, "решения": [{"decision_id": "D-1", "kind": "framing", "text_hash": object(), "status": "x"}]}
     assert _reason(root, None, registries=bad) == "некорректный_вход"
     bad = {**REGISTRIES, "решения": [{"decision_id": "D-1", "kind": "framing",
-                                      "x": float("nan")}]}
+                                      "text_hash": float("nan"), "status": "x"}]}
     assert _reason(root, None, registries=bad) == "некорректный_вход"
     assert _reason(root, None, sections={**SECTIONS, "задача": 5}) == "некорректный_вход"
     assert _reason(root, None, sections={**SECTIONS, "задача": None}) == "некорректный_вход"
@@ -689,3 +690,356 @@ def test_malformed_containers_are_refused_by_name(root):
 def test_an_unknown_stage_is_refused_in_both_modes(root):
     assert _reason(root, None, stage="нет_такой") == "неизвестная_стадия"
     assert _reason(root, None, stage="нет_такой", blind=True) == "неизвестная_стадия"
+
+
+# --------------------------------------------------------------------------
+# round 3: the rules live in the table (Б2-7 ... Б2-10) and the audit leftovers
+# --------------------------------------------------------------------------
+
+import shutil  # noqa: E402
+import sys as _sys  # noqa: E402,F401
+import time  # noqa: E402
+import types  # noqa: E402
+
+import yaml  # noqa: E402
+
+from roundtable import state as S  # noqa: E402
+
+
+def _tables_with(tmp_path, **changes):
+    """The real tables with some `пакет` rules replaced: proof that code reads data."""
+    directory = tmp_path / "tables"
+    shutil.copytree(T.TABLES_DIR, directory)
+    path = directory / "vocabulary.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["пакет"].update(changes)
+    path.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return T.load(directory)
+
+
+def _decision(**fields):
+    return {**{"decision_id": "D-1", "kind": "closed_decision", "text_hash": "a" * 8,
+               "status": "закрыто"}, **fields}
+
+
+def _with(registries=None, **parts):
+    return {**(registries or REGISTRIES), **parts}
+
+
+# -- Б2-7: closed schemas of registry records --------------------------------
+
+def test_b2_7_a_decision_with_a_missing_or_extra_field_is_refused(root):
+    complete = _decision()
+    for field_name in complete:
+        broken = {k: v for k, v in complete.items() if k != field_name}
+        expected = "некорректный_вход" if field_name == "decision_id" else "запись_вне_схемы"
+        assert _reason(root, None, registries=_with(решения=[broken])) == expected, field_name
+    assert _reason(root, None, registries=_with(решения=[_decision(лишнее="x")])) == "запись_вне_схемы"
+
+
+def test_b2_7_an_area_with_an_extra_or_missing_field_is_refused(root):
+    assert _reason(root, None, registries=_with(области=[{"area_id": "A-1", "x": 1}])) == "запись_вне_схемы"
+    assert _reason(root, None, registries=_with(области=[{}])) == "некорректный_вход"
+
+
+def test_b2_7_journal_records_need_the_common_and_the_fingerprint_fields(root):
+    ok = _build(root, registries=_with(журнал_доказательств=[{**SPAN, "id": "EV-1", "время": "t"}]))
+    assert len(ok.registries["журнал_доказательств"]) == 1
+    for field_name in SPAN:
+        broken = {k: v for k, v in SPAN.items() if k != field_name}
+        expected = "некорректный_вход" if field_name == "тип" else "запись_вне_схемы"
+        assert _reason(root, None, registries=_with(журнал_доказательств=[broken])) == expected, field_name
+    assert _reason(root, None, registries=_with(журнал_доказательств=[{**SPAN, "чужое": 1}])) == "запись_вне_схемы"
+
+
+def test_b2_7_the_schema_is_read_from_the_table_not_from_the_module(tmp_path, root):
+    schemas = dict(TABLES.vocabulary["пакет"]["схемы_записей"])
+    wider = _tables_with(tmp_path, схемы_записей={**schemas, "области": ["area_id", "title"]})
+    assert _reason(root, None, registries=_with(области=[{"area_id": "A-1"}]),
+                   tables=wider) == "запись_вне_схемы"
+    ok = _build(root, registries=_with(области=[{"area_id": "A-1", "title": "t"}]), tables=wider)
+    assert ok.registries["области"] == [{"area_id": "A-1", "title": "t"}]
+    optional = _tables_with(tmp_path / "b", схемы_записей={**schemas, "журнал_необязательные": ["id"]})
+    assert _reason(root, None, registries=_with(журнал_доказательств=[{**SPAN, "время": "t"}]),
+                   tables=optional) == "запись_вне_схемы"
+
+
+# -- Б2-8: a blind package carries no trace of what is hidden ----------------
+
+def test_b2_8_the_blind_package_needs_the_withheld_texts_with_exactly_the_hidden_names(root):
+    assert _blind(root).hash
+    assert _reason_blind(root, withheld=None) == "некорректный_вход"
+    assert _reason_blind(root, withheld={k: v for k, v in WITHHELD.items() if k != "автор"}) == "некорректный_вход"
+    assert _reason_blind(root, withheld={**WITHHELD, "лишний": "x"}) == "некорректный_вход"
+    assert _reason_blind(root, withheld={**WITHHELD, "автор": 5}) == "некорректный_вход"
+
+
+def _reason_blind(root, **kwargs):
+    with pytest.raises(C.PackageRefused) as refused:
+        _blind(root, **kwargs)
+    return refused.value.reason
+
+
+def test_b2_8_registries_in_the_blind_mode_show_only_closed_decisions(root):
+    assert TABLES.vocabulary["пакет"]["видимые_слепому_статусы_решений"] == ["закрыто"]
+    open_one = _with(BLIND_REGISTRIES, решения=[_decision(status="открыто")])
+    assert _reason_blind(root, registries=open_one) == "слепой_пакет_след_скрытого"
+
+
+def test_b2_8_journal_records_in_the_blind_mode_come_only_from_the_precheck(root):
+    allowed = {**SPAN, "создатель": "предпроверка"}
+    assert _blind(root, registries=_with(BLIND_REGISTRIES, журнал_доказательств=[allowed])).hash
+    for creator in ("критик", "автор"):
+        broken = _with(BLIND_REGISTRIES, журнал_доказательств=[{**SPAN, "создатель": creator}])
+        assert _reason_blind(root, registries=broken) == "слепой_пакет_след_скрытого", creator
+
+
+LONG_TRACE = WITHHELD["предложенное_решение"]
+
+
+@pytest.mark.parametrize("where", ["section", "decision_id", "area_id", "text_hash"])
+def test_b2_8_a_fragment_of_the_hidden_solution_is_found_wherever_it_is_shown(root, where):
+    fragment = "построить всё на очереди сообщений и воркерах"  # >= 40 normalised chars
+    sections = {n: "общий контекст задачи" for n in SHOWN}
+    registries = BLIND_REGISTRIES
+    if where == "section":
+        sections[SHOWN[0]] = f"Контекст. {fragment}. Конец."
+    elif where == "decision_id":
+        registries = _with(BLIND_REGISTRIES, решения=[_decision(decision_id=fragment)])
+    elif where == "area_id":
+        registries = _with(BLIND_REGISTRIES, области=[{"area_id": fragment}])
+    else:
+        registries = _with(BLIND_REGISTRIES, решения=[_decision(text_hash=fragment)])
+    assert _reason_blind(root, sections=sections, registries=registries) == "слепой_пакет_след_скрытого"
+
+
+def test_b2_8_the_trace_survives_case_spaces_and_compatibility_forms(root):
+    sections = {n: "общий контекст задачи" for n in SHOWN}
+    disguised = "ПОСТРОИТЬ\u00a0ВСЁ   на очереди\nсообщений  и воркерах фонового режима"
+    sections[SHOWN[1]] = disguised
+    assert _reason_blind(root, sections=sections) == "слепой_пакет_след_скрытого"
+    sections[SHOWN[1]] = "".join(chr(ord(c) + 0xFEE0) if "a" <= c <= "z" else c
+                                 for c in "Latin Ｔext")  # full-width forms stay readable
+    hidden = {**WITHHELD, "предложенное_решение": "x" * 41}
+    sections[SHOWN[1]] = "ｘ" * 45  # full-width x folds to x under NFKC
+    assert _reason_blind(root, sections=sections, withheld=hidden) == "слепой_пакет_след_скрытого"
+
+
+def test_b2_8_a_short_hidden_name_matches_only_as_a_whole_word(root):
+    sections = {n: "общий контекст задачи" for n in SHOWN}
+    sections[SHOWN[0]] = "решил ЛУНТИК, и все согласились"
+    assert _reason_blind(root, sections=sections) == "слепой_пакет_след_скрытого"
+    sections[SHOWN[0]] = "здесь Лунтиковый и Прилунтик — другие слова"
+    assert _blind(root, sections=sections).hash
+    sections[SHOWN[0]] = "решил второй_критик"
+    assert _blind(root, sections=sections, withheld={**WITHHELD, "второй_критик": "Бибигон"}).hash
+
+
+def test_b2_8_ordinary_legitimate_input_is_not_refused(root):
+    sections = {SHOWN[0]: "Согласовать план недели и проверить лимиты запросов к модели",
+                SHOWN[1]: "Недельный лимит и бюджет на круг проверки",
+                SHOWN[2]: "Вердикт считает программа, а не критик",
+                SHOWN[3]: "Решение D-2 закрыто"}
+    assert _blind(root, sections=sections).hash
+
+
+def test_b2_8_the_trace_length_is_a_rule_of_the_table(tmp_path, root):
+    sections = {n: "общий контекст задачи" for n in SHOWN}
+    sections[SHOWN[0]] = "очереди сообщений и воркерах"  # 28 normalised chars
+    assert _blind(root, sections=sections).hash  # below the shipped 40
+    strict = _tables_with(tmp_path, мин_длина_следа=20)
+    with pytest.raises(C.PackageRefused) as refused:
+        C.build_package(root, [], sections, BLIND_REGISTRIES, "идея", blind=True,
+                        tables=strict, withheld=WITHHELD)
+    assert refused.value.reason == "слепой_пакет_след_скрытого"
+
+
+def test_b2_8_the_hidden_texts_never_enter_the_material(root):
+    material = _blind(root).material()
+    for text in WITHHELD.values():
+        assert text not in material
+
+
+# -- Б2-9: which paths and which section names may enter ---------------------
+
+@pytest.mark.parametrize("path", [".git/config", ".claude/settings.md", "CLAUDE.md", "docs/AGENTS.md",
+                                  ".env", ".env.local", "docs/server.PEM", "keys/tls.key",
+                                  ".GIT/config", ".codex/x.md", "sub/.git/HEAD"])
+def test_b2_9_service_and_secret_paths_never_enter(root, path):
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("секрет", encoding="utf-8")
+    assert _reason(root, [(path, "existing_evidence")]) == "путь_запрещён"
+    assert _reason(root, [(path, "planned_output")]) == "путь_запрещён"
+
+
+def test_b2_9_the_forbidden_list_comes_from_the_table(tmp_path, root):
+    (root / "docs" / "notes.txt").write_text("x", encoding="utf-8")
+    assert _build(root, files=[("docs/notes.txt", "existing_evidence")]).files
+    stricter = _tables_with(tmp_path, запрещённые_пути=[*TABLES.vocabulary["пакет"]["запрещённые_пути"], "*.txt"])
+    assert _reason(root, [("docs/notes.txt", "existing_evidence")], tables=stricter) == "путь_запрещён"
+
+
+def test_b2_9_a_build_root_inside_the_runs_directory_is_refused(root, monkeypatch):
+    monkeypatch.setattr(S, "RUNS_ROOT", root.parent)
+    assert _reason(root, None) == "путь_запрещён"
+    monkeypatch.setattr(S, "RUNS_ROOT", root / "elsewhere")
+    assert _build(root).hash
+
+
+def test_b2_9_section_names_are_a_closed_list(root):
+    assert _reason(root, None, sections={**SECTIONS, "придуманный": "x"}) == "раздел_неизвестен"
+    assert set(TABLES.stages["слепой_вопрос"]["показываем"]) <= set(LIMITS["разделы"])
+    assert set(TABLES.stages["слепой_вопрос"]["прячем"]) <= set(LIMITS["разделы"])
+
+
+def test_b2_9_a_section_value_is_a_non_empty_string_within_the_limit(tmp_path, root):
+    assert _reason(root, None, sections={**SECTIONS, "задача": "  \n"}) == "некорректный_вход"
+    small = _tables_with(tmp_path, предел_раздела_байт=60)
+    assert _reason(root, None, sections={**SECTIONS, "задача": "я" * 31}, tables=small) == "превышение_размера"
+    assert _build(root, sections={**SECTIONS, "задача": "я" * 30}, tables=small).hash
+
+
+def test_b2_9_the_number_of_files_is_limited_by_the_table(tmp_path, root):
+    (root / "docs" / "two.md").write_text("2", encoding="utf-8")
+    two = [("docs/plan.md", "existing_evidence"), ("docs/two.md", "existing_evidence")]
+    assert _build(root, files=two).hash
+    one_only = _tables_with(tmp_path, предел_числа_файлов=1)
+    assert _reason(root, two, tables=one_only) == "слишком_много_файлов"
+
+
+def test_b2_9_the_package_size_is_counted_while_reading_and_stops_early(tmp_path, root, monkeypatch):
+    for index in range(3):
+        (root / "docs" / f"f{index}.md").write_text("я" * 75, encoding="utf-8")  # 150 bytes each
+    small = _tables_with(tmp_path, предел_файла_байт=200, предел_пакета_байт=280,
+                         предел_раздела_байт=100)
+    opened = []
+    real = os.open
+    monkeypatch.setattr(C.os, "open", lambda p, *a, **k: (opened.append(str(p)), real(p, *a, **k))[1])
+    files = [(f"docs/f{i}.md", "existing_evidence") for i in range(3)]
+    with pytest.raises(C.PackageRefused) as refused:
+        _build(root, files=files, tables=small)
+    assert refused.value.reason == "превышение_размера" and "файлы" in refused.value.detail
+    assert "f2.md" not in opened, "the third file must not be read once the budget is gone"
+
+
+# -- Б2-10: the named refusals and the immutable snapshot ---------------------
+
+def test_b2_10_every_structural_refusal_has_its_own_name(root):
+    os.link(root / ".env", root / "docs" / "hard.md")
+    os.mkfifo(root / "docs" / "pipe")
+    assert _reason(root, [("docs/hard.md", "existing_evidence")]) == "жёсткая_ссылка"
+    assert _reason(root, [("docs/pipe", "existing_evidence")]) == "файл_не_обычный"
+    assert _reason(root, [("docs//plan.md", "existing_evidence")]) == "путь_не_канонический"
+    assert _reason(root, [("docs/plan.md", "existing_evidence"),
+                          ("Docs/Plan.md", "existing_evidence")]) == "файл_объявлен_дважды"
+
+
+def test_b2_10_the_package_is_an_immutable_snapshot(root):
+    package = _build(root, files=[("docs/plan.md", "existing_evidence")])
+    before = (package.hash, package.material())
+    package.sections["задача"] = "ИЗМЕНЕНО"
+    package.files["docs/plan.md"] = "ИЗМЕНЕНО"
+    package.registries["решения"].clear()
+    package.manifest.clear()
+    package.as_dict()["стадия"] = "ИЗМЕНЕНО"
+    assert package.sections["задача"] == SECTIONS["задача"]
+    assert package.files["docs/plan.md"].startswith("# План")
+    assert len(package.registries["решения"]) == 2
+    assert len(package.manifest) == 1
+    assert (package.hash, package.material()) == before
+    with pytest.raises(Exception):
+        package.stage = "другая"
+    with pytest.raises(Exception):
+        package._bytes = b"x"
+
+
+# -- audit leftovers 7 ... 11 --------------------------------------------------
+
+def test_audit_7_a_hard_link_race_never_leaks_a_secret(tmp_path_factory, root):
+    outside = tmp_path_factory.mktemp("outside")
+    secret = outside / "secret.txt"
+    secret.write_text("СЕКРЕТ-ГОНКИ-9917", encoding="utf-8")
+    (root / "docs" / "race.md").write_text("законное", encoding="utf-8")
+    attacker = (
+        "import os,sys\n"
+        "root,secret=sys.argv[1:3]\n"
+        "d=root+'/docs'\n"
+        "while not os.path.exists(root+'/STOP'):\n"
+        "    try:\n"
+        "        os.link(secret,d+'/t.tmp'); os.replace(d+'/t.tmp',d+'/race.md')\n"
+        "        open(d+'/w.tmp','w').write('законное'); os.replace(d+'/w.tmp',d+'/race.md')\n"
+        "    except OSError:\n"
+        "        pass\n")
+    process = subprocess.Popen([sys.executable, "-c", attacker, str(root), str(secret)])
+    built = refused = 0
+    try:
+        deadline = time.time() + 4
+        while time.time() < deadline:
+            try:
+                package = _build(root, files=[("docs/race.md", "existing_evidence")])
+            except C.PackageRefused:
+                refused += 1
+                continue
+            built += 1
+            assert "СЕКРЕТ-ГОНКИ-9917" not in package.material()
+    finally:
+        (root / "STOP").write_text("", encoding="utf-8")
+        process.wait(timeout=20)
+    assert built + refused > 20, "the race loop did not actually run"
+
+
+def test_audit_7_a_file_unlinked_during_the_read_is_refused(root, monkeypatch):
+    real = os.read
+
+    def read_then_unlink(descriptor, size):
+        data = real(descriptor, size)
+        (root / "docs" / "plan.md").unlink(missing_ok=True)
+        return data
+
+    monkeypatch.setattr(C.os, "read", read_then_unlink)
+    assert _reason(root, [("docs/plan.md", "existing_evidence")]) == "файл_изменился"
+
+
+def test_audit_8_a_component_on_another_device_is_outside_the_root(root, monkeypatch):
+    real = os.fstat
+    calls = []
+
+    def spoof(descriptor):
+        info = real(descriptor)
+        calls.append(info.st_dev)
+        if len(calls) == 2:  # the first call is the root, the second is `docs`
+            fields = list(info)
+            fields[2] = info.st_dev + 1
+            return os.stat_result(fields)
+        return info
+
+    monkeypatch.setattr(C.os, "fstat", spoof)
+    assert _reason(root, [("docs/plan.md", "existing_evidence")]) == "путь_вне_корня"
+
+
+def test_audit_9_the_last_component_is_opened_without_a_controlling_terminal(root, monkeypatch):
+    flags = []
+    real = os.open
+    monkeypatch.setattr(C.os, "open", lambda p, f, *a, **k: (flags.append((str(p), f)), real(p, f, *a, **k))[1])
+    _build(root)
+    leaf = [f for name, f in flags if name == "plan.md"]
+    assert leaf and all(f & os.O_NOCTTY and f & os.O_NOFOLLOW and f & os.O_NONBLOCK for f in leaf)
+
+
+def test_audit_10_every_component_must_be_spelled_exactly_as_the_disk_spells_it(root):
+    assert _reason(root, [("DOCS/plan.md", "existing_evidence")]) == "путь_не_канонический"
+    assert _reason(root, [("docs/PLAN.MD", "existing_evidence")]) == "путь_не_канонический"
+    composed = unicodedata.normalize("NFC", "é.md")
+    (root / "docs" / composed).write_text("e", encoding="utf-8")
+    decomposed = unicodedata.normalize("NFD", "é.md")
+    assert _reason(root, [(f"docs/{decomposed}", "existing_evidence")]) == "путь_не_канонический"
+    assert _build(root, files=[(f"docs/{composed}", "existing_evidence")]).files
+
+
+def test_audit_11_the_root_must_be_a_path(root):
+    for bad in (None, 5, b"/tmp", ["a"]):
+        with pytest.raises(C.PackageRefused) as refused:
+            C.build_package(bad, [], SECTIONS, REGISTRIES, "план", tables=TABLES)
+        assert refused.value.reason == "некорректный_вход"
+    assert _build(str(root)).hash == _build(Path(root)).hash

@@ -1696,9 +1696,9 @@ ACCEPTANCE_PINS = {
     "БТ": "180756ee6304",
     "БК": "8c00dca467df",
     "Б1": "3986dec70100",
-    "Б2": "41b48bdcb612",
+    "Б2": "7733a36e8877",
     "БТ2": "5d702ef36ec0",
-    "БИ": "0f8aa9c0e853",
+    "БИ": "29434be6e3e6",
     "БУ": "70ae8b633cc0",
     "БА": "b9b744de6264",
     "Б15": "a8d864b664bc",
@@ -1732,9 +1732,9 @@ DECLARATION_PINS = {
     "БТ": "5298357c3d59",
     "БК": "856039134ef7",
     "Б1": "17da98f9ff42",
-    "Б2": "b0db61c1d929",
+    "Б2": "3e44a1c9dc9e",
     "БТ2": "fa2a9ea3d8e3",
-    "БИ": "3a92d09a972d",
+    "БИ": "86d72c212883",
     "БУ": "902f372b6c42",
     "БА": "b8b4637b2524",
     "Б15": "be76e85c2c91",
@@ -3394,10 +3394,10 @@ def test_a_permission_cannot_be_rewritten_in_place():
               for g in BLOCKS["разрешения_исполнения"]]
     digest = hashlib.sha256(
         json.dumps(grants, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-    # Круг 46: разрешение от 02.09 (реплика-жалоба, не «да») сознательно
-    # перенесено в историю и заменено явным «да» Антона от 04.10 — это и
-    # меняет слепок; запись перенесена целиком, а не переписана.
-    assert digest == "1fdc8aa49817e7cc3fa9c949d8c4d190c950930ff26417b5e1e1e7b0d5d41152", (
+    # 04.10 19:24: объём пакета и идеи расширен по явному «да» Антона; прежние
+    # разрешения на них (22.09 и 04.10 16:04) перенесены в историю целиком —
+    # это и меняет слепок.
+    assert digest == "0ab2c2430d1bcb474a544f5d25fba76eddf50c425ac752e0c7aa9aa2e3a5e2ff", (
         "выданное разрешение переписано: хеш объёма, список блоков или основание")
 
 
@@ -3529,7 +3529,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "79a571001ead5e50b1bb5aa3c6d0ad511d5ce080ea1f215ce015de67d2c25d8b", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "87090eb59704a962d4776fc6e833efcf68f693ae22550a48e03d2b193f3ff7f0", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

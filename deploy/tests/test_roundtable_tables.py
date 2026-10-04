@@ -658,7 +658,14 @@ PACKAGE_RULES = {
  '.claude',
  '.codex',
  'CLAUDE.md',
+ 'CLAUDE*.md',
  'AGENTS.md',
+ 'AGENTS*.md',
+ 'GEMINI*',
+ '.cursor*',
+ '.github',
+ '.gnupg',
+ 'codex-home',
  '.env',
  '.env.*',
  '.env*',
@@ -684,6 +691,18 @@ PACKAGE_RULES = {
  'settings.local.json',
  '*secret*',
  '*credential*',
+ '*password*',
+ '*passwd*',
+ '*apikey*',
+ '*api?key*',
+ 'creds*',
+ '*private*',
+ '*keystore*',
+ '*wallet*',
+ 'service-account*',
+ 'docker-compose*',
+ 'database.yml',
+ '*auth*.json',
  'token',
  'token.*',
  'tokens',
@@ -700,6 +719,18 @@ PACKAGE_RULES = {
  '*.jks',
  '*.tfstate*',
  '*.tfvars'],
+    'запрещённые_предки': ['.git',
+ '.claude',
+ '.codex',
+ '.cursor*',
+ '.github',
+ '.gnupg',
+ '.stc',
+ '.ssh',
+ '.aws',
+ '.docker',
+ '.kube',
+ 'codex-home'],
     'разрешённые_расширения': ['.md',
  '.txt',
  '.rst',
@@ -713,16 +744,42 @@ PACKAGE_RULES = {
  '.yml',
  '.json',
  '.toml'],
-    'признаки_секрета': ['-----BEGIN [A-Z ]*PRIVATE KEY-----',
- 'AKIA[0-9A-Z]{16}',
+    'признаки_секрета': ['-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----',
+ 'PuTTY-User-Key-File',
+ '(AKIA|ASIA)[0-9A-Z]{16}',
  'gh[pousr]_[A-Za-z0-9]{36,}',
- 'sk-ant-[A-Za-z0-9_-]{20,}',
- 'xox[baprs]-[A-Za-z0-9-]{10,}'],
-    'форматы_полей': {'text_hash': '[0-9a-f]{64}',
- 'decision_id': '[\\w.:-]{1,64}',
+ 'sk-[A-Za-z0-9_-]{20,}',
+ 'xox[baprs]-[A-Za-z0-9-]{10,}',
+ 'AIza[\\w-]{35}',
+ '\\d{8,10}:AA[\\w-]{33}',
+ '(npm|glpat|hf|github_pat|sk_live|xapp)[_-][\\w-]{16,}',
+ 'hooks\\.slack\\.com/services/',
+ 'AccountKey=',
+ '(?i)(password|passwd|secret|token|api[_-]?key|access[_-]?key|auth)\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]{6,}',
+ '://[^/\\s:@]+:[^/\\s@]+@',
+ 'Bearer\\s+[\\w.~+/-]{16,}',
+ 'eyJ[\\w-]{10,}\\.eyJ[\\w-]{10,}\\.',
+ '\\"(access|refresh|id)_token\\"\\s*:'],
+    'форматы_полей': {'decision_id': '[\\w.:-]{1,64}',
  'area_id': '[\\w.:-]{1,64}',
  'id': '[\\w.:-]{1,64}',
- 'якорь': '[\\s\\S]{1,200}'},
+ 'kind': '[\\w-]{1,32}',
+ 'status': '[\\w-]{1,32}',
+ 'text_hash': '[0-9a-f]{64}',
+ 'хеш_файла': '[0-9a-f]{64}',
+ 'хеш_редакции': '[0-9a-f]{64}',
+ 'хеш_вывода': '[0-9a-f]{64}',
+ 'тип': '[a-z_]{1,32}',
+ 'создатель': '[\\w]{1,32}',
+ 'время': '\\d{4}-\\d{2}-\\d{2}([T ]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?)?',
+ 'команда': '[\\s\\S]{1,200}',
+ 'якорь': '[\\s\\S]{1,200}',
+ 'путь': '[\\s\\S]{1,200}',
+ 'версия_инструмента': '[\\w.+-]{1,32}',
+ 'код_возврата': 'целое:-255..255',
+ 'диапазон_строк': 'пара_целых:0..10000000'},
+    'письменности_скелета': ['кириллица', 'латиница', 'цифры'],
+    'скрытые_имена': ['автор', 'второй_критик'],
     'разделы': ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения', 'предложенное_решение'],
     'предел_раздела_байт': 65536,
     'предел_числа_файлов': 64,
@@ -798,6 +855,12 @@ def test_deleting_what_the_package_reads_from_other_tables_is_a_named_error(tabl
     ("схемы_записей", [], "карта"), ("схемы_записей", {}, "нет "),
     ("отвергается", [], "пуст"), ("не_попадает", "x", "список"), ("реестры", [], "пуст"),
     ("виды_решений_в_реестре", [], "пуст"), ("канонизация", "", "строка"),
+    ("письменности_скелета", [], "пуст"), ("письменности_скелета", ["греческий"], "допустимы"),
+    ("письменности_скелета", "кириллица", "список"), ("письменности_скелета", ["цифры", "цифры"], "повтор"),
+    ("скрытые_имена", [], "пуст"), ("скрытые_имена", ["предложенное_решение_x"], "не входят"),
+    ("скрытые_имена", "автор", "список"),
+    ("запрещённые_предки", [], "пуст"), ("запрещённые_предки", ["a/b"], "компонента"),
+    ("запрещённые_предки", ["*"], "компонента"), ("запрещённые_предки", ".git", "список"),
 ])
 def test_an_invalid_package_rule_is_refused_with_a_reason(key, bad, why):
     module, raw = _package_variant(lambda package, _raw: package.__setitem__(key, bad))
@@ -834,9 +897,60 @@ def test_an_invalid_record_schema_is_refused_with_a_reason(part, bad, why):
         module.Tables.from_raw(raw).check()
 
 
-def test_an_empty_list_of_optional_journal_fields_is_valid():
+@pytest.mark.parametrize("spec,why", [
+    ("", "непустая строка"), (None, "непустая строка"), (5, "непустая строка"),
+    ("целое:5..1", "границы"), ("целое:a..b", "границы"), ("целое:1", "границы"), ("целое:", "границы"),
+    ("пара_целых:9..0", "границы"), ("пара_целых:0..", "границы"), ("(", "не компилируется"),
+])
+def test_a_malformed_field_format_is_refused_with_a_reason(spec, why):
     module, raw = _package_variant(
-        lambda package, _raw: package["схемы_записей"].__setitem__("журнал_необязательные", []))
+        lambda package, _raw: package["форматы_полей"].__setitem__("время", spec))
+    with pytest.raises(module.ContractError, match=why):
+        module.Tables.from_raw(raw).check()
+
+
+def test_field_formats_are_parsed_into_their_three_kinds():
+    module = import_tables_module()
+    assert module.parse_field_format("целое:-5..7", "x") == ("int", -5, 7)
+    assert module.parse_field_format("пара_целых:0..9", "x") == ("pair", 0, 9)
+    kind, compiled = module.parse_field_format("[0-9]{3}", "x")
+    assert kind == "regex" and compiled.fullmatch("123") and not compiled.fullmatch("12")
+
+
+def test_every_field_of_every_record_schema_has_a_format_and_no_format_is_orphaned():
+    package = _at(VOCAB, "пакет")
+    schemas = package.get("схемы_записей", {})
+    fields = (set(schemas.get("решения", [])) | set(schemas.get("области", []))
+              | set(schemas.get("журнал_общие", [])) | set(schemas.get("журнал_необязательные", []))
+              | {f for names in _at(VOCAB, "отпечаток").values() for f in names})
+    assert fields and set(package.get("форматы_полей", {})) == fields
+
+    def drop_one(package, _raw):
+        del package["форматы_полей"]["хеш_вывода"]
+    module, raw = _package_variant(drop_one)
+    with pytest.raises(module.ContractError, match="нет формата"):
+        module.Tables.from_raw(raw).check()
+
+    def orphan(package, _raw):
+        package["форматы_полей"]["лишнее_поле"] = "x"
+    module, raw = _package_variant(orphan)
+    with pytest.raises(module.ContractError, match="нет ни в одной схеме"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_hidden_names_are_a_subset_of_what_the_blind_question_hides():
+    stages_hidden = set(_at(STAGES, "слепой_вопрос", "прячем"))
+    names = set(_at(VOCAB, "пакет", "скрытые_имена"))
+    assert names and names <= stages_hidden
+    assert "предложенное_решение" in stages_hidden - names, "the proposal is found by windows, not stems"
+
+
+def test_an_empty_list_of_optional_journal_fields_is_valid():
+    def empty(package, _raw):
+        package["схемы_записей"]["журнал_необязательные"] = []
+        for field in ("id", "время"):  # their formats would be orphans
+            del package["форматы_полей"][field]
+    module, raw = _package_variant(empty)
     module.Tables.from_raw(raw).check()
 
 

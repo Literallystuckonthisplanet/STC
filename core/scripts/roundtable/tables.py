@@ -534,6 +534,28 @@ def _string_list(value, where: str) -> None:
             raise ContractError(f"{where}: элемент {item!r} — не непустая строка")
 
 
+SKELETON_SCRIPTS = ("кириллица", "латиница", "цифры")
+
+
+def parse_field_format(text, where: str):
+    """Формат поля записи: `целое:A..B`, `пара_целых:A..B` или регулярное выражение.
+
+    Возвращает ("int", low, high) / ("pair", low, high) / ("regex", compiled).
+    """
+    if not isinstance(text, str) or not text:
+        raise ContractError(f"{where}: формат — непустая строка")
+    for tag, kind in (("целое:", "int"), ("пара_целых:", "pair")):
+        if text.startswith(tag):
+            match = re.fullmatch(r"(-?\d{1,12})\.\.(-?\d{1,12})", text[len(tag):])
+            if not match or int(match.group(1)) > int(match.group(2)):
+                raise ContractError(f"{where}: {text!r} — границы A..B, A не больше B")
+            return kind, int(match.group(1)), int(match.group(2))
+    try:
+        return "regex", re.compile(text)
+    except re.error as error:
+        raise ContractError(f"{where}: {text!r} не компилируется — {error}")
+
+
 def _nonempty_string(value, where: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ContractError(f"{where}: ожидалась непустая строка")
@@ -606,6 +628,7 @@ SHAPES = {
                         "не_попадает", "реестры", "виды_решений_в_реестре", "канонизация",
                         "видимые_слепому_статусы_решений", "видимые_слепому_создатели",
                         "мин_длина_следа", "мин_длина_основы", "запрещённые_пути",
+                        "письменности_скелета", "скрытые_имена", "запрещённые_предки",
                         "разрешённые_расширения", "признаки_секрета", "разделы",
                         "предел_раздела_байт", "предел_числа_файлов",
                         форматы_полей=Mapping(TEXT),
@@ -1798,6 +1821,10 @@ class Tables:
             if "/" in pattern or pattern == "*":
                 raise ContractError(f"{where}.запрещённые_пути: шаблон {pattern!r} — "
                                     "это путь или «всё», а не имя компонента")
+        for pattern in names(need("запрещённые_предки"), f"{where}.запрещённые_предки"):
+            if "/" in pattern or pattern == "*":
+                raise ContractError(f"{where}.запрещённые_предки: шаблон {pattern!r} — "
+                                    "это путь или «всё», а не имя компонента")
         for suffix in names(need("разрешённые_расширения"), f"{where}.разрешённые_расширения"):
             if not suffix.startswith(".") or len(suffix) < 2 or suffix != suffix.lower() \
                     or "/" in suffix or "." in suffix[1:]:
@@ -1810,19 +1837,32 @@ class Tables:
         formats = need("форматы_полей")
         if not isinstance(formats, dict) or not formats:
             raise ContractError(f"{where}.форматы_полей: ожидалась непустая карта")
-        for field, pattern in formats.items():
-            try:
-                re.compile(pattern)
-            except (re.error, TypeError) as error:
-                raise ContractError(f"{where}.форматы_полей.{field}: {pattern!r} не компилируется — {error}")
-        for field in ("text_hash", "decision_id", "area_id"):
-            if field not in formats:
-                raise ContractError(f"{where}.форматы_полей: нет формата для {field}")
+        for field, text in formats.items():
+            parse_field_format(text, f"{where}.форматы_полей.{field}")
+        known_fields = (set(schemas["решения"]) | set(schemas["области"])
+                        | set(schemas["журнал_общие"]) | set(schemas["журнал_необязательные"])
+                        | fingerprint_fields)
+        if set(formats) - known_fields:
+            raise ContractError(
+                f"{where}.форматы_полей: форматы для полей, которых нет ни в одной схеме: "
+                f"{sorted(set(formats) - known_fields)}")
+        if known_fields - set(formats):
+            raise ContractError(
+                f"{where}.форматы_полей: у полей нет формата — нет и поля: "
+                f"{sorted(known_fields - set(formats))}")
+
+        scripts = names(need("письменности_скелета"), f"{where}.письменности_скелета")
+        if set(scripts) - set(SKELETON_SCRIPTS):
+            raise ContractError(f"{where}.письменности_скелета: допустимы {sorted(SKELETON_SCRIPTS)}")
 
         sections = names(need("разделы"), f"{where}.разделы")
         blind = fetch(self.stages, "слепой_вопрос")
         shown = names(fetch(blind, "показываем"), "stages.слепой_вопрос.показываем")
         hidden = names(fetch(blind, "прячем"), "stages.слепой_вопрос.прячем")
+        hidden_names = names(need("скрытые_имена"), f"{where}.скрытые_имена")
+        if not set(hidden_names) <= set(hidden):
+            raise ContractError(f"{where}.скрытые_имена: {sorted(set(hidden_names) - set(hidden))} "
+                                "не входят в stages.слепой_вопрос.прячем")
         outside = set(shown) - set(sections)
         if outside:
             raise ContractError(f"{where}.разделы: нет разделов слепого вопроса {sorted(outside)}")
@@ -2649,7 +2689,20 @@ NOT_HUMAN_FLAGS = ("isMeta", "isCompactSummary", "isVisibleInTranscriptOnly", "i
 PLAN_APPROVAL = "User has approved your plan"
 # Латинские двойники кириллицы — известный артефакт раскладки; «нe» с
 # латинской e не должно прятать отрицание.
-_HOMOGLYPHS = str.maketrans("aeopcyxkmtbhAEOPCYXKMTBH", "аеорсухкмтвнАЕОРСУХКМТВН")
+# Одна таблица на движок согласий и на пакет (скелет слепого пакета): латиница,
+# греческие и украинские двойники сворачиваются в кириллицу, а у букв без
+# кириллического двойника — в латиницу.
+_HOMOGLYPHS = str.maketrans({
+    **dict(zip("aeopcyxkmtbhAEOPCYXKMTBH", "аеорсухкмтвнАЕОРСУХКМТВН")),
+    # украинские и турецкие двойники латиницы
+    "і": "i", "І": "I", "ј": "j", "Ј": "J", "ѕ": "s", "Ѕ": "S", "ı": "i",
+    # греческие строчные
+    "ο": "о", "α": "а", "ε": "е", "ρ": "р", "τ": "т", "υ": "у", "κ": "к",
+    "ν": "v", "μ": "м", "χ": "х", "ι": "i",
+    # греческие прописные
+    "Ο": "О", "Α": "А", "Ε": "Е", "Ρ": "Р", "Τ": "Т", "Υ": "У", "Κ": "К",
+    "Ν": "N", "Μ": "М", "Χ": "Х", "Ι": "I", "Β": "В", "Η": "Н", "Ζ": "Z",
+})
 
 
 def _denylist(words: str) -> re.Pattern:

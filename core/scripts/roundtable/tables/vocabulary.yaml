@@ -120,15 +120,54 @@
   мин_длина_следа: 30
   мин_длина_основы: 4
   # Шаблоны: секреты, ключи, домашние каталоги инструментов. Сравнение по каждому компоненту пути после NFC и casefold.
-  запрещённые_пути: [".git", ".claude", ".codex", "CLAUDE.md", "AGENTS.md", ".env", ".env.*", ".env*", "*.env", "*.env.*", "*.pem*", "*.key*", ".stc", ".ssh", ".aws", ".docker", ".kube", ".npmrc", ".netrc", ".pypirc", ".pgpass", ".git-credentials", ".gitconfig", ".htpasswd", ".envrc", ".mcp.json", ".claude.json", "settings.local.json", "*secret*", "*credential*", "token", "token.*", "tokens", "tokens.*", "*_token", "*_token.*", "*.token", "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", "*.p12", "*.pfx", "*.jks", "*.tfstate*", "*.tfvars"]
+  запрещённые_пути: [".git", ".claude", ".codex", "CLAUDE.md", "CLAUDE*.md", "AGENTS.md", "AGENTS*.md", "GEMINI*", ".cursor*", ".github", ".gnupg", "codex-home", ".env", ".env.*", ".env*", "*.env", "*.env.*", "*.pem*", "*.key*", ".stc", ".ssh", ".aws", ".docker", ".kube", ".npmrc", ".netrc", ".pypirc", ".pgpass", ".git-credentials", ".gitconfig", ".htpasswd", ".envrc", ".mcp.json", ".claude.json", "settings.local.json", "*secret*", "*credential*", "*password*", "*passwd*", "*apikey*", "*api?key*", "creds*", "*private*", "*keystore*", "*wallet*", "service-account*", "docker-compose*", "database.yml", "*auth*.json", "token", "token.*", "tokens", "tokens.*", "*_token", "*_token.*", "*.token", "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", "*.p12", "*.pfx", "*.jks", "*.tfstate*", "*.tfvars"]
+  # Служебные каталоги ВЫШЕ корня сборки (и сам корень): имя компонента абсолютного пути.
+  # Узкий список: полный чёрный список режет системные префиксы вроде /private/var.
+  запрещённые_предки: [".git", ".claude", ".codex", ".cursor*", ".github", ".gnupg", ".stc", ".ssh", ".aws", ".docker", ".kube", "codex-home"]
   разрешённые_расширения: [".md", ".txt", ".rst", ".py", ".ts", ".tsx", ".js", ".sql", ".sh", ".yaml", ".yml", ".json", ".toml"]
-  признаки_секрета: ['-----BEGIN [A-Z ]*PRIVATE KEY-----', 'AKIA[0-9A-Z]{16}', 'gh[pousr]_[A-Za-z0-9]{36,}', 'sk-ant-[A-Za-z0-9_-]{20,}', 'xox[baprs]-[A-Za-z0-9-]{10,}']
+  # Общие правила (присваивание, URL с паролем, Bearer, JWT, PEM) и форматы известных ключей.
+  признаки_секрета:
+    - '-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----'
+    - 'PuTTY-User-Key-File'
+    - '(AKIA|ASIA)[0-9A-Z]{16}'
+    - 'gh[pousr]_[A-Za-z0-9]{36,}'
+    - 'sk-[A-Za-z0-9_-]{20,}'
+    - 'xox[baprs]-[A-Za-z0-9-]{10,}'
+    - 'AIza[\w-]{35}'
+    - '\d{8,10}:AA[\w-]{33}'
+    - '(npm|glpat|hf|github_pat|sk_live|xapp)[_-][\w-]{16,}'
+    - 'hooks\.slack\.com/services/'
+    - 'AccountKey='
+    - '(?i)(password|passwd|secret|token|api[_-]?key|access[_-]?key|auth)\s*[:=]\s*[''\"]?[^\s''\"]{6,}'
+    - '://[^/\s:@]+:[^/\s@]+@'
+    - 'Bearer\s+[\w.~+/-]{16,}'
+    - 'eyJ[\w-]{10,}\.eyJ[\w-]{10,}\.'
+    - '\"(access|refresh|id)_token\"\s*:'
+  # Формат у КАЖДОГО поля каждой схемы. «целое:A..B» — целое в границах, «пара_целых:A..B» —
+  # два упорядоченных целых; остальное — регулярное выражение для строки целиком.
   форматы_полей:
-    text_hash: '[0-9a-f]{64}'
     decision_id: '[\w.:-]{1,64}'
     area_id: '[\w.:-]{1,64}'
     id: '[\w.:-]{1,64}'
+    kind: '[\w-]{1,32}'
+    status: '[\w-]{1,32}'
+    text_hash: '[0-9a-f]{64}'
+    хеш_файла: '[0-9a-f]{64}'
+    хеш_редакции: '[0-9a-f]{64}'
+    хеш_вывода: '[0-9a-f]{64}'
+    тип: '[a-z_]{1,32}'
+    создатель: '[\w]{1,32}'
+    время: '\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?'
+    команда: '[\s\S]{1,200}'
     якорь: '[\s\S]{1,200}'
+    путь: '[\s\S]{1,200}'
+    версия_инструмента: '[\w.+-]{1,32}'
+    код_возврата: 'целое:-255..255'
+    диапазон_строк: 'пара_целых:0..10000000'
+  # Алфавит скелета: что допустимо в слепом пакете после сворачивания двойников.
+  письменности_скелета: [кириллица, латиница, цифры]
+  # Скрытые значения-имена: ищутся по основам слов, а не окнами.
+  скрытые_имена: [автор, второй_критик]
   разделы: [задача, ограничения, критерий_успеха, уже_закрытые_решения, предложенное_решение]
   предел_раздела_байт: 65536
   предел_числа_файлов: 64

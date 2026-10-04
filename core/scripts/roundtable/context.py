@@ -47,6 +47,7 @@ from __future__ import annotations
 import bisect
 import errno
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -288,8 +289,11 @@ def _read_by_descriptors(root: Path, relative: str, cap: int):
 
 
 def _looks_secret(text: str, limits: dict) -> str | None:
+    """A secret signature in the raw text or in the text with invisibles removed."""
+    stripped = "".join(ch for ch in unicodedata.normalize("NFKC", text)
+                       if unicodedata.category(ch) != "Cf")
     for pattern in limits["признаки_секрета"]:
-        if re.search(pattern, text):
+        if re.search(pattern, text) or re.search(pattern, stripped):
             return pattern
     return None
 
@@ -308,11 +312,18 @@ def read_file(root: Path, relative: str, file_class: str, tables):
     _check_path(root, relative)
     _policy(relative, limits)
     try:
-        inside_runs = (root / relative).resolve().is_relative_to(state_module.RUNS_ROOT.resolve())
+        absolute = (root / relative).resolve()
+        inside_runs = absolute.is_relative_to(state_module.RUNS_ROOT.resolve())
     except OSError:
-        inside_runs = False
+        raise PackageRefused("путь_вне_корня", relative)
     if inside_runs:
         raise PackageRefused("путь_запрещён", f"{relative}: внутри каталога прогонов")
+    # The same deny-list over the ABSOLUTE path: a service directory above the
+    # root (`~/.stc/...`, `.codex/...`) is as forbidden as one below it.
+    ancestors = absolute.parts[1:-len(PurePosixPath(relative).parts)]
+    banned = _forbidden("/".join(ancestors), limits["запрещённые_предки"]) if ancestors else None
+    if banned is not None:
+        raise PackageRefused("путь_запрещён", f"{relative}: служебный каталог выше корня — {banned}")
 
     data = _read_by_descriptors(root, relative, limits["предел_файла_байт"])
     if data is None:
@@ -471,23 +482,39 @@ def _validate_input(root, declared_files, sections, registries, stage):
 
 # -- registries ----------------------------------------------------------------
 
+@functools.lru_cache(maxsize=256)
+def _format(spec: str):
+    return tables_module.parse_field_format(spec, "формат поля")
+
+
+def _short(names) -> list:
+    """Field names for a message: foreign keys are cut, not echoed whole."""
+    return sorted((str(name)[:40] + ("…" if len(str(name)) > 40 else "")) for name in names)
+
+
 def _check_fields(record: dict, where: str, limits: dict) -> None:
-    """Every field of a record is a scalar of a known form -- no free channel."""
+    """Every field of a record has a format in the table and fits it."""
     formats = limits["форматы_полей"]
     for field, value in record.items():
         if not isinstance(field, str):
             raise PackageRefused("запись_вне_схемы", f"{where}: имя поля не строка")
         _encodable(field, f"{where}: имя поля")
-        if field == "диапазон_строк":
+        if field not in formats:
+            raise PackageRefused("запись_вне_схемы", f"{where}: у поля {_short([field])[0]} нет формата")
+        kind = _format(formats[field])
+        if kind[0] == "int":
+            good = (isinstance(value, int) and not isinstance(value, bool)
+                    and kind[1] <= value <= kind[2])
+        elif kind[0] == "pair":
             good = (isinstance(value, (list, tuple)) and len(value) == 2
-                    and all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in value)
+                    and all(isinstance(n, int) and not isinstance(n, bool)
+                            and kind[1] <= n <= kind[2] for n in value)
                     and value[0] <= value[1])
-        elif isinstance(value, str):
-            _encodable(value, f"{where}.{field}")
-            pattern = formats.get(field)
-            good = pattern is None or re.fullmatch(pattern, value) is not None
         else:
-            good = isinstance(value, int) and not isinstance(value, bool)
+            good = isinstance(value, str)
+            if good:
+                _encodable(value, f"{where}.{field}")
+                good = kind[1].fullmatch(value) is not None
         if not good:
             raise PackageRefused("запись_вне_схемы", f"{where}.{field}: недопустимое значение")
         if field == "путь":
@@ -511,7 +538,7 @@ def _registry_list(registries, name, fields, limits, key=None, optional=()):
             if missing or extra:
                 raise PackageRefused(
                     "запись_вне_схемы",
-                    f"{name}: нет {sorted(missing)}, лишние {sorted(extra, key=str)}")
+                    f"{name}: нет {_short(missing)}, лишние {_short(extra)}")
         _check_fields(item, name, limits)
     if key is not None:
         ids = [item[key] for item in items]
@@ -551,7 +578,7 @@ def _build_registries(registries, tables, blind: bool) -> dict:
         if missing or extra:
             raise PackageRefused(
                 "запись_вне_схемы",
-                f"журнал_доказательств: нет {sorted(missing)}, лишние {sorted(extra, key=str)}")
+                f"журнал_доказательств: нет {_short(missing)}, лишние {_short(extra)}")
         _check_fields(record, "журнал_доказательств", limits)
         check_creator(record, tables)
         journal.append({**record, "отпечаток": fingerprint(record, tables)})
@@ -578,12 +605,43 @@ def _build_registries(registries, tables, blind: bool) -> dict:
 
 # -- the trace of what is hidden -----------------------------------------------
 
-def _skeleton(text: str) -> str:
-    """Letters and digits only, with case, look-alikes, ё and invisibles folded."""
+_SCRIPT_TESTS = {
+    "кириллица": lambda ch: "а" <= ch <= "я",
+    "латиница": lambda ch: "a" <= ch <= "z",
+    "цифры": lambda ch: "0" <= ch <= "9",
+}
+
+
+def _skeleton_checked(text: str, scripts=None):
+    """`(skeleton, first_foreign_letter)`.
+
+    NFKD, marks off, NFKC, casefold, look-alikes folded (one table with the
+    consensus engine), digits of any script to ASCII; only letters and digits
+    stay. With `scripts` given, a letter outside those alphabets is reported
+    instead of being dropped silently.
+    """
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.category(ch).startswith("M"))
     text = unicodedata.normalize("NFKC", text).casefold()
-    text = unicodedata.normalize("NFKC", text)
-    text = text.translate(tables_module._HOMOGLYPHS).replace("ё", "е")
-    return "".join(ch for ch in text if unicodedata.category(ch)[0] in "LN")
+    text = unicodedata.normalize("NFKC", text).translate(tables_module._HOMOGLYPHS)
+    kept, foreign = [], None
+    for ch in text:
+        category = unicodedata.category(ch)
+        if category[0] not in "LN":
+            continue
+        if category[0] == "N":
+            digit = unicodedata.digit(ch, None)
+            if digit is not None:
+                ch = str(digit)
+        if scripts is not None and not any(_SCRIPT_TESTS[name](ch) for name in scripts):
+            foreign = foreign or ch
+            continue
+        kept.append(ch)
+    return "".join(kept), foreign
+
+
+def _skeleton(text: str) -> str:
+    return _skeleton_checked(text)[0]
 
 
 def _leaves(node, channel: str):
@@ -609,14 +667,16 @@ def _shown_leaves(sections: dict, normalised: dict, paths) -> list:
 
 
 def _stems(text: str, minimum: int) -> set:
-    """What a short hidden value leaves behind after declension or decoration."""
-    whole = _skeleton(text)
-    stems = {whole[:max(minimum, len(whole) - 2)]}
+    """Stems of a hidden NAME: every word, cut before its ending, never below `minimum`."""
+    stems = set()
     for token in re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", text)):
         word = _skeleton(token)
         if len(word) >= minimum:
             stems.add(word[:max(minimum, len(word) - 2)])
-    return {stem for stem in stems if len(stem) >= 2}
+    if not stems:
+        whole = _skeleton(text)
+        stems.add(whole[:max(minimum, len(whole) - 2)])
+    return stems
 
 
 def _check_secrets(leaves: list, limits: dict) -> None:
@@ -628,10 +688,24 @@ def _check_secrets(leaves: list, limits: dict) -> None:
 def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
     """Refuse a blind package in which anything hidden shows up.
 
-    The refusal names the channel and the hidden section, never the text.
+    The refusal names the channel and the hidden section, never the text. A
+    letter outside the alphabets of the table is refused too, not skipped: a
+    silent drop is exactly what a look-alike letter would hide behind.
     """
     window, minimum = limits["мин_длина_следа"], limits["мин_длина_основы"]
-    digests = {digest(text.encode("utf-8")): name for name, text in hidden.items()}
+    scripts, names = limits["письменности_скелета"], set(limits["скрытые_имена"])
+    skeletons = []
+    for channel, text, is_key in leaves:
+        skeleton, foreign = _skeleton_checked(text, scripts)
+        if foreign is not None:
+            raise PackageRefused("посторонняя_письменность", f"{channel}: U+{ord(foreign):04X}")
+        skeletons.append((channel, skeleton, is_key))
+
+    # A hash of a hidden text -- of the raw text or of its skeleton -- is a trace.
+    digests = {}
+    for name, text in hidden.items():
+        digests[digest(text.encode("utf-8"))] = name
+        digests[digest(_skeleton(text).encode("utf-8"))] = name
     for channel, text, _ in leaves:
         name = digests.get(text.strip().lower())
         if name is not None:
@@ -640,31 +714,34 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
 
     # Two streams: everything (keys too), and values only -- so that keys of a
     # record standing between two glued pieces cannot break the join.
-    for stream in (leaves, [leaf for leaf in leaves if not leaf[2]]):
-        pieces = [(channel, _skeleton(text)) for channel, text, _ in stream]
-        joined = "".join(skeleton for _, skeleton in pieces)
+    for stream in (skeletons, [piece for piece in skeletons if not piece[2]]):
+        joined = "".join(skeleton for _, skeleton, _ in stream)
         starts, position = [], 0
-        for _, skeleton in pieces:
+        for _, skeleton, _ in stream:
             starts.append(position)
             position += len(skeleton)
 
-        def channel_at(index: int) -> str:
-            return pieces[max(bisect.bisect_right(starts, index) - 1, 0)][0]
+        def channel_at(index: int, stream=stream, starts=starts) -> str:
+            return stream[max(bisect.bisect_right(starts, index) - 1, 0)][0]
 
         for name, text in hidden.items():
             skeleton = _skeleton(text)
-            if len(skeleton) >= window:
+            if name in names:
+                needles = _stems(text, minimum)
+            elif len(skeleton) >= window:
                 grams = {skeleton[i:i + window] for i in range(len(skeleton) - window + 1)}
                 for index in range(len(joined) - window + 1):
                     if joined[index:index + window] in grams:
                         raise PackageRefused("слепой_пакет_след_скрытого",
                                              f"{channel_at(index)}: след скрытого раздела {name}")
+                continue
             else:
-                for stem in _stems(text, minimum):
-                    index = joined.find(stem)
-                    if index >= 0:
-                        raise PackageRefused("слепой_пакет_след_скрытого",
-                                             f"{channel_at(index)}: след скрытого раздела {name}")
+                needles = {skeleton}
+            for needle in needles:
+                index = joined.find(needle)
+                if index >= 0:
+                    raise PackageRefused("слепой_пакет_след_скрытого",
+                                         f"{channel_at(index)}: след скрытого раздела {name}")
 
 
 # -- the build, in stages --------------------------------------------------------
@@ -691,8 +768,8 @@ def _check_blind(tables, stage, blind, declared_files, sections, withheld):
     cap = tables.vocabulary["пакет"]["предел_раздела_байт"]
     for name, text in withheld.items():
         _encodable(text, f"скрытый {name}")
-        if len(_skeleton(text)) < 2:
-            raise _bad(f"скрытый {name} пуст: сравнивать нечего")
+        if len(_skeleton(text)) < tables.vocabulary["пакет"]["мин_длина_основы"]:
+            raise _bad(f"скрытый {name} короче основы: сравнивать нечего")
         if len(text.encode("utf-8")) > cap:
             raise PackageRefused("превышение_размера", f"скрытый {name}")
     return dict(withheld)
@@ -756,6 +833,15 @@ def build_package(root, declared_files, sections, registries, stage,
         inside_runs = False
     if inside_runs:
         raise PackageRefused("путь_запрещён", "корень сборки внутри каталога прогонов")
+
+    try:
+        home = Path.home().resolve()
+        resolved_root = root.resolve()
+    except (OSError, RuntimeError):
+        raise PackageRefused("файл_нечитаем", "корень не разрешается")
+    if resolved_root == home or (resolved_root.is_relative_to(home)
+                                 and resolved_root.relative_to(home).parts[0].startswith(".")):
+        raise PackageRefused("путь_запрещён", "корень сборки — домашний каталог или скрытый каталог в нём")
 
     forbidden = set(limits["не_попадает"]) & set(sections)
     if forbidden:

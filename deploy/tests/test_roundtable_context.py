@@ -241,11 +241,11 @@ def test_a_decision_of_an_unknown_kind_is_refused(root):
 # evidence fingerprints (§6.1, round 10)
 # --------------------------------------------------------------------------
 
-SPAN = {"тип": "source_span", "создатель": "критик", "хеш_файла": "f" * 8,
+SPAN = {"тип": "source_span", "создатель": "критик", "хеш_файла": "f" * 64,
         "путь": "docs/plan.md", "якорь": "ref:budget", "диапазон_строк": [10, 20]}
 COMMAND = {"тип": "command_run", "создатель": "автор", "команда": "pytest -q",
-           "версия_инструмента": "8.0", "хеш_редакции": "e" * 8,
-           "код_возврата": 0, "хеш_вывода": "d" * 8}
+           "версия_инструмента": "8.0", "хеш_редакции": "e" * 64,
+           "код_возврата": 0, "хеш_вывода": "d" * 64}
 
 
 def test_the_fingerprint_ignores_the_identifier_and_the_time(root):
@@ -749,7 +749,7 @@ def test_b2_7_an_area_with_an_extra_or_missing_field_is_refused(root):
 
 
 def test_b2_7_journal_records_need_the_common_and_the_fingerprint_fields(root):
-    ok = _build(root, registries=_with(журнал_доказательств=[{**SPAN, "id": "EV-1", "время": "t"}]))
+    ok = _build(root, registries=_with(журнал_доказательств=[{**SPAN, "id": "EV-1", "время": "2026-08-13T10:00:00Z"}]))
     assert len(ok.registries["журнал_доказательств"]) == 1
     for field_name in SPAN:
         broken = {k: v for k, v in SPAN.items() if k != field_name}
@@ -760,13 +760,17 @@ def test_b2_7_journal_records_need_the_common_and_the_fingerprint_fields(root):
 
 def test_b2_7_the_schema_is_read_from_the_table_not_from_the_module(tmp_path, root):
     schemas = dict(TABLES.vocabulary["пакет"]["схемы_записей"])
-    wider = _tables_with(tmp_path, схемы_записей={**schemas, "области": ["area_id", "title"]})
+    formats = dict(TABLES.vocabulary["пакет"]["форматы_полей"])
+    wider = _tables_with(tmp_path, схемы_записей={**schemas, "области": ["area_id", "title"]},
+                         форматы_полей={**formats, "title": "[\\w ]{1,20}"})
     assert _reason(root, None, registries=_with(области=[{"area_id": "A-1"}]),
                    tables=wider) == "запись_вне_схемы"
     ok = _build(root, registries=_with(области=[{"area_id": "A-1", "title": "t"}]), tables=wider)
     assert ok.registries["области"] == [{"area_id": "A-1", "title": "t"}]
-    optional = _tables_with(tmp_path / "b", схемы_записей={**schemas, "журнал_необязательные": ["id"]})
-    assert _reason(root, None, registries=_with(журнал_доказательств=[{**SPAN, "время": "t"}]),
+    without_time = {k: v for k, v in formats.items() if k != "время"}
+    optional = _tables_with(tmp_path / "b", схемы_записей={**schemas, "журнал_необязательные": ["id"]},
+                            форматы_полей=without_time)
+    assert _reason(root, None, registries=_with(журнал_доказательств=[{**SPAN, "время": "2026-08-13T10:00:00Z"}]),
                    tables=optional) == "запись_вне_схемы"
 
 
@@ -831,8 +835,8 @@ def test_b2_8_a_trace_is_found_in_every_channel_and_the_refusal_names_it(root, c
         registries = _with(BLIND_REGISTRIES, журнал_доказательств=[{**PRE, "якорь": anchor}])
     elif channel == "command":
         command = {"тип": "command_run", "создатель": "предпроверка", "команда": SOLUTION,
-                   "версия_инструмента": "1", "хеш_редакции": "e" * 8, "код_возврата": 0,
-                   "хеш_вывода": "d" * 8}
+                   "версия_инструмента": "1", "хеш_редакции": "e" * 64, "код_возврата": 0,
+                   "хеш_вывода": "d" * 64}
         registries = _with(BLIND_REGISTRIES, журнал_доказательств=[command])
     else:
         registries = _with(BLIND_REGISTRIES,
@@ -1240,7 +1244,8 @@ def test_d14_other_values_are_scalars_never_containers(root):
     for bad in ({"a": 1}, [1], None, True, 1.5, object()):
         record = {**SPAN, "время": bad}
         assert _reason(root, None, registries=_with(журнал_доказательств=[record])) == "запись_вне_схемы", bad
-    assert _build(root, registries=_with(журнал_доказательств=[{**SPAN, "время": 5}])).hash
+    assert _reason(root, None, registries=_with(журнал_доказательств=[{**SPAN, "время": 5}])) == "запись_вне_схемы"
+    assert _build(root, registries=_with(журнал_доказательств=[{**SPAN, "время": "2026-08-13"}])).hash
 
 
 def test_d14_the_path_of_a_journal_record_passes_the_same_rules_as_a_declared_file(root):
@@ -1415,6 +1420,7 @@ def test_f_the_code_reads_the_section_names_from_the_table(tmp_path, root):
 def test_f_the_code_reads_the_decision_schema_from_the_table(tmp_path, root):
     def drop_status_hash(package):
         package["схемы_записей"]["решения"] = ["decision_id", "kind", "status"]
+        del package["форматы_полей"]["text_hash"]
     lean = _tables_edit(tmp_path, drop_status_hash)
     lean_decision = {"decision_id": "D-1", "kind": "framing", "status": "x"}
     assert _build(root, registries=_with(решения=[lean_decision]), tables=lean).hash
@@ -1425,6 +1431,7 @@ def test_f_the_code_reads_the_decision_schema_from_the_table(tmp_path, root):
 def test_f_the_code_reads_the_common_journal_fields_from_the_table(tmp_path, root):
     def add_common(package):
         package["схемы_записей"]["журнал_общие"].append("версия")
+        package["форматы_полей"]["версия"] = "целое:0..9"
     wider = _tables_edit(tmp_path, add_common)
     record = {**SPAN, "версия": 2}
     assert _build(root, registries=_with(журнал_доказательств=[record]), tables=wider).hash
@@ -1489,3 +1496,333 @@ def test_f_the_size_is_settled_before_the_trace_search(tmp_path, root, monkeypat
         C.build_package(root, [], PLAIN, BLIND_REGISTRIES, "идея", blind=True, tables=small,
                         withheld=WITHHELD)
     assert refused.value.reason == "превышение_размера" and not called
+
+
+# --------------------------------------------------------------------------
+# round 5: classes, not cases -- the closed alphabet, names, absolute paths,
+# the general secret rule, a format for every field
+# --------------------------------------------------------------------------
+
+def _shown(root, text, hidden=None, tables=TABLES, key=None):
+    sections = {**PLAIN, SHOWN[0]: text}
+    return C.build_package(root, [], sections, BLIND_REGISTRIES, "идея", blind=True, tables=tables,
+                           withheld={**WITHHELD, **(hidden or {})})
+
+
+def _foreign(root, text, hidden=None, tables=TABLES):
+    with pytest.raises(C.PackageRefused) as refused:
+        _shown(root, text, hidden, tables)
+    assert refused.value.reason == "посторонняя_письменность", refused.value
+    assert refused.value.detail.startswith("раздел.")
+    assert text not in refused.value.detail
+    return refused.value
+
+
+# -- 1. the closed alphabet of the skeleton -------------------------------------
+
+@pytest.mark.parametrize("foreign", [
+    "σ", "λ", "ω",          # Greek letters that look like nothing in the table
+    "օ", "ս", "ա",          # Armenian
+    "\u3164", "\uffa0", "\u1160",          # Hangul fillers
+    "\u02b9", "\u02bb", "\u02c6",          # modifier letters without a Latin form
+    "中", "あ", "א", "ا"])  # CJK, kana, Hebrew, Arabic
+def test_r5_1_a_letter_outside_the_alphabet_is_refused_not_dropped(root, foreign):
+    _foreign(root, f"Лун{foreign}тик решил")
+    _foreign(root, f"обычный текст {foreign}")
+
+
+def test_r5_1_foreign_letters_are_fine_outside_the_blind_mode(root):
+    assert _build(root, sections={**SECTIONS, "задача": "中文 \u3164 σ"}).hash
+
+
+@pytest.mark.parametrize("disguised", [
+    "Лунτик", "Λунтик".replace("Λ", "Л"), "Луntик".replace("n", "н"), "Лунтiк", "Лунтіk", "Лунтıк",
+    "Лунтиќ", "Лу́нтик", "ЛУНТИК", "лунтик", "Л\u200bу\u200dнтик"])
+def test_r5_1_look_alikes_accents_and_case_fold_into_the_same_skeleton(root, disguised):
+    with pytest.raises(C.PackageRefused) as refused:
+        _shown(root, f"решил {disguised}")
+    assert refused.value.reason == "слепой_пакет_след_скрытого", disguised
+
+
+def test_r5_1_an_accent_on_a_latin_letter_does_not_hide_a_name(root):
+    hidden = {"автор": "Rene Dupont"}
+    for shown in ("by Réné Dupont", "RENE", "René"):
+        with pytest.raises(C.PackageRefused) as refused:
+            _shown(root, shown, hidden)
+        assert refused.value.reason == "слепой_пакет_след_скрытого", shown
+
+
+def test_r5_1_digits_of_any_script_fold_to_ascii(root):
+    hidden = {"автор": "Агент 7007"}
+    for shown in ("номер ٧٠٠٧", "номер \u096d\u0966\u0966\u096d",
+                  "номер ７００７", "номер 7007"):
+        with pytest.raises(C.PackageRefused) as refused:
+            _shown(root, shown, hidden)
+        assert refused.value.reason == "слепой_пакет_след_скрытого", shown
+
+
+def test_r5_1_legitimate_mixed_text_passes(root):
+    assert _shown(root, "Выгрузка для café: 2024, кафе №5 — OK; naïve résumé").hash
+
+
+def test_r5_1_the_alphabets_are_read_from_the_table(tmp_path, root):
+    no_latin = _tables_edit(tmp_path, lambda p: p.update(письменности_скелета=["кириллица", "цифры"]))
+    _foreign(root, "обычный latin text", tables=no_latin)
+    assert _shown(root, "обычный текст 2024").hash
+    only_cyrillic = _tables_edit(tmp_path / "b", lambda p: p.update(письменности_скелета=["кириллица"]))
+    _foreign(root, "версия 2024", tables=only_cyrillic)
+
+
+# -- 2. names: always stems, never windows -------------------------------------
+
+LONG_SIGNATURE = "Иван Петров, ведущий архитектор платформенного направления, компания Ромашка"
+
+
+@pytest.mark.parametrize("shown", ["письмо Ивану", "согласовал Петрова", "ПЕТРОВУ",
+                                   "ИванПетров", "архитектором платформы".replace("архитектором платформы", "Ромашке")])
+def test_r5_2_a_long_signature_is_found_by_the_stems_of_its_words(root, shown):
+    with pytest.raises(C.PackageRefused) as refused:
+        _shown(root, shown, {"автор": LONG_SIGNATURE})
+    assert refused.value.reason == "слепой_пакет_след_скрытого", shown
+
+
+def test_r5_2_windows_belong_to_the_proposal_only(tmp_path, root):
+    # the proposal is found by a window, not by one word of it
+    proposal = {"предложенное_решение": "Построить сервис выгрузки на очереди сообщений и воркерах"}
+    assert _shown(root, "очередь", proposal).hash
+    with pytest.raises(C.PackageRefused):
+        _shown(root, "построитьсервисвыгрузкинаочередисообщений", proposal)
+    # which hidden values are names is a rule of the table: "Игорь" is found in
+    # "Игоря" by its stem; as a plain text the whole word is not a part of it
+    hidden = {"автор": "Игорь"}
+    with pytest.raises(C.PackageRefused):
+        _shown(root, "решил Игоря", hidden)
+    only_critic = _tables_edit(tmp_path, lambda p: p.update(скрытые_имена=["второй_критик"]))
+    assert _shown(root, "решил Игоря", hidden, tables=only_critic).hash
+
+
+def test_r5_1_modifier_letters_with_a_latin_form_fold_instead_of_hiding(root):
+    for shown in ("Лунтик", "решил ᴸунтик".replace("ᴸ", "Л")):
+        with pytest.raises(C.PackageRefused):
+            _shown(root, shown)
+    with pytest.raises(C.PackageRefused) as refused:
+        _shown(root, "ʰello world", {"автор": "Hello"})
+    assert refused.value.reason == "слепой_пакет_след_скрытого"
+
+
+@pytest.mark.parametrize("short", ["Ли", "Лун", "Ab", "7", "!!!", "", "  ", "\u200b"])
+def test_r5_2_a_hidden_value_shorter_than_a_stem_is_refused_as_input(root, short):
+    for name in HIDDEN:
+        with pytest.raises(C.PackageRefused) as refused:
+            _blind(root, withheld={**WITHHELD, name: short})
+        assert refused.value.reason == "некорректный_вход", (name, short)
+
+
+def test_r5_2_a_hidden_value_of_exactly_the_stem_length_is_accepted(root):
+    assert _blind(root, withheld={**WITHHELD, "автор": "Лунт"}).hash
+
+
+# -- 3. paths: the absolute check and the project only --------------------------
+
+@pytest.mark.parametrize("service", [".stc", ".codex", ".claude", ".ssh", ".aws", ".git", ".cursor-x",
+                                     "codex-home", ".gnupg", ".github", ".kube", ".docker"])
+def test_r5_3_a_service_directory_above_the_root_is_refused(tmp_path, service):
+    project = tmp_path / service / "roundtable" / "project"
+    (project / "docs").mkdir(parents=True)
+    (project / "docs" / "auth-notes.md").write_text("текст", encoding="utf-8")
+    with pytest.raises(C.PackageRefused) as refused:
+        _build(project, files=[("docs/auth-notes.md", "existing_evidence")])
+    assert refused.value.reason == "путь_запрещён"
+    assert "выше корня" in refused.value.detail
+
+
+def test_r5_3_the_ancestor_list_is_read_from_the_table(tmp_path):
+    project = tmp_path / "ancestor-x" / "project"
+    (project / "docs").mkdir(parents=True)
+    (project / "docs" / "plan.md").write_text("текст", encoding="utf-8")
+    assert _build(project).hash
+    stricter = _tables_edit(tmp_path / "t", lambda p: p["запрещённые_предки"].append("ancestor-x"))
+    assert _reason(project, None, tables=stricter) == "путь_запрещён"
+
+
+def test_r5_3_the_home_directory_and_its_hidden_directories_are_not_a_build_root(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "Work" / "p" / "docs").mkdir(parents=True)
+    (home / ".config" / "p" / "docs").mkdir(parents=True)
+    for place in (home / "Work" / "p", home / ".config" / "p"):
+        (place / "docs" / "plan.md").write_text("текст", encoding="utf-8")
+    (home / "docs").mkdir()
+    (home / "docs" / "plan.md").write_text("текст", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    assert _build(home / "Work" / "p").hash
+    assert _reason(home, None) == "путь_запрещён"
+    assert _reason(home / ".config" / "p", None) == "путь_запрещён"
+
+
+@pytest.mark.parametrize("path", [
+    "CLAUDE.local.md", "AGENTS.override.md", "GEMINI.md", "GEMINI-notes.txt", ".cursor/rules.md",
+    ".cursorrules", ".github/workflows.yml", ".gnupg/x.md", "codex-home/auth.json", "docs/auth.json",
+    "docs/oauth_tokens.json".replace("oauth_tokens", "my-auth"), "docs/password.txt", "docs/passwords.md",
+    "docs/passwd.txt", "docs/apikey.txt", "docs/api_key.md", "docs/api-key.md", "docs/creds.txt",
+    "docs/credsfile.md", "docs/private.md", "docs/private_notes.md", "docs/keystore.json",
+    "docs/wallet.json", "docs/service-account.json", "docs/service-account-prod.yaml",
+    "docs/docker-compose.yml", "docs/docker-compose.prod.yaml", "config/database.yml"])
+def test_r5_3_the_deny_list_classes(root, path):
+    _write(root, path)
+    assert _reason(root, [(path, "existing_evidence")]) == "путь_запрещён"
+
+
+@pytest.mark.parametrize("path", ["README.md", "docs/plan.md", "docs/author.md", "docs/authors.txt",
+                                  "docs/privacy.md", "docs/primary.md", "docs/credit.md",
+                                  "docs/passport.md", "docs/walk.md", "docs/key-points.md",
+                                  "docs/compose.md", "docs/database.md", "docs/auth.md"])
+def test_r5_3_legitimate_names_stay_allowed(root, path):
+    # DECIDED: `*auth*.json` keeps author.md, auth.md, authors.txt (only .json is cut);
+    # `*private*` keeps privacy.md; `creds*` keeps credit.md.
+    _write(root, path)
+    assert path in _build(root, files=[(path, "existing_evidence")]).files
+
+
+# -- 4. secrets: the general rule and normalisation ------------------------------
+
+def _secrets():
+    zero = "\u200b"
+    return {
+        "aws": "AK" + "IA" + "ABCDEFGHIJKLMNOP",
+        "aws-temp": "AS" + "IA" + "ABCDEFGHIJKLMNOP",
+        "github": "gh" + "p_" + "A" * 36,
+        "github-pat": "github" + "_pat_" + "a" * 20,
+        "openai": "s" + "k-" + "a" * 24,
+        "anthropic": "s" + "k-ant-" + "a" * 24,
+        "slack": "xo" + "xb-" + "1" * 12,
+        "slack-app": "xa" + "pp-" + "1" * 20,
+        "slack-hook": "hooks." + "slack.com/services/T0/B0/x",
+        "google": "AI" + "za" + "a" * 35,
+        "telegram": "123456789" + ":A" + "A" + "a" * 33,
+        "npm": "np" + "m_" + "a" * 20,
+        "gitlab": "gl" + "pat-" + "a" * 20,
+        "hugging-face": "h" + "f_" + "a" * 20,
+        "stripe": "sk" + "_live_" + "a" * 20,
+        "azure": "Account" + "Key=" + "abc",
+        "pem": "-----BEG" + "IN RSA PRIV" + "ATE KEY-----",
+        "pem-block": "-----BEG" + "IN ENCRYPTED PRIV" + "ATE KEY-----",
+        "pem-block2": "-----BEG" + "IN PRIVATE KEY BLOCK-----",
+        "putty": "PuTTY-User" + "-Key-File-2: ssh-rsa",
+        "assignment": "pass" + "word = hunter2hunter2",
+        "assignment-colon": "API_" + "KEY: abcdef123456",
+        "assignment-quoted": "to" + "ken = \"abcdef123456\"",
+        "assignment-access": "access" + "_key=abcdef123456",
+        "url-with-password": "https://user:" + "pw12345@example.org/path",
+        "bearer": "Bearer " + "a" * 24,
+        "jwt": "ey" + "J" + "a" * 12 + ".ey" + "J" + "b" * 12 + ".sig",
+        "json-token": '"access' + '_token": "x"',
+        "json-refresh": '"refresh' + '_token":',
+        "split-by-invisible": "AK" + zero + "IA" + "ABCDEFGHIJKLMNOP",
+        "split-by-invisible-assignment": "pass" + zero + "word = hunter2hunter2",
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_secrets()))
+@pytest.mark.parametrize("where", ["file", "section", "registry"])
+def test_r5_4_every_secret_class_is_caught_wherever_it_is(root, name, where):
+    text = _secrets()[name]
+    files, sections, registries = None, SECTIONS, REGISTRIES
+    if where == "file":
+        _write(root, "docs/leak.md", f"заметка\n{text}\nконец")
+        files = [("docs/leak.md", "existing_evidence")]
+    elif where == "section":
+        sections = {**SECTIONS, "задача": f"делаем {text} вот"}
+    else:
+        registries = _with(журнал_доказательств=[{**SPAN, "якорь": text}])
+    assert _reason(root, files, sections=sections, registries=registries) == "похоже_на_секрет"
+
+
+@pytest.mark.parametrize("text", [
+    "Автор: Иван, пароль не хранится", "author: Иван Петров", "tokenizer разбивает текст на токены",
+    "секрет успеха — в простоте", "https://example.org/page?x=1", "key points: три пункта",
+    "AKIA и ghp_ — только префиксы", "Bearer — предъявитель", "auth - краткое от authentication",
+    "см. раздел 'passwords' ниже", "ссылка: http://localhost:8080/a@b не содержит пароля"])
+def test_r5_4_ordinary_prose_is_not_taken_for_a_secret(root, text):
+    _write(root, "docs/ok.md", text)
+    assert _build(root, files=[("docs/ok.md", "existing_evidence")],
+                  sections={**SECTIONS, "задача": text}).files
+
+
+# -- 5. every field has a format --------------------------------------------------
+
+HEX = "a" * 64
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("хеш_файла", "f" * 8), ("хеш_файла", "F" * 64), ("хеш_файла", "g" * 64), ("хеш_файла", "f" * 65),
+    ("путь", ""), ("путь", "a" * 201 + ".md"), ("якорь", ""), ("якорь", "я" * 201),
+    ("диапазон_строк", [1, 10 ** 8]), pytest.param("диапазон_строк", [10 ** 5000, 10 ** 5001], id="huge-range"),
+    ("диапазон_строк", [5, 1]), ("диапазон_строк", (1, 2, 3)),
+    ("id", ""), ("id", "x" * 65), ("id", "a b"), ("id", "a/b"),
+    ("время", "вчера"), ("время", "2026-13"), ("время", "2026-08-13T25"), ("время", 20260813),
+    ("создатель", "a b"), ("создатель", ""), ("создатель", ["критик"]),
+])
+def test_r5_5_a_span_field_outside_its_format_is_refused(root, field, bad):
+    record = {**SPAN, field: bad}
+    assert _reason(root, None, registries=_with(журнал_доказательств=[record])) == "запись_вне_схемы", field
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("команда", ""), ("команда", "x" * 201), ("версия_инструмента", ""),
+    ("версия_инструмента", "1 2"), ("версия_инструмента", "v" * 33),
+    ("хеш_редакции", "e" * 63), ("хеш_вывода", "Z" * 64),
+    ("код_возврата", 1.0), ("код_возврата", True), ("код_возврата", "0"), ("код_возврата", 256),
+    ("код_возврата", -256), pytest.param("код_возврата", 10 ** 5000, id="huge-code"), ("код_возврата", None),
+])
+def test_r5_5_a_command_field_outside_its_format_is_refused(root, field, bad):
+    record = {**COMMAND, "создатель": "автор", field: bad}
+    assert _reason(root, None, registries=_with(журнал_доказательств=[record])) == "запись_вне_схемы", field
+
+
+def test_r5_5_values_at_the_edge_of_their_formats_pass(root):
+    span = {**SPAN, "якорь": "я" * 200, "диапазон_строк": [0, 10_000_000], "id": "x" * 64,
+            "время": "2026-08-13"}
+    command = {**COMMAND, "команда": "x" * 200, "версия_инструмента": "v" * 32, "код_возврата": -255}
+    other = {**COMMAND, "команда": "y", "код_возврата": 255}
+    assert _build(root, registries=_with(журнал_доказательств=[span, command, other])).hash
+    for stamp in ("2026-08-13T10:11", "2026-08-13 10:11:12", "2026-08-13T10:11:12.5Z",
+                  "2026-08-13T10:11:12+03:00", "2026-08-13T10:11:12-0300"):
+        assert _build(root, registries=_with(журнал_доказательств=[{**SPAN, "время": stamp}])).hash
+
+
+def test_r5_5_decision_and_area_fields_have_formats_too(root):
+    for bad in (_decision(kind="closed decision"), _decision(status=""), _decision(status="x" * 33),
+                _decision(kind="k" * 33)):
+        assert _reason(root, None, registries=_with(решения=[bad])) == "запись_вне_схемы"
+
+
+def test_r5_5_a_foreign_key_is_not_echoed_whole_in_the_refusal(root):
+    long_key = "k" * 100
+    with pytest.raises(C.PackageRefused) as refused:
+        _build(root, registries=_with(области=[{"area_id": "A-1", long_key: 1}]))
+    assert refused.value.reason == "запись_вне_схемы"
+    assert long_key not in refused.value.detail and "k" * 41 not in refused.value.detail
+
+
+def test_r5_5_the_hash_of_the_hidden_text_is_a_trace_raw_or_skeleton(root):
+    for text in (SOLUTION, SOLUTION.upper()):
+        digest_of_raw = C.digest(SOLUTION.encode("utf-8"))
+        digest_of_skeleton = C.digest(C._skeleton(SOLUTION).encode("utf-8"))
+        for known in (digest_of_raw, digest_of_skeleton):
+            registries = _with(BLIND_REGISTRIES, решения=[_decision(text_hash=known)])
+            error = _traced(root, registries=registries)
+            assert "хеш" in error.detail
+        break
+
+
+def test_r5_5_the_code_reads_the_integer_formats_from_the_table(tmp_path, root):
+    tight = _tables_edit(tmp_path, lambda p: p["форматы_полей"].update(код_возврата="целое:0..0"))
+    zero = {**COMMAND, "код_возврата": 0}
+    one = {**COMMAND, "код_возврата": 1}
+    assert _build(root, registries=_with(журнал_доказательств=[zero]), tables=tight).hash
+    assert _reason(root, None, registries=_with(журнал_доказательств=[one]),
+                   tables=tight) == "запись_вне_схемы"
+    assert _build(root, registries=_with(журнал_доказательств=[one])).hash
+    pair = _tables_edit(tmp_path / "b", lambda p: p["форматы_полей"].update(диапазон_строк="пара_целых:1..5"))
+    assert _reason(root, None, registries=_with(журнал_доказательств=[{**SPAN, "диапазон_строк": [1, 10]}]),
+                   tables=pair) == "запись_вне_схемы"

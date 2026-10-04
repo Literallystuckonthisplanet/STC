@@ -46,7 +46,8 @@ def _blocks(raw):
 
 
 def _grant(raw):
-    return raw["blocks"]["разрешения_исполнения"][0]
+    # Разрешение, покрывающее Б1: с круга 46 оно не первое в списке.
+    return next(g for g in raw["blocks"]["разрешения_исполнения"] if "Б1" in g["блоки"])
 
 
 def _absorb(raw, keep_text: bool):

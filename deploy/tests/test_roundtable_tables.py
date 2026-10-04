@@ -787,25 +787,28 @@ def test_a_missing_scope_hash_is_not_a_wildcard():
     # permission back into a permission by name.
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
-    grant = raw["blocks"]["разрешения_исполнения"][0]
+    # разрешение, покрывающее Б1 (с круга 46 оно не первое в списке)
+    at = next(i for i, g in enumerate(raw["blocks"]["разрешения_исполнения"])
+              if "Б1" in g["блоки"])
+    grant = raw["blocks"]["разрешения_исполнения"][at]
 
     without = copy.deepcopy(raw)
-    del without["blocks"]["разрешения_исполнения"][0]["scope_sha256"]
+    del without["blocks"]["разрешения_исполнения"][at]["scope_sha256"]
     with pytest.raises(module.ContractError, match="scope_sha256"):
         module.Tables.from_raw(without).check()
 
     short = copy.deepcopy(raw)
-    short["blocks"]["разрешения_исполнения"][0]["scope_sha256"].pop("Б1")
+    short["blocks"]["разрешения_исполнения"][at]["scope_sha256"].pop("Б1")
     with pytest.raises(module.ContractError, match="не совпадает с блоками"):
         module.Tables.from_raw(short).check()
 
     extra = copy.deepcopy(raw)
-    extra["blocks"]["разрешения_исполнения"][0]["scope_sha256"]["Б9"] = "f" * 64
+    extra["blocks"]["разрешения_исполнения"][at]["scope_sha256"]["Б9"] = "f" * 64
     with pytest.raises(module.ContractError, match="не совпадает с блоками"):
         module.Tables.from_raw(extra).check()
 
     wrong = copy.deepcopy(raw)
-    wrong["blocks"]["разрешения_исполнения"][0]["scope_sha256"]["Б1"] = "a" * 64
+    wrong["blocks"]["разрешения_исполнения"][at]["scope_sha256"]["Б1"] = "a" * 64
     with pytest.raises(module.ContractError, match="Б1"):
         module.Tables.from_raw(wrong).check()
     assert grant  # the untouched original is still the one that passes
@@ -1058,7 +1061,9 @@ def test_every_real_permission_actually_resolves():
         pytest.skip("транскрипты недоступны в этой среде")
     for registry in ("заключения_ревью", "разрешения_исполнения", "история_разрешений"):
         for entry in plan[registry]:
-            problem = module.resolve_basis(entry["основание"])
+            # Круг 45: действующее разрешение — явное «да», а не любая реплика.
+            problem = module.resolve_basis(entry["основание"],
+                                           consent=registry == "разрешения_исполнения")
             assert problem is None, f"{registry} {entry['блоки']}: {problem}"
 
 
@@ -1083,8 +1088,12 @@ def test_a_reopened_block_keeps_the_permission_it_was_first_started_under():
     # still live, so it has no superseded permission to preserve. The rows that
     # matter are the August ones — the word that started Б1 and Б2 before their
     # scope changed and the grant stopped covering them.
-    started_under = {b: g["основание"]["native_uuid"]
-                     for g in BLOCKS["история_разрешений"] for b in g["блоки"]}
+    # Первая запись истории по блоку — то, чем он начинался; более поздние
+    # (например, разрешение, перенесённое в историю в круге 46) её не стирают.
+    started_under = {}
+    for g in BLOCKS["история_разрешений"]:
+        for b in g["блоки"]:
+            started_under.setdefault(b, g["основание"]["native_uuid"])
     assert started_under.get("Б1") == "c25c3feb-8ffd-4efb-ab8b-bbfc12ccac40", (
         "«ну давай дальше делай Б1» — чем блок начинался, стирать нельзя")
     assert started_under.get("Б2") == "126e123a-f916-4d35-822d-1019830a5216", (
@@ -1396,7 +1405,7 @@ FINDING_PINS = {
     "R45-1": ("4d6f050015fe", "fb34c293aebc"),
     "R45-2": ("6d1804fa76a8", "fb34c293aebc"),
     "R45-3": ("c087e1ab8d60", "6f55b18bec48"),
-    "R45-4": ("d0117ff5fe4a", "1760c70038c6"),
+    "R45-4": ("d0117ff5fe4a", "ae557c6966cb"),
     "R45-5": ("5a70de7a0e9f", "1760c70038c6"),
     "R45-6": ("0d14f44e9851", "1760c70038c6"),
     "R45-7": ("958998c93a34", "00ddea7ef34f"),
@@ -3169,7 +3178,10 @@ def test_a_permission_cannot_be_rewritten_in_place():
               for g in BLOCKS["разрешения_исполнения"]]
     digest = hashlib.sha256(
         json.dumps(grants, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-    assert digest == "38eb47243c16cc0b6aae5ad393ebc4118d1298c7c0af51245c858cd040928546", (
+    # Круг 46: разрешение от 02.09 (реплика-жалоба, не «да») сознательно
+    # перенесено в историю и заменено явным «да» Антона от 04.10 — это и
+    # меняет слепок; запись перенесена целиком, а не переписана.
+    assert digest == "527c11c1c3121e12f3c3ce29542f8bc51f2b5ed442d57a67503304f398d4ab66", (
         "выданное разрешение переписано: хеш объёма, список блоков или основание")
 
 
@@ -3301,7 +3313,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "fbdb2a4e5964c657e7ac4a794e1ee8bb72094ca2ca68fd1836f0bb78f4a4ca63", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "1a401b3f77f7e4f2fc19b1c774c5ef741bdd4d5af5aecb99177755d7424de975", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

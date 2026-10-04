@@ -30,6 +30,7 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import uuid
 from dataclasses import dataclass, field, replace
@@ -105,7 +106,19 @@ class RunLock:
 
     def __enter__(self) -> "RunLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = open(self.path, "a+")
+        # Круг 45: на месте замка заранее ставили символическую ссылку — замок
+        # открывался по ней и перезаписывал чужой файл. Открываем без перехода
+        # по ссылке и только обычный файл.
+        try:
+            descriptor = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise StateError(f"{self.path}: замок — символическая ссылка, открывать нельзя")
+            raise
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise StateError(f"{self.path}: замок — не обычный файл")
+        self._handle = os.fdopen(descriptor, "a+")
         try:
             fcntl.flock(self._handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
@@ -355,9 +368,9 @@ class RunStore:
         a corrupted-but-terminated journal is refused too, not silently
         appended past.
         """
-        if not self.journal_path.exists():
+        raw = self._journal_bytes()
+        if raw is None:
             return
-        raw = self.journal_path.read_bytes()
         if not raw or raw.endswith(b"\n"):
             return
 
@@ -412,11 +425,36 @@ class RunStore:
         entry = {"seq": self._next_seq(), "at": _now(), **entry}
         line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
         self._require_live("append")
-        with open(self.journal_path, "a", encoding="utf-8") as handle:
+        descriptor = self._open_journal(os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
             handle.write(line)
             handle.flush()
             os.fsync(handle.fileno())
         return entry
+
+    def _open_journal(self, flags: int) -> int:
+        """Журнал открывается без перехода по символической ссылке (круг 45):
+        иначе по ссылке читался бы чужой файл как журнал и дописывался."""
+        try:
+            descriptor = os.open(self.journal_path, flags | os.O_NOFOLLOW, 0o644)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise StateError(
+                    f"{self.journal_path}: журнал — символическая ссылка, открывать нельзя")
+            raise
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise StateError(f"{self.journal_path}: журнал — не обычный файл")
+        return descriptor
+
+    def _journal_bytes(self) -> bytes | None:
+        """Весь журнал байтами, или None, если его ещё нет."""
+        try:
+            descriptor = self._open_journal(os.O_RDONLY)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(descriptor, "rb") as handle:
+            return handle.read()
 
     def _next_seq(self) -> int:
         return len(self._entries()) + 1
@@ -441,9 +479,9 @@ class RunStore:
         that could not possibly have been fsynced gets the benefit of the
         doubt; anything the file itself claims is finished must actually be.
         """
-        if not self.journal_path.exists():
+        raw = self._journal_bytes()
+        if raw is None:
             return []
-        raw = self.journal_path.read_bytes()
         if not raw:
             return []
         terminated = raw.endswith(b"\n")
@@ -564,7 +602,7 @@ class RunStore:
         if stage not in stages:
             raise StateError(f"неизвестная стадия {stage!r}")
         with RunLock(self.directory) as lock:
-            if self.journal_path.exists() and self._entries():
+            if self._entries():
                 raise StateError(f"{self.directory}: прогон уже создан")
             previous, self._lock = self._lock, lock
             try:
@@ -777,6 +815,17 @@ class RunStore:
         self._require_live("assign_idea_candidates")
         if not candidates:
             raise StateError("набор карточек идеи не может быть пустым")
+        # Круг 45: пустая карточка записывалась, а потом сама запись не
+        # читалась — прогон ломался навсегда. Проверяется ДО записи то же, что
+        # потребует чтение.
+        for candidate in candidates:
+            if not isinstance(candidate.canonical_bytes, bytes) or not candidate.canonical_bytes:
+                raise StateError(
+                    f"карточка идеи {candidate.candidate_id!r}: байты пусты или не байты")
+            for name in ("candidate_id", "source"):
+                value = getattr(candidate, name)
+                if not isinstance(value, str) or not value.strip():
+                    raise StateError(f"карточка идеи: поле {name} пусто — {value!r}")
         ids = [c.candidate_id for c in candidates]
         if len(set(ids)) != len(ids):
             raise StateError(f"повторяющиеся ID карточек идеи: {ids}")

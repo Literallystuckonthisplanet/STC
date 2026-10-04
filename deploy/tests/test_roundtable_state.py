@@ -863,3 +863,49 @@ def test_a_corrupt_card_encoding_is_refused_not_read_as_an_empty_card(run):
             run.load()
     run.journal_path.write_text(good, encoding="utf-8")
     assert run.load().idea_candidates[0].canonical_bytes == b"one"   # контроль
+
+
+def test_an_empty_card_is_refused_before_anything_is_written(run):
+    """Круг 45: пустая карточка идеи записывалась в журнал, а затем сама
+    запись отказывалась читаться — прогон больше не открывался. Отказ обязан
+    быть ДО записи, и прогон обязан остаться читаемым."""
+    before = run.journal_path.read_bytes()
+    for bad in (b"", "строка вместо байтов"):
+        with pytest.raises(S.StateError, match="карточк"):
+            run.assign_idea_candidates([S.IdeaCandidate("C1", "автор", bad)])
+        assert run.journal_path.read_bytes() == before, "журнал тронут до отказа"
+    run.load()                                                # прогон по-прежнему открывается
+
+
+def test_a_lock_planted_as_a_link_does_not_overwrite_the_target(run, tmp_path):
+    """Круг 45: на месте файла замка заранее стоит символическая ссылка —
+    замок открывался по ней и перезаписывал внешний файл."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("важное\n", encoding="utf-8")
+    lock = run.directory / S.LOCK
+    if lock.exists() or lock.is_symlink():
+        lock.unlink()
+    lock.symlink_to(victim)
+    with pytest.raises(S.StateError, match="ссылк"):
+        with S.RunLock(run.directory):
+            pass
+    assert victim.read_text(encoding="utf-8") == "важное\n", "чужой файл перезаписан"
+
+
+def test_a_journal_planted_as_a_link_is_neither_read_nor_appended(tmp_path):
+    """Сверх отчёта: журнал открывался тем же способом — по ссылке читался
+    чужой файл как журнал и дописывался."""
+    directory = tmp_path / "run"
+    S.RunStore(directory, TABLES).create("run-1", "план")
+    journal = directory / S.JOURNAL
+    victim = tmp_path / "victim.jsonl"
+    victim.write_bytes(journal.read_bytes())
+    journal.unlink()
+    journal.symlink_to(victim)
+    before = victim.read_bytes()
+    with pytest.raises(S.StateError, match="ссылк"):
+        S.RunStore(directory, TABLES).load()
+    with pytest.raises(S.StateError, match="ссылк"):
+        with S.RunLock(directory) as lock:
+            S.RunStore(directory, TABLES, _lock=lock).submit("start")
+    assert victim.read_bytes() == before, "по ссылке дописан чужой файл"

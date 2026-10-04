@@ -646,24 +646,90 @@ def test_the_package_rules_are_complete_and_pinned():
 
 
 PACKAGE_RULES = {
-    "схемы_записей": {
-        "решения": ["decision_id", "kind", "text_hash", "status"],
-        "области": ["area_id"],
-        "журнал_общие": ["тип", "создатель"],
-        "журнал_необязательные": ["id", "время"]},
-    "видимые_слепому_статусы_решений": ["закрыто"],
-    "видимые_слепому_создатели": ["предпроверка"],
-    "мин_длина_следа": 40,
-    "запрещённые_пути": [".git", ".claude", ".codex", "CLAUDE.md", "AGENTS.md", ".env",
-                         ".env.*", "*.pem", "*.key"],
-    "разделы": ["задача", "ограничения", "критерий_успеха", "уже_закрытые_решения",
-                "предложенное_решение", "автор", "второй_критик"],
-    "предел_раздела_байт": 65536,
-    "предел_числа_файлов": 64,
+    'схемы_записей': {'решения': ['decision_id', 'kind', 'text_hash', 'status'],
+ 'области': ['area_id'],
+ 'журнал_общие': ['тип', 'создатель'],
+ 'журнал_необязательные': ['id', 'время']},
+    'видимые_слепому_статусы_решений': ['закрыто'],
+    'видимые_слепому_создатели': ['предпроверка'],
+    'мин_длина_следа': 30,
+    'мин_длина_основы': 4,
+    'запрещённые_пути': ['.git',
+ '.claude',
+ '.codex',
+ 'CLAUDE.md',
+ 'AGENTS.md',
+ '.env',
+ '.env.*',
+ '.env*',
+ '*.env',
+ '*.env.*',
+ '*.pem*',
+ '*.key*',
+ '.stc',
+ '.ssh',
+ '.aws',
+ '.docker',
+ '.kube',
+ '.npmrc',
+ '.netrc',
+ '.pypirc',
+ '.pgpass',
+ '.git-credentials',
+ '.gitconfig',
+ '.htpasswd',
+ '.envrc',
+ '.mcp.json',
+ '.claude.json',
+ 'settings.local.json',
+ '*secret*',
+ '*credential*',
+ 'token',
+ 'token.*',
+ 'tokens',
+ 'tokens.*',
+ '*_token',
+ '*_token.*',
+ '*.token',
+ 'id_rsa*',
+ 'id_dsa*',
+ 'id_ecdsa*',
+ 'id_ed25519*',
+ '*.p12',
+ '*.pfx',
+ '*.jks',
+ '*.tfstate*',
+ '*.tfvars'],
+    'разрешённые_расширения': ['.md',
+ '.txt',
+ '.rst',
+ '.py',
+ '.ts',
+ '.tsx',
+ '.js',
+ '.sql',
+ '.sh',
+ '.yaml',
+ '.yml',
+ '.json',
+ '.toml'],
+    'признаки_секрета': ['-----BEGIN [A-Z ]*PRIVATE KEY-----',
+ 'AKIA[0-9A-Z]{16}',
+ 'gh[pousr]_[A-Za-z0-9]{36,}',
+ 'sk-ant-[A-Za-z0-9_-]{20,}',
+ 'xox[baprs]-[A-Za-z0-9-]{10,}'],
+    'форматы_полей': {'text_hash': '[0-9a-f]{64}',
+ 'decision_id': '[\\w.:-]{1,64}',
+ 'area_id': '[\\w.:-]{1,64}',
+ 'id': '[\\w.:-]{1,64}',
+ 'якорь': '[\\s\\S]{1,200}'},
+    'разделы': ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения', 'предложенное_решение'],
+    'предел_раздела_байт': 65536,
+    'предел_числа_файлов': 64,
 }
 
 
-def test_the_round_3_package_rules_are_pinned_to_their_exact_values():
+def test_the_package_rules_are_pinned_to_their_exact_values():
     # Each value is a rule the package code reads. A deleted key, or another
     # perfectly valid value, would silently change what reaches a critic.
     package = _at(VOCAB, "пакет")
@@ -678,67 +744,135 @@ def _package_variant(mutate):
     return module, raw
 
 
-@pytest.mark.parametrize("key", sorted(PACKAGE_RULES))
-def test_deleting_a_package_rule_fails_the_load(key):
+READ_BY_CODE = sorted(set(PACKAGE_RULES) | {
+    "предел_файла_байт", "предел_пакета_байт", "отвергается", "не_попадает", "реестры",
+    "виды_решений_в_реестре", "канонизация"})
+
+
+@pytest.mark.parametrize("key", READ_BY_CODE)
+def test_deleting_a_package_rule_is_a_named_error_not_a_key_error(key):
     module, raw = _package_variant(lambda package, _raw: package.pop(key))
+    with pytest.raises(module.ContractError, match=key):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("table,path", [
+    ("stages", ("слепой_вопрос", "показываем")), ("stages", ("слепой_вопрос", "прячем")),
+    ("stages", ("слепой_вопрос",)), ("stages", ("стадии",)),
+    ("vocabulary", ("отпечаток",)), ("vocabulary", ("создатели_доказательства",)),
+    ("precheck", ("классы_файлов",))])
+def test_deleting_what_the_package_reads_from_other_tables_is_a_named_error(table, path):
+    def drop(_package, raw):
+        node = raw[table]
+        for key in path[:-1]:
+            node = node[key]
+        del node[path[-1]]
+    module, raw = _package_variant(drop)
     with pytest.raises(module.ContractError):
         module.Tables.from_raw(raw).check()
 
 
-@pytest.mark.parametrize("key,bad", [
-    ("мин_длина_следа", 0), ("мин_длина_следа", 7), ("мин_длина_следа", "40"), ("мин_длина_следа", True),
-    ("предел_раздела_байт", 0), ("предел_раздела_байт", -1),
-    ("предел_раздела_байт", "много"),
-    ("предел_числа_файлов", 0), ("предел_числа_файлов", 1.5), ("предел_числа_файлов", None),
-    ("запрещённые_пути", []), ("запрещённые_пути", ".git"), ("запрещённые_пути", [".git", ".git"]),
-    ("запрещённые_пути", [""]),
-    ("разделы", []), ("разделы", "задача"), ("разделы", ["задача"]),
-    ("разделы", PACKAGE_RULES["разделы"] + ["git_история"]),
-    ("видимые_слепому_статусы_решений", []), ("видимые_слепому_статусы_решений", "закрыто"),
-    ("видимые_слепому_создатели", []), ("видимые_слепому_создатели", ["никто"]),
-    ("схемы_записей", []), ("схемы_записей", {}),
+@pytest.mark.parametrize("key,bad,why", [
+    ("мин_длина_следа", 7, "от 8"), ("мин_длина_следа", 201, "до 200"), ("мин_длина_следа", "30", "целое"),
+    ("мин_длина_следа", True, "целое"),
+    ("мин_длина_основы", 1, "от 2"), ("мин_длина_основы", 31, "до 30"), ("мин_длина_основы", None, "целое"),
+    ("предел_раздела_байт", 0, "от 1"), ("предел_раздела_байт", -1, "от 1"),
+    ("предел_раздела_байт", 2 ** 30, "раздел не может"), ("предел_раздела_байт", "много", "целое"),
+    ("предел_файла_байт", 2 ** 30, "файл не может"), ("предел_файла_байт", 0, "от 1"),
+    ("предел_числа_файлов", 0, "от 1"), ("предел_числа_файлов", 1.5, "целое"), ("предел_числа_файлов", None, "целое"),
+    ("запрещённые_пути", [], "пуст"), ("запрещённые_пути", ".git", "список"),
+    ("запрещённые_пути", [".git", ".git"], "повтор"), ("запрещённые_пути", [""], "строка"),
+    ("запрещённые_пути", ["a/b"], "компонента"), ("запрещённые_пути", ["*"], "компонента"),
+    ("разрешённые_расширения", [], "пуст"), ("разрешённые_расширения", ["md"], "расширение"),
+    ("разрешённые_расширения", [".MD"], "расширение"), ("разрешённые_расширения", [".tar.gz"], "расширение"),
+    ("разрешённые_расширения", ["."], "расширение"),
+    ("признаки_секрета", [], "пуст"), ("признаки_секрета", ["("], "не компилируется"),
+    ("признаки_секрета", "AKIA", "список"),
+    ("форматы_полей", {}, "непустая"), ("форматы_полей", [], "непустая"),
+    ("форматы_полей", {"text_hash": "(", "decision_id": "x", "area_id": "x"}, "не компилируется"),
+    ("форматы_полей", {"decision_id": "x", "area_id": "x"}, "text_hash"),
+    ("разделы", [], "пуст"), ("разделы", "задача", "список"), ("разделы", ["задача"], "слепого вопроса"),
+    ("разделы", PACKAGE_RULES["разделы"] + ["git_история"], "вне пакета"),
+    ("видимые_слепому_статусы_решений", [], "пуст"), ("видимые_слепому_статусы_решений", "закрыто", "список"),
+    ("видимые_слепому_создатели", [], "пуст"), ("видимые_слепому_создатели", ["никто"], "никто не создаёт"),
+    ("схемы_записей", [], "карта"), ("схемы_записей", {}, "нет "),
+    ("отвергается", [], "пуст"), ("не_попадает", "x", "список"), ("реестры", [], "пуст"),
+    ("виды_решений_в_реестре", [], "пуст"), ("канонизация", "", "строка"),
 ])
-def test_an_invalid_package_rule_fails_the_load(key, bad):
+def test_an_invalid_package_rule_is_refused_with_a_reason(key, bad, why):
     module, raw = _package_variant(lambda package, _raw: package.__setitem__(key, bad))
-    with pytest.raises(module.ContractError):
+    with pytest.raises(module.ContractError, match=why):
         module.Tables.from_raw(raw).check()
 
 
-@pytest.mark.parametrize("part,bad", [
-    ("решения", ["decision_id", "kind"]),           # no status: the blind filter has nothing to read
-    ("решения", ["kind", "text_hash", "status"]),   # no id
-    ("решения", []),
-    ("области", ["title"]),
-    ("журнал_общие", ["тип"]),
-    ("журнал_общие", ["тип", "создатель", "путь"]),  # a fingerprint field is not a common one
-    ("журнал_необязательные", ["тип"]),              # already mandatory
-    ("журнал_необязательные", ["якорь"]),            # a fingerprint field
-    ("журнал_необязательные", []),
+def test_the_trace_length_bounds_are_exactly_8_and_200():
+    for good in (8, 200):
+        module, raw = _package_variant(lambda package, _raw, good=good: package.update(мин_длина_следа=good))
+        module.Tables.from_raw(raw).check()
+    module, raw = _package_variant(lambda package, _raw: package.update(мин_длина_основы=30))
+    module.Tables.from_raw(raw).check()  # the stem may equal the window, not exceed it
+
+
+@pytest.mark.parametrize("part,bad,why", [
+    ("решения", ["decision_id", "kind"], "status"),
+    ("решения", ["kind", "text_hash", "status"], "decision_id"),
+    ("решения", [], "пуст"),
+    ("области", ["title"], "area_id"),
+    ("журнал_общие", ["тип"], "тип и создатель"),
+    ("журнал_общие", ["тип", "создатель", "путь"], "поля отпечатка"),
+    ("журнал_необязательные", ["тип"], "и обязательное"),
+    ("журнал_необязательные", ["якорь"], "поля отпечатка"),
+    ("журнал_необязательные", ["id", "id"], "повторы"),
 ])
-def test_an_invalid_record_schema_fails_the_load(part, bad):
+def test_an_invalid_record_schema_is_refused_with_a_reason(part, bad, why):
     module, raw = _package_variant(
         lambda package, _raw: package["схемы_записей"].__setitem__(part, bad))
-    with pytest.raises(module.ContractError):
+    with pytest.raises(module.ContractError, match=why):
         module.Tables.from_raw(raw).check()
     module, raw = _package_variant(lambda package, _raw: package["схемы_записей"].pop(part))
-    with pytest.raises(module.ContractError):
+    with pytest.raises(module.ContractError, match=part):
         module.Tables.from_raw(raw).check()
+
+
+def test_an_empty_list_of_optional_journal_fields_is_valid():
+    module, raw = _package_variant(
+        lambda package, _raw: package["схемы_записей"].__setitem__("журнал_необязательные", []))
+    module.Tables.from_raw(raw).check()
 
 
 def test_an_invented_package_rule_is_not_accepted():
     module, raw = _package_variant(lambda package, _raw: package.__setitem__("выдуманное", 1))
-    with pytest.raises(module.ContractError):
+    with pytest.raises(module.ContractError, match="выдуманные поля"):
         module.Tables.from_raw(raw).check()
 
 
-def test_the_blind_question_sections_must_be_declared_package_sections():
-    for listing in ("показываем", "прячем"):
-        def drop(package, raw, listing=listing):
-            package["разделы"] = [s for s in package["разделы"]
-                                  if s != raw["stages"]["слепой_вопрос"][listing][0]]
-        module, raw = _package_variant(drop)
-        with pytest.raises(module.ContractError, match="слепого вопроса"):
-            module.Tables.from_raw(raw).check()
+def test_the_shown_sections_must_be_declared_and_must_not_also_be_hidden():
+    def drop_shown(package, raw):
+        first = raw["stages"]["слепой_вопрос"]["показываем"][0]
+        package["разделы"] = [s for s in package["разделы"] if s != first]
+    module, raw = _package_variant(drop_shown)
+    with pytest.raises(module.ContractError, match="слепого вопроса"):
+        module.Tables.from_raw(raw).check()
+
+    def overlap(_package, raw):
+        raw["stages"]["слепой_вопрос"]["прячем"].append(raw["stages"]["слепой_вопрос"]["показываем"][0])
+    module, raw = _package_variant(overlap)
+    with pytest.raises(module.ContractError, match="и показываются, и прячутся"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_author_and_the_second_critic_are_not_sections():
+    # They are data of `withheld`; as sections they would contradict `не_попадает`.
+    package = _at(VOCAB, "пакет")
+    for name in ("автор", "второй_критик"):
+        assert name in _at(STAGES, "слепой_вопрос", "прячем")
+        assert name not in package.get("разделы", [name])
+
+    def add(package, _raw):
+        package["разделы"].append("имя_автора")
+    module, raw = _package_variant(add)
+    with pytest.raises(module.ContractError, match="вне пакета"):
+        module.Tables.from_raw(raw).check()
 
 
 def test_the_attempt_journal_declares_its_key_states_and_flag():

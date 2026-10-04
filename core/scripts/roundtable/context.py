@@ -2,30 +2,41 @@
 """Б2 — the package: manifest, registries, canonical bytes, one hash.
 
 Guarantee 1 of the whole design is that both critics got **the same verifiable
-package, byte for byte**, proven by a hash rather than asserted. What this
-module guarantees, and by what:
+package, byte for byte**, proven by a hash rather than asserted.
 
-**Determinism.** Two builds of the same input give the same bytes. Nothing that
-varies between builds enters the package (no timestamp, no host path); every
-mapping is serialised with sorted keys; the manifest, the file texts, the
-registries and the evidence journal are sorted by content, so neither the
-declaration order nor the interpreter's hash seed can move the hash.
+What is guaranteed, and by what:
 
-**Read once, from a descriptor.** A declared file is opened exactly once, by
-walking the path component by component with `O_NOFOLLOW` relative to a
-directory descriptor, so a symlink swapped in at any level after the early
-`_check_path` is still refused. The same bytes give the hash and the text that
-travels in the package. Hard links, FIFOs, devices, directories, oversize and
-non-UTF-8 files are refused by name.
+* **Determinism.** Two builds of the same input give the same bytes: no
+  timestamp or host path enters, mappings are serialised with sorted keys, and
+  the manifest, file texts, registries and evidence journal are sorted by
+  content, so neither declaration order nor the interpreter's hash seed moves
+  the hash.
+* **Read once, from a descriptor.** A declared file is opened exactly once by
+  walking the path component by component with `O_NOFOLLOW` relative to a
+  directory descriptor. Each component is spelled exactly as the disk spells
+  it and lives on the root's device; after the read the name must still lead
+  to the same single-link inode. The same bytes give the hash and the text that
+  travels in the package. Hard links, FIFOs, devices, directories, oversize and
+  non-UTF-8 files are refused by name.
+* **A snapshot.** `Package` keeps only the canonical bytes and their hash
+  (verified at construction); every view is a fresh copy parsed from them.
+* **Rules are data.** Schemas of registry records, field formats, forbidden
+  paths, allowed extensions, secret signatures, section names and every limit
+  come from `vocabulary.yaml: пакет`; this module only reads them.
+* **A blind package carries no trace of what is hidden.** `withheld` is
+  mandatory and exactly the hidden names. Texts are compared as *skeletons*
+  (NFKC, casefold, Latin look-alikes folded to Cyrillic, ё to е, only letters
+  and digits kept) over every leaf value and key of the shown sections, the
+  registries and the manifest paths -- never over serialised JSON. A long hidden
+  text is found by any slice of `мин_длина_следа`; a short one (an author's
+  name) by its stem, which survives declension, prefixes and look-alikes.
 
-**A snapshot.** The canonical bytes are computed once at the end of the build
-and stored; `hash` and `material()` return the stored value, and the data
-fields are deep copies, so mutating the caller's objects (or deleting the file)
-afterwards changes nothing.
-
-**Not guaranteed here** (needs table changes, decided elsewhere): closed schemas
-of registry records, filtering registries in the blind mode, allowed/forbidden
-path lists, a closed list of section names outside the blind mode.
+Deliberately NOT guaranteed (accepted, not overlooked): a reordering of words,
+base64/hex or any other re-encoding, a translation and a paraphrase are not
+caught; an honest solution that quotes the task verbatim for longer than the
+threshold is refused (safely, and the refusal names the channel and the hidden
+section, never the hidden text). Secret detection is by file name, extension
+and a short list of signatures, not a scanner.
 
 Path rules are refusals, not warnings (§6.9). `existing_evidence` must exist;
 `planned_output` is created later, so its absence is normal (§7.3).
@@ -33,6 +44,7 @@ Path rules are refusals, not warnings (§6.9). `existing_evidence` must exist;
 
 from __future__ import annotations
 
+import bisect
 import errno
 import fnmatch
 import hashlib
@@ -93,16 +105,39 @@ class ManifestEntry:
                 "хеш": self.sha256, "байт": self.bytes_read}
 
 
-def _check_path(root: Path, relative: str) -> Path:
-    """Early, readable refusals of §6.9. The real defence is the descriptor walk."""
+def _syntax(relative) -> None:
+    """The refusals that need no disk: type, encoding, `..`, canonical form."""
     if not isinstance(relative, str):
         raise PackageRefused("некорректный_вход", f"путь не строка: {relative!r}")
+    _encodable(relative, "путь")
     if "\x00" in relative:
         raise PackageRefused("файл_нечитаем", "NUL в пути")
     if relative.startswith("/") or ".." in Path(relative).parts:
         raise PackageRefused("путь_с_родительским_переходом", relative)
     if not relative or relative != "/".join(PurePosixPath(relative).parts):
         raise PackageRefused("путь_не_канонический", relative)
+
+
+def _encodable(text: str, where: str) -> None:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise PackageRefused("некорректный_вход", f"{where}: суррогаты в строке")
+
+
+def _policy(relative: str, limits: dict) -> None:
+    """What may leave the machine at all: forbidden names, then the extension."""
+    banned = _forbidden(relative, limits["запрещённые_пути"])
+    if banned is not None:
+        raise PackageRefused("путь_запрещён", f"{relative}: {banned}")
+    suffix = PurePosixPath(relative).suffix.casefold()
+    if suffix not in limits["разрешённые_расширения"]:
+        raise PackageRefused("путь_запрещён", f"{relative}: расширение {suffix or '(нет)'}")
+
+
+def _check_path(root: Path, relative: str) -> Path:
+    """Early, readable refusals of §6.9. The real defence is the descriptor walk."""
+    _syntax(relative)
     target = root / relative
 
     # A symlink anywhere along the way is enough: the leaf may be innocent while
@@ -154,7 +189,7 @@ def _forbidden(relative: str, patterns) -> str | None:
 def _read_by_descriptors(root: Path, relative: str, cap: int):
     """Open `relative` below `root` without ever following a link; read once.
 
-    Returns `(data, (st_dev, st_ino))`, or None if some component is absent.
+    Returns the bytes, or None if some component is absent.
     Every component must be spelled exactly as the disk spells it, live on the
     root's device, and the file must still be the same single-link inode after
     the read.
@@ -173,7 +208,7 @@ def _read_by_descriptors(root: Path, relative: str, cap: int):
             if len(part.encode("utf-8", "surrogateescape")) > 255:
                 raise PackageRefused("файл_нечитаем", f"{relative}: слишком длинное имя")
             try:
-                listing = os.listdir(directory)
+                listing = set(os.listdir(directory))
             except OSError as error:
                 raise PackageRefused("файл_нечитаем", f"{relative}: {error.strerror or error}")
             if part in listing:
@@ -246,40 +281,52 @@ def _read_by_descriptors(root: Path, relative: str, cap: int):
             raise PackageRefused("файл_изменился", relative)
         if after.st_nlink != 1 or named.st_nlink != 1 or info.st_nlink != 1:
             raise PackageRefused("жёсткая_ссылка", f"{relative}: ссылок {named.st_nlink}")
-        return b"".join(chunks), (info.st_dev, info.st_ino)
+        return b"".join(chunks)
     finally:
         for descriptor in opened:
             os.close(descriptor)
 
 
+def _looks_secret(text: str, limits: dict) -> str | None:
+    for pattern in limits["признаки_секрета"]:
+        if re.search(pattern, text):
+            return pattern
+    return None
+
+
 def read_file(root: Path, relative: str, file_class: str, tables):
-    """Read one declared file once; return `(entry, text, identity)` or refuse.
+    """Read one declared file once; return `(entry, text)` or refuse by name.
 
     The one read yields the bytes for the hash *and* the text that goes into the
-    package. `text` and `identity` are None only for an absent `planned_output`.
+    package. `text` is None only for an absent `planned_output`.
     """
     classes = set(tables.precheck["классы_файлов"])
     if not isinstance(file_class, str) or file_class not in classes:
         raise PackageRefused("неизвестный_класс_файла", f"{relative}: {file_class}")
-    cap = tables.vocabulary["пакет"]["предел_файла_байт"]
+    limits = tables.vocabulary["пакет"]
     root = Path(root)
     _check_path(root, relative)
-    banned = _forbidden(relative, tables.vocabulary["пакет"]["запрещённые_пути"])
-    if banned is not None:
-        raise PackageRefused("путь_запрещён", f"{relative}: {banned}")
+    _policy(relative, limits)
+    try:
+        inside_runs = (root / relative).resolve().is_relative_to(state_module.RUNS_ROOT.resolve())
+    except OSError:
+        inside_runs = False
+    if inside_runs:
+        raise PackageRefused("путь_запрещён", f"{relative}: внутри каталога прогонов")
 
-    found = _read_by_descriptors(root, relative, cap)
-    if found is None:
+    data = _read_by_descriptors(root, relative, limits["предел_файла_байт"])
+    if data is None:
         if file_class == "planned_output":
             # Declared, created later: absence is the normal case (§7.3).
-            return ManifestEntry(relative, file_class, None, None), None, None
+            return ManifestEntry(relative, file_class, None, None), None
         raise PackageRefused("отсутствие_обязательного_файла", relative)
-    data, identity = found
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise PackageRefused("файл_не_текст", relative)
-    return ManifestEntry(relative, file_class, digest(data), len(data)), text, identity
+    if _looks_secret(text, limits) is not None:
+        raise PackageRefused("похоже_на_секрет", f"файл {relative}")
+    return ManifestEntry(relative, file_class, digest(data), len(data)), text
 
 
 # --------------------------------------------------------------------------
@@ -332,6 +379,16 @@ class Package:
     stage: str
     _bytes: bytes
     _hash: str
+
+    def __post_init__(self):
+        if not isinstance(self._bytes, bytes) or digest(self._bytes) != self._hash:
+            raise ValueError("пакет: хеш не соответствует байтам")
+        try:
+            declared = json.loads(self._bytes.decode("utf-8")).get("стадия")
+        except (ValueError, AttributeError):
+            raise ValueError("пакет: байты не разбираются")
+        if declared != self.stage:
+            raise ValueError("пакет: стадия не соответствует байтам")
 
     def as_dict(self) -> dict:
         """A fresh deep copy of the packaged data on every call."""
@@ -406,11 +463,39 @@ def _validate_input(root, declared_files, sections, registries, stage):
     for name, value in sections.items():
         if not isinstance(name, str) or not isinstance(value, str):
             raise _bad(f"раздел {name!r}: имя и значение должны быть строками")
+        _encodable(name, "имя раздела")
+        _encodable(value, f"раздел {name}")
     if not isinstance(registries, dict):
         raise _bad("реестры не словарь")
 
 
-def _registry_list(registries, name, fields, key=None, optional=()):
+# -- registries ----------------------------------------------------------------
+
+def _check_fields(record: dict, where: str, limits: dict) -> None:
+    """Every field of a record is a scalar of a known form -- no free channel."""
+    formats = limits["форматы_полей"]
+    for field, value in record.items():
+        if not isinstance(field, str):
+            raise PackageRefused("запись_вне_схемы", f"{where}: имя поля не строка")
+        _encodable(field, f"{where}: имя поля")
+        if field == "диапазон_строк":
+            good = (isinstance(value, (list, tuple)) and len(value) == 2
+                    and all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in value)
+                    and value[0] <= value[1])
+        elif isinstance(value, str):
+            _encodable(value, f"{where}.{field}")
+            pattern = formats.get(field)
+            good = pattern is None or re.fullmatch(pattern, value) is not None
+        else:
+            good = isinstance(value, int) and not isinstance(value, bool)
+        if not good:
+            raise PackageRefused("запись_вне_схемы", f"{where}.{field}: недопустимое значение")
+        if field == "путь":
+            _syntax(value)
+            _policy(value, limits)
+
+
+def _registry_list(registries, name, fields, limits, key=None, optional=()):
     """A registry as a list of records that match the table's closed schema."""
     items = registries[name]
     if not isinstance(items, (list, tuple)):
@@ -426,7 +511,8 @@ def _registry_list(registries, name, fields, key=None, optional=()):
             if missing or extra:
                 raise PackageRefused(
                     "запись_вне_схемы",
-                    f"{name}: нет {sorted(missing)}, лишние {sorted(extra)}")
+                    f"{name}: нет {sorted(missing)}, лишние {sorted(extra, key=str)}")
+        _check_fields(item, name, limits)
     if key is not None:
         ids = [item[key] for item in items]
         if len(set(ids)) != len(ids):
@@ -434,46 +520,228 @@ def _registry_list(registries, name, fields, key=None, optional=()):
     return list(items)
 
 
-def _normalise(text: str) -> str:
-    """NFKC, casefold, collapsed whitespace — what a trace is compared in."""
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text).casefold()).strip()
+def _build_registries(registries, tables, blind: bool) -> dict:
+    limits = tables.vocabulary["пакет"]
+    expected = set(limits["реестры"])
+    if set(registries) != expected:
+        raise PackageRefused("реестры_не_полны",
+                             f"{sorted(registries)} против {sorted(expected)}")
+    schemas = limits["схемы_записей"]
+    decisions = _registry_list(registries, "решения", schemas["решения"], limits, "decision_id")
+    areas = _registry_list(registries, "области", schemas["области"], limits, "area_id")
+    records = registries["журнал_доказательств"]
+    if not isinstance(records, (list, tuple)) or not all(isinstance(r, dict) for r in records):
+        raise _bad("реестр журнал_доказательств: не список записей")
+
+    kinds = set(limits["виды_решений_в_реестре"])
+    for decision in decisions:
+        if decision["kind"] not in kinds:
+            raise PackageRefused("неизвестный_вид_решения", str(decision["kind"]))
+
+    journal = []
+    for record in records:
+        kind = record.get("тип")
+        if not isinstance(kind, str):
+            raise _bad("запись журнала без строкового типа")
+        if kind not in tables.vocabulary["отпечаток"]:
+            raise PackageRefused("неизвестный_тип_доказательства", kind)
+        shape = schemas["журнал_общие"] + tables.vocabulary["отпечаток"][kind]
+        missing = set(shape) - set(record)
+        extra = set(record) - set(shape) - set(schemas["журнал_необязательные"])
+        if missing or extra:
+            raise PackageRefused(
+                "запись_вне_схемы",
+                f"журнал_доказательств: нет {sorted(missing)}, лишние {sorted(extra, key=str)}")
+        _check_fields(record, "журнал_доказательств", limits)
+        check_creator(record, tables)
+        journal.append({**record, "отпечаток": fingerprint(record, tables)})
+
+    if blind:
+        visible_status = set(limits["видимые_слепому_статусы_решений"])
+        for decision in decisions:
+            if decision["status"] not in visible_status:
+                raise PackageRefused("слепой_пакет_след_скрытого",
+                                     f"решение {decision['decision_id']}: статус не из видимых слепому")
+        visible_creators = set(limits["видимые_слепому_создатели"])
+        for record in journal:
+            if record["создатель"] not in visible_creators:
+                raise PackageRefused("слепой_пакет_след_скрытого",
+                                     "запись журнала от создателя, невидимого слепому")
+
+    return {
+        "решения": sorted(decisions, key=lambda d: d["decision_id"]),
+        "области": sorted(areas, key=lambda a: a["area_id"]),
+        "журнал_доказательств": sorted(
+            journal, key=lambda r: (r["отпечаток"], canonical_json(r))),
+    }
 
 
-def _trace_of(hidden: dict, haystack: list, minimum: int):
-    """The first hidden name whose text shows up in the shown material, or None.
+# -- the trace of what is hidden -----------------------------------------------
 
-    A fragment of at least `minimum` normalised characters counts as a trace
-    when it appears anywhere; anything shorter (an author's name) only as a
-    whole word, otherwise every name would collide with ordinary words.
+def _skeleton(text: str) -> str:
+    """Letters and digits only, with case, look-alikes, ё and invisibles folded."""
+    text = unicodedata.normalize("NFKC", text).casefold()
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate(tables_module._HOMOGLYPHS).replace("ё", "е")
+    return "".join(ch for ch in text if unicodedata.category(ch)[0] in "LN")
+
+
+def _leaves(node, channel: str):
+    """Every string/number leaf and every key below `node`, with its channel."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield f"{channel}.{key}", str(key), True
+            yield from _leaves(value, f"{channel}.{key}")
+    elif isinstance(node, (list, tuple)):
+        for index, value in enumerate(node):
+            yield from _leaves(value, f"{channel}[{index}]")
+    elif node is not None:
+        yield channel, str(node), False
+
+
+def _shown_leaves(sections: dict, normalised: dict, paths) -> list:
+    leaves = []
+    for name, value in sections.items():
+        leaves.append((f"раздел.{name}", value, False))
+    leaves.extend(_leaves(normalised, "реестр"))
+    leaves.extend((f"путь[{index}]", path, False) for index, path in enumerate(paths))
+    return leaves
+
+
+def _stems(text: str, minimum: int) -> set:
+    """What a short hidden value leaves behind after declension or decoration."""
+    whole = _skeleton(text)
+    stems = {whole[:max(minimum, len(whole) - 2)]}
+    for token in re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", text)):
+        word = _skeleton(token)
+        if len(word) >= minimum:
+            stems.add(word[:max(minimum, len(word) - 2)])
+    return {stem for stem in stems if len(stem) >= 2}
+
+
+def _check_secrets(leaves: list, limits: dict) -> None:
+    for channel, text, _ in leaves:
+        if _looks_secret(text, limits) is not None:
+            raise PackageRefused("похоже_на_секрет", channel)
+
+
+def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
+    """Refuse a blind package in which anything hidden shows up.
+
+    The refusal names the channel and the hidden section, never the text.
     """
-    shown = _normalise("\n".join(haystack))
-    grams = None
-    for name, text in hidden.items():
-        needle = _normalise(text)
-        if not needle:
-            continue
-        if len(needle) < minimum:
-            if re.search(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", shown):
-                return name
-            continue
-        if needle in shown:
-            return name
-        if grams is None:
-            grams = {shown[i:i + minimum] for i in range(max(len(shown) - minimum + 1, 0))}
-        if any(needle[i:i + minimum] in grams for i in range(len(needle) - minimum + 1)):
-            return name
-    return None
+    window, minimum = limits["мин_длина_следа"], limits["мин_длина_основы"]
+    digests = {digest(text.encode("utf-8")): name for name, text in hidden.items()}
+    for channel, text, _ in leaves:
+        name = digests.get(text.strip().lower())
+        if name is not None:
+            raise PackageRefused("слепой_пакет_след_скрытого",
+                                 f"{channel}: хеш скрытого раздела {name}")
+
+    # Two streams: everything (keys too), and values only -- so that keys of a
+    # record standing between two glued pieces cannot break the join.
+    for stream in (leaves, [leaf for leaf in leaves if not leaf[2]]):
+        pieces = [(channel, _skeleton(text)) for channel, text, _ in stream]
+        joined = "".join(skeleton for _, skeleton in pieces)
+        starts, position = [], 0
+        for _, skeleton in pieces:
+            starts.append(position)
+            position += len(skeleton)
+
+        def channel_at(index: int) -> str:
+            return pieces[max(bisect.bisect_right(starts, index) - 1, 0)][0]
+
+        for name, text in hidden.items():
+            skeleton = _skeleton(text)
+            if len(skeleton) >= window:
+                grams = {skeleton[i:i + window] for i in range(len(skeleton) - window + 1)}
+                for index in range(len(joined) - window + 1):
+                    if joined[index:index + window] in grams:
+                        raise PackageRefused("слепой_пакет_след_скрытого",
+                                             f"{channel_at(index)}: след скрытого раздела {name}")
+            else:
+                for stem in _stems(text, minimum):
+                    index = joined.find(stem)
+                    if index >= 0:
+                        raise PackageRefused("слепой_пакет_след_скрытого",
+                                             f"{channel_at(index)}: след скрытого раздела {name}")
+
+
+# -- the build, in stages --------------------------------------------------------
+
+def _check_blind(tables, stage, blind, declared_files, sections, withheld):
+    """Exact equality with the shown list; returns the hidden texts, or None."""
+    allowed = visible_sections(tables, stage, blind)
+    if allowed is None:
+        return None
+    if declared_files:
+        raise PackageRefused("слепой_пакет_с_файлами",
+                             ", ".join(sorted(pair[0] for pair in declared_files)))
+    extra = set(sections) - allowed
+    if extra:
+        raise PackageRefused("слепой_вопрос_показывает_лишнее", ", ".join(sorted(extra)))
+    present = {name for name, value in sections.items() if value.strip()}
+    missing = allowed - present
+    if missing:
+        raise PackageRefused("слепой_пакет_неполон", ", ".join(sorted(missing)))
+    wanted = set(tables.stages["слепой_вопрос"]["прячем"])
+    if (not isinstance(withheld, dict) or set(withheld) != wanted
+            or not all(isinstance(text, str) for text in withheld.values())):
+        raise _bad(f"для слепого пакета нужен withheld ровно с {sorted(wanted)}")
+    cap = tables.vocabulary["пакет"]["предел_раздела_байт"]
+    for name, text in withheld.items():
+        _encodable(text, f"скрытый {name}")
+        if len(_skeleton(text)) < 2:
+            raise _bad(f"скрытый {name} пуст: сравнивать нечего")
+        if len(text.encode("utf-8")) > cap:
+            raise PackageRefused("превышение_размера", f"скрытый {name}")
+    return dict(withheld)
+
+
+def _check_sections(sections: dict, limits: dict) -> None:
+    unknown = set(sections) - set(limits["разделы"])
+    if unknown:
+        raise PackageRefused("раздел_неизвестен", ", ".join(sorted(unknown)))
+    for name, value in sections.items():
+        if not value.strip():
+            raise _bad(f"раздел {name} пуст")
+        if len(value.encode("utf-8")) > limits["предел_раздела_байт"]:
+            raise PackageRefused("превышение_размера", f"раздел {name}")
+
+
+def _read_declared_files(root: Path, declared_files, tables):
+    limits = tables.vocabulary["пакет"]
+    if len(declared_files) > limits["предел_числа_файлов"]:
+        raise PackageRefused("слишком_много_файлов",
+                             f"{len(declared_files)} > {limits['предел_числа_файлов']}")
+    seen, entries, files, spent = set(), [], {}, 0
+    for path, file_class in declared_files:
+        name = _folded(path)
+        if name in seen:
+            raise PackageRefused("файл_объявлен_дважды", path)
+        seen.add(name)
+        entry, text = read_file(root, path, file_class, tables)
+        entries.append(entry)
+        if text is not None:
+            files[path] = text
+            spent += entry.bytes_read
+            if spent > limits["предел_пакета_байт"]:
+                raise PackageRefused(
+                    "превышение_размера",
+                    f"пакет: файлы {spent} > {limits['предел_пакета_байт']}")
+    entries.sort(key=lambda entry: entry.path)
+    return entries, files
 
 
 def build_package(root, declared_files, sections, registries, stage,
                   blind: bool = False, tables=None, withheld=None) -> Package:
     """Assemble one verifiable package.
 
-    `declared_files` is an explicit list of `(path, class)` pairs — the manifest
+    `declared_files` is an explicit list of `(path, class)` pairs -- the manifest
     is never discovered by walking the disk, because a glob makes the package
     depend on what happens to be lying around. In the blind mode `withheld` must
-    carry the hidden sections (exactly the names of `слепой_вопрос.прячем`): the
-    package is refused if any of their text shows up in what the critic would see.
+    carry the hidden texts (exactly the names of `слепой_вопрос.прячем`): the
+    package is refused if anything of them shows up in what the critic would see.
     """
     tables = tables or tables_module.load()
     limits = tables.vocabulary["пакет"]
@@ -493,139 +761,35 @@ def build_package(root, declared_files, sections, registries, stage,
     if forbidden:
         raise PackageRefused("раздел_вне_пакета", ", ".join(sorted(forbidden)))
 
-    allowed = visible_sections(tables, stage, blind)
-    hidden_texts = None
-    if allowed is not None:
-        # Exact equality: a blind package that lacks a shown section is as wrong
-        # as one that carries a hidden one. A blank value counts as missing.
-        if declared_files:
-            raise PackageRefused("слепой_пакет_с_файлами",
-                                 ", ".join(sorted(str(pair[0]) for pair in declared_files)))
-        hidden = set(sections) - allowed
-        if hidden:
-            raise PackageRefused("слепой_вопрос_показывает_лишнее",
-                                 ", ".join(sorted(hidden)))
-        present = {name for name, value in sections.items() if value.strip()}
-        missing = allowed - present
-        if missing:
-            raise PackageRefused("слепой_пакет_неполон", ", ".join(sorted(missing)))
-        wanted = set(tables.stages["слепой_вопрос"]["прячем"])
-        if (not isinstance(withheld, dict) or set(withheld) != wanted
-                or not all(isinstance(text, str) for text in withheld.values())):
-            raise _bad(f"для слепого пакета нужен withheld ровно с {sorted(wanted)}")
-        hidden_texts = withheld
+    hidden_texts = _check_blind(tables, stage, blind, declared_files, sections, withheld)
+    _check_sections(sections, limits)
+    entries, files = _read_declared_files(root, declared_files, tables)
+    normalised = _build_registries(registries, tables, blind)
 
-    known = set(limits["разделы"])
-    unknown = set(sections) - known
-    if unknown:
-        raise PackageRefused("раздел_неизвестен", ", ".join(sorted(unknown)))
-    for name, value in sections.items():
-        if not value.strip():
-            raise _bad(f"раздел {name} пуст")
-        if len(value.encode("utf-8")) > limits["предел_раздела_байт"]:
-            raise PackageRefused("превышение_размера", f"раздел {name}")
-
-    if len(declared_files) > limits["предел_числа_файлов"]:
-        raise PackageRefused("слишком_много_файлов",
-                             f"{len(declared_files)} > {limits['предел_числа_файлов']}")
-
-    seen_names, seen_files, entries, files, spent = set(), set(), [], {}, 0
-    for path, file_class in declared_files:
-        name = _folded(path)
-        if name in seen_names:
-            raise PackageRefused("файл_объявлен_дважды", path)
-        seen_names.add(name)
-        entry, text, identity = read_file(root, path, file_class, tables)
-        if identity is not None:
-            if identity in seen_files:
-                raise PackageRefused("файл_объявлен_дважды", path)
-            seen_files.add(identity)
-        entries.append(entry)
-        if text is not None:
-            files[path] = text
-            spent += entry.bytes_read
-            if spent > limits["предел_пакета_байт"]:
-                raise PackageRefused(
-                    "превышение_размера",
-                    f"пакет: файлы {spent} > {limits['предел_пакета_байт']}")
-    entries.sort(key=lambda entry: entry.path)
-
-    expected = set(limits["реестры"])
-    if set(registries) != expected:
-        raise PackageRefused("реестры_не_полны",
-                             f"{sorted(registries)} против {sorted(expected)}")
-
-    schemas = limits["схемы_записей"]
-    decisions = _registry_list(registries, "решения", schemas["решения"], "decision_id")
-    areas = _registry_list(registries, "области", schemas["области"], "area_id")
-    records = _registry_list(registries, "журнал_доказательств", None)
-
-    kinds = set(limits["виды_решений_в_реестре"])
-    for decision in decisions:
-        kind = decision.get("kind")
-        if not isinstance(kind, str) or kind not in kinds:
-            raise PackageRefused("неизвестный_вид_решения", str(kind))
-
-    journal = []
-    for record in records:
-        if not isinstance(record.get("тип"), str):
-            raise _bad("запись журнала без строкового типа")
-        if record["тип"] not in tables.vocabulary["отпечаток"]:
-            raise PackageRefused("неизвестный_тип_доказательства", record["тип"])
-        shape = (schemas["журнал_общие"] + tables.vocabulary["отпечаток"][record["тип"]])
-        missing = set(shape) - set(record)
-        extra = set(record) - set(shape) - set(schemas["журнал_необязательные"])
-        if missing or extra:
-            raise PackageRefused(
-                "запись_вне_схемы",
-                f"журнал_доказательств: нет {sorted(missing)}, лишние {sorted(extra)}")
-        check_creator(record, tables)
-        journal.append({**record, "отпечаток": fingerprint(record, tables)})
-
-    if blind:
-        visible_status = set(limits["видимые_слепому_статусы_решений"])
-        for decision in decisions:
-            if decision["status"] not in visible_status:
-                raise PackageRefused("слепой_пакет_след_скрытого",
-                                     f"решение {decision['decision_id']}: статус {decision['status']!r}")
-        visible_creators = set(limits["видимые_слепому_создатели"])
-        for record in journal:
-            if record["создатель"] not in visible_creators:
-                raise PackageRefused("слепой_пакет_след_скрытого",
-                                     f"запись журнала от {record['создатель']!r}")
-
-    normalised = {
-        "решения": sorted(decisions, key=lambda d: d["decision_id"]),
-        "области": sorted(areas, key=lambda a: a["area_id"]),
-        "журнал_доказательств": sorted(
-            journal, key=lambda r: (r["отпечаток"], canonical_json(r))),
-    }
-
-    if hidden_texts is not None:
-        shown = (list(sections.values()) + [canonical_json(normalised).decode("utf-8")]
-                 + [pair[0] for pair in declared_files])
-        leaked = _trace_of(hidden_texts, shown, limits["мин_длина_следа"])
-        if leaked is not None:
-            raise PackageRefused("слепой_пакет_след_скрытого", f"виден след раздела {leaked}")
+    leaves = _shown_leaves(sections, normalised, [entry.path for entry in entries])
+    _check_secrets(leaves, limits)
 
     manifest_dicts = [entry.as_dict() for entry in entries]
     manifest_hash = digest(canonical_json(manifest_dicts))
-    payload = {
+    packed = canonical_json({
         "стадия": stage,
         "манифест": manifest_dicts,
         "хеш_манифеста": manifest_hash,
         "реестры": normalised,
         "разделы": dict(sections),
         "файлы": files,
-    }
-    packed = canonical_json(payload)
+    })
+    # The size is settled before any search: a refusal for size must not wait for
+    # an expensive comparison.
     if len(packed) > limits["предел_пакета_байт"]:
         raise PackageRefused(
             "превышение_размера",
             f"пакет {len(packed)} > {limits['предел_пакета_байт']}")
+    if hidden_texts is not None:
+        _check_traces(hidden_texts, leaves, limits)
     return Package(stage=stage, _bytes=packed, _hash=digest(packed))
 
 
 def same_package(first: Package, second: Package) -> bool:
     """Equality of packages is a hash comparison and goes into the protocol."""
-    return first.hash == second.hash
+    return first.hash == second.hash and first.canonical_bytes == second.canonical_bytes

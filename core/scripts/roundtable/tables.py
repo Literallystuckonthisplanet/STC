@@ -605,8 +605,10 @@ SHAPES = {
         "пакет": Record("предел_файла_байт", "предел_пакета_байт", "отвергается",
                         "не_попадает", "реестры", "виды_решений_в_реестре", "канонизация",
                         "видимые_слепому_статусы_решений", "видимые_слепому_создатели",
-                        "мин_длина_следа", "запрещённые_пути", "разделы",
+                        "мин_длина_следа", "мин_длина_основы", "запрещённые_пути",
+                        "разрешённые_расширения", "признаки_секрета", "разделы",
                         "предел_раздела_байт", "предел_числа_файлов",
+                        форматы_полей=Mapping(TEXT),
                         схемы_записей=Record("решения", "области", "журнал_общие",
                                              "журнал_необязательные")),
         "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
@@ -1710,21 +1712,32 @@ class Tables:
         return checked
 
     def _check_package_rules(self) -> None:
-        """Круг 3: правила пакета (§6.9) — значения и сверки между перечнями."""
-        package = self.vocabulary.get("пакет")
-        if not isinstance(package, dict):
-            raise ContractError(f"vocabulary.пакет: ожидалась карта, получено {package!r}")
+        """Правила пакета (§6.9): всё, что читает код, названо, типизировано и сверено."""
+        def fetch(table, *path):
+            node = table
+            for key in path:
+                if not isinstance(node, dict) or key not in node:
+                    raise ContractError(f"{'.'.join(path)}: нет правила, которое читает пакет")
+                node = node[key]
+            return node
+
         where = "vocabulary.пакет"
+        package = fetch(self.vocabulary, "пакет")
+        if not isinstance(package, dict):
+            raise ContractError(f"{where}: ожидалась карта, получено {package!r}")
 
         def need(key):
             if key not in package:
                 raise ContractError(f"{where}: нет правила {key}")
             return package[key]
 
-        def number(key):
+        def number(key, low=1, high=None):
             value = need(key)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ContractError(f"{where}.{key}: ожидалось положительное целое, получено {value!r}")
+            if isinstance(value, bool) or not isinstance(value, int) or value < low or (
+                    high is not None and value > high):
+                raise ContractError(
+                    f"{where}.{key}: ожидалось целое от {low}"
+                    f"{'' if high is None else f' до {high}'}, получено {value!r}")
             return value
 
         def names(value, label):
@@ -1733,10 +1746,18 @@ class Tables:
                 raise ContractError(f"{label}: список пуст или с повторами")
             return value
 
-        for key in ("предел_раздела_байт", "предел_числа_файлов", "мин_длина_следа"):
+        for key in ("предел_файла_байт", "предел_пакета_байт", "предел_раздела_байт",
+                    "предел_числа_файлов"):
             number(key)
-        if package["мин_длина_следа"] < 8:
-            raise ContractError(f"{where}.мин_длина_следа: короче 8 знаков след ловит любое слово")
+        if package["предел_файла_байт"] > package["предел_пакета_байт"]:
+            raise ContractError(f"{where}: файл не может быть больше всего пакета")
+        if package["предел_раздела_байт"] > package["предел_пакета_байт"]:
+            raise ContractError(f"{where}: раздел не может быть больше всего пакета")
+        trace = number("мин_длина_следа", 8, 200)
+        number("мин_длина_основы", 2, trace)
+        for key in ("отвергается", "не_попадает", "реестры", "виды_решений_в_реестре"):
+            names(need(key), f"{where}.{key}")
+        _nonempty_string(need("канонизация"), f"{where}.канонизация")
 
         schemas = need("схемы_записей")
         if not isinstance(schemas, dict):
@@ -1744,7 +1765,12 @@ class Tables:
         for key in ("решения", "области", "журнал_общие", "журнал_необязательные"):
             if key not in schemas:
                 raise ContractError(f"{where}.схемы_записей: нет {key}")
-            names(schemas[key], f"{where}.схемы_записей.{key}")
+            if key == "журнал_необязательные":
+                _string_list(schemas[key], f"{where}.схемы_записей.{key}")
+                if len(set(schemas[key])) != len(schemas[key]):
+                    raise ContractError(f"{where}.схемы_записей.{key}: повторы")
+            else:
+                names(schemas[key], f"{where}.схемы_записей.{key}")
         if not {"decision_id", "kind"} <= set(schemas["решения"]):
             raise ContractError(f"{where}.схемы_записей.решения: нужны decision_id и kind")
         if "status" not in schemas["решения"]:
@@ -1753,7 +1779,8 @@ class Tables:
             raise ContractError(f"{where}.схемы_записей.области: нужен area_id")
         if not {"тип", "создатель"} <= set(schemas["журнал_общие"]):
             raise ContractError(f"{where}.схемы_записей.журнал_общие: нужны тип и создатель")
-        fingerprint_fields = {f for fields in self.vocabulary["отпечаток"].values() for f in fields}
+        fingerprints = fetch(self.vocabulary, "отпечаток")
+        fingerprint_fields = {f for fields in fingerprints.values() for f in fields}
         overlap = (set(schemas["журнал_необязательные"]) | set(schemas["журнал_общие"])) & fingerprint_fields
         if overlap:
             raise ContractError(f"{where}.схемы_записей.журнал: {sorted(overlap)} — поля отпечатка, не общие")
@@ -1762,19 +1789,50 @@ class Tables:
 
         names(need("видимые_слепому_статусы_решений"), f"{where}.видимые_слепому_статусы_решений")
         creators = names(need("видимые_слепому_создатели"), f"{where}.видимые_слепому_создатели")
-        known = {c for allowed in self.vocabulary["создатели_доказательства"].values() for c in allowed}
+        known = {c for allowed in fetch(self.vocabulary, "создатели_доказательства").values()
+                 for c in allowed}
         if not set(creators) <= known:
             raise ContractError(f"{where}.видимые_слепому_создатели: {sorted(set(creators) - known)} никто не создаёт")
 
-        names(need("запрещённые_пути"), f"{where}.запрещённые_пути")
+        for pattern in names(need("запрещённые_пути"), f"{where}.запрещённые_пути"):
+            if "/" in pattern or pattern == "*":
+                raise ContractError(f"{where}.запрещённые_пути: шаблон {pattern!r} — "
+                                    "это путь или «всё», а не имя компонента")
+        for suffix in names(need("разрешённые_расширения"), f"{where}.разрешённые_расширения"):
+            if not suffix.startswith(".") or len(suffix) < 2 or suffix != suffix.lower() \
+                    or "/" in suffix or "." in suffix[1:]:
+                raise ContractError(f"{where}.разрешённые_расширения: {suffix!r} — не расширение")
+        for pattern in names(need("признаки_секрета"), f"{where}.признаки_секрета"):
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                raise ContractError(f"{where}.признаки_секрета: {pattern!r} не компилируется — {error}")
+        formats = need("форматы_полей")
+        if not isinstance(formats, dict) or not formats:
+            raise ContractError(f"{where}.форматы_полей: ожидалась непустая карта")
+        for field, pattern in formats.items():
+            try:
+                re.compile(pattern)
+            except (re.error, TypeError) as error:
+                raise ContractError(f"{where}.форматы_полей.{field}: {pattern!r} не компилируется — {error}")
+        for field in ("text_hash", "decision_id", "area_id"):
+            if field not in formats:
+                raise ContractError(f"{where}.форматы_полей: нет формата для {field}")
+
         sections = names(need("разделы"), f"{where}.разделы")
-        blind = self.stages["слепой_вопрос"]
-        outside = (set(blind["показываем"]) | set(blind["прячем"])) - set(sections)
+        blind = fetch(self.stages, "слепой_вопрос")
+        shown = names(fetch(blind, "показываем"), "stages.слепой_вопрос.показываем")
+        hidden = names(fetch(blind, "прячем"), "stages.слепой_вопрос.прячем")
+        outside = set(shown) - set(sections)
         if outside:
             raise ContractError(f"{where}.разделы: нет разделов слепого вопроса {sorted(outside)}")
+        if set(shown) & set(hidden):
+            raise ContractError(f"stages.слепой_вопрос: {sorted(set(shown) & set(hidden))} и показываются, и прячутся")
         banned = set(sections) & set(package["не_попадает"])
         if banned:
             raise ContractError(f"{where}.разделы: {sorted(banned)} объявлены и допустимыми, и вне пакета")
+        fetch(self.stages, "стадии")
+        fetch(self.precheck, "классы_файлов")
 
     def _shape_domains(self) -> dict:
         """Перечни, из которых берутся ключи справочников."""

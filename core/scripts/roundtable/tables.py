@@ -551,9 +551,28 @@ def parse_field_format(text, where: str):
                 raise ContractError(f"{where}: {text!r} — границы A..B, A не больше B")
             return kind, int(match.group(1)), int(match.group(2))
     try:
-        return "regex", re.compile(text)
+        # Круг 6: \w и \d без re.ASCII принимают буквы и цифры любых письменностей
+        # (арабо-индийские цифры в дате, двойники в идентификаторе). Нужная
+        # кириллица в формате названа явно.
+        return "regex", re.compile(text, re.ASCII)
     except re.error as error:
         raise ContractError(f"{where}: {text!r} не компилируется — {error}")
+
+
+UNICODE_CATEGORIES = frozenset(
+    "Lu Ll Lt Lm Lo Mn Mc Me Nd Nl No Pc Pd Ps Pe Pi Pf Po Sm Sc Sk So Zs Zl Zp Cc Cf Cs Co Cn".split())
+
+
+def parse_code_range(text, where: str):
+    """`U+XXXX` или `U+XXXX-YYYY` → (первый, последний) кодовые точки."""
+    match = re.fullmatch(r"U\+([0-9A-F]{4,6})(?:-([0-9A-F]{4,6}))?", text) if isinstance(text, str) else None
+    if not match:
+        raise ContractError(f"{where}: {text!r} — ожидалось U+XXXX или U+XXXX-YYYY")
+    low = int(match.group(1), 16)
+    high = int(match.group(2), 16) if match.group(2) else low
+    if low > high or high > 0x10FFFF:
+        raise ContractError(f"{where}: {text!r} — границы вне порядка или за пределом Юникода")
+    return low, high
 
 
 def _nonempty_string(value, where: str) -> None:
@@ -631,7 +650,10 @@ SHAPES = {
                         "письменности_скелета", "скрытые_имена", "запрещённые_предки",
                         "разрешённые_расширения", "признаки_секрета", "разделы",
                         "предел_раздела_байт", "предел_числа_файлов",
+                        "длина_граммы", "доля_граммов_процентов",
                         форматы_полей=Mapping(TEXT),
+                        невидимые_знаки=Record("категории", "диапазоны"),
+                        допустимые_знаки_слепого=Record("категории", "управляющие"),
                         схемы_записей=Record("решения", "области", "журнал_общие",
                                              "журнал_необязательные")),
         "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
@@ -1851,6 +1873,30 @@ class Tables:
                 f"{where}.форматы_полей: у полей нет формата — нет и поля: "
                 f"{sorted(known_fields - set(formats))}")
 
+        number("длина_граммы", 4, trace)
+        number("доля_граммов_процентов", 1, 100)
+        invisible = need("невидимые_знаки")
+        if not isinstance(invisible, dict) or set(invisible) != {"категории", "диапазоны"}:
+            raise ContractError(f"{where}.невидимые_знаки: нужны категории и диапазоны")
+        for category in names(invisible["категории"], f"{where}.невидимые_знаки.категории"):
+            if category not in UNICODE_CATEGORIES:
+                raise ContractError(f"{where}.невидимые_знаки.категории: {category!r} — не категория Юникода")
+        for span in names(invisible["диапазоны"], f"{where}.невидимые_знаки.диапазоны"):
+            parse_code_range(span, f"{where}.невидимые_знаки.диапазоны")
+        allowed = need("допустимые_знаки_слепого")
+        if not isinstance(allowed, dict) or set(allowed) != {"категории", "управляющие"}:
+            raise ContractError(f"{where}.допустимые_знаки_слепого: нужны категории и управляющие")
+        for category in names(allowed["категории"], f"{where}.допустимые_знаки_слепого.категории"):
+            if category not in UNICODE_CATEGORIES:
+                raise ContractError(f"{where}.допустимые_знаки_слепого.категории: {category!r} — не категория Юникода")
+            if category in ("Cf", "Co", "Cn", "Cs", "Cc"):
+                raise ContractError(f"{where}.допустимые_знаки_слепого.категории: {category} "
+                                    "нельзя допускать в слепой пакет (управляющие — отдельным списком)")
+        controls = allowed["управляющие"]
+        if (not isinstance(controls, list) or len(set(controls)) != len(controls)
+                or not all(isinstance(c, int) and not isinstance(c, bool) and 0 <= c < 32 for c in controls)):
+            raise ContractError(f"{where}.допустимые_знаки_слепого.управляющие: список кодов 0..31 без повторов")
+
         scripts = names(need("письменности_скелета"), f"{where}.письменности_скелета")
         if set(scripts) - set(SKELETON_SCRIPTS):
             raise ContractError(f"{where}.письменности_скелета: допустимы {sorted(SKELETON_SCRIPTS)}")
@@ -2703,6 +2749,17 @@ _HOMOGLYPHS = str.maketrans({
     "Ο": "О", "Α": "А", "Ε": "Е", "Ρ": "Р", "Τ": "Т", "Υ": "У", "Κ": "К",
     "Ν": "N", "Μ": "М", "Χ": "Х", "Ι": "I", "Β": "В", "Η": "Н", "Ζ": "Z",
 })
+
+# Круг 6: скелет пакета сворачивает ещё и цифры-двойники и класс «одна палочка»
+# (1, l, i, I, ı, і, ӏ и кириллическое и). Движок согласий их НЕ сворачивает: у него
+# слова с l и i («only», «if», «подтвердить») проверяются по тексту, и слияние букв
+# сломало бы разбор. Основа — та же таблица `_HOMOGLYPHS`, а не вторая копия.
+_SKELETON_CONFUSABLES = {
+    **_HOMOGLYPHS,
+    ord("0"): "о", ord("3"): "з", ord("6"): "б", ord("4"): "ч",
+    **{ord(ch): "i" for ch in "1lLiIıіІӏӀǀⅼⅰ"},
+    ord("и"): "i", ord("И"): "i",
+}
 
 
 def _denylist(words: str) -> re.Pattern:

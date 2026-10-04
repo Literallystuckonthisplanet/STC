@@ -31,12 +31,22 @@ What is guaranteed, and by what:
   text is found by any slice of `мин_длина_следа`; a short one (an author's
   name) by its stem, which survives declension, prefixes and look-alikes.
 
+A partial quote is found by the share of the hidden text's 8-grams that survive
+(`доля_граммов_процентов`, ~30%): replacing every third word leaves more than
+that; replacing every second word does not, and that limit is accepted.
+
 Deliberately NOT guaranteed (accepted, not overlooked): a reordering of words,
 base64/hex or any other re-encoding, a translation and a paraphrase are not
 caught; an honest solution that quotes the task verbatim for longer than the
 threshold is refused (safely, and the refusal names the channel and the hidden
 section, never the hidden text). Secret detection is by file name, extension
-and a short list of signatures, not a scanner.
+and a list of signatures read from the table (formats of known keys, a general
+assignment / URL-password rule over the raw text, the text without invisibles
+and the text with `\\uXXXX` / `\\xXX` decoded), not a scanner: a secret that
+is only base64, reversed or split over lines is not found. Every character of a
+blind package must come from the whitelist `допустимые_знаки_слепого`; the rest
+(format, private-use, unassigned, tags, variation selectors, Braille, regional
+indicators, fillers) is refused as `посторонний_знак`, never dropped silently.
 
 Path rules are refusals, not warnings (§6.9). `existing_evidence` must exist;
 `planned_output` is created later, so its absence is normal (§7.3).
@@ -51,6 +61,7 @@ import functools
 import hashlib
 import json
 import os
+import pwd
 import re
 import stat
 import unicodedata
@@ -187,23 +198,27 @@ def _forbidden(relative: str, patterns) -> str | None:
     return None
 
 
-def _read_by_descriptors(root: Path, relative: str, cap: int):
+def _read_by_descriptors(root: Path, relative: str, cap: int, identity=None):
     """Open `relative` below `root` without ever following a link; read once.
 
     Returns the bytes, or None if some component is absent.
     Every component must be spelled exactly as the disk spells it, live on the
     root's device, and the file must still be the same single-link inode after
-    the read.
+    the read. The root itself is opened without following a link, and if the
+    caller measured it earlier (`identity`), it must be the same directory still.
     """
     parts = PurePosixPath(relative).parts
     opened = []
     try:
         try:
-            current = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            current = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except (OSError, ValueError) as error:
             raise PackageRefused("файл_нечитаем", f"корень: {error}")
         opened.append(current)
-        root_device = os.fstat(current).st_dev
+        root_info = os.fstat(current)
+        if identity is not None and (root_info.st_dev, root_info.st_ino) != identity:
+            raise PackageRefused("файл_изменился", "корень подменён между проверкой и открытием")
+        root_device = root_info.st_dev
 
         def spelled(directory, part):
             if len(part.encode("utf-8", "surrogateescape")) > 255:
@@ -288,14 +303,70 @@ def _read_by_descriptors(root: Path, relative: str, cap: int):
             os.close(descriptor)
 
 
+@functools.lru_cache(maxsize=64)
+def _parsed_ranges(spans: tuple) -> tuple:
+    return tuple(tables_module.parse_code_range(span, "диапазон") for span in spans)
+
+
+def _ranges(spans) -> tuple:
+    return _parsed_ranges(tuple(spans))
+
+
+def _in_ranges(code: int, ranges) -> bool:
+    return any(low <= code <= high for low, high in ranges)
+
+
+_ESCAPES = re.compile(r"\\U[0-9a-fA-F]{8}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}|\\[0-7]{3}")
+
+
+def _unescaped(text: str) -> str:
+    """Записи \\uXXXX, \\UXXXXXXXX, \\xXX и восьмеричные -- символами: так видит критик."""
+    def one(match):
+        token = match.group(0)
+        try:
+            return chr(int(token[2:], 16) if token[1] in "uUx" else int(token[1:], 8))
+        except (ValueError, OverflowError):
+            return token
+    return _ESCAPES.sub(one, text)
+
+
+def _strip_invisible(text: str, limits: dict) -> str:
+    """Without the invisible, before and after NFKC (a mark would otherwise compose into its letter)."""
+    if text.isascii():
+        return text
+    rules = limits["невидимые_знаки"]
+    categories, ranges = set(rules["категории"]), _ranges(rules["диапазоны"])
+
+    def clean(value):
+        return "".join(ch for ch in value if unicodedata.category(ch) not in categories
+                       and not _in_ranges(ord(ch), ranges))
+    return clean(unicodedata.normalize("NFKC", clean(text)))
+
+
 def _looks_secret(text: str, limits: dict) -> str | None:
-    """A secret signature in the raw text or in the text with invisibles removed."""
-    stripped = "".join(ch for ch in unicodedata.normalize("NFKC", text)
-                       if unicodedata.category(ch) != "Cf")
+    """A secret signature in the raw text, without invisibles, or with escapes decoded."""
+    variants = {text, unicodedata.normalize("NFKC", text), _strip_invisible(text, limits),
+                _strip_invisible(_unescaped(text), limits)}
     for pattern in limits["признаки_секрета"]:
-        if re.search(pattern, text) or re.search(pattern, stripped):
+        if any(re.search(pattern, variant) for variant in variants):
             return pattern
     return None
+
+
+def _root_text(root) -> str:
+    """The root as text: no NUL, no lone surrogates -- a named refusal, not a ValueError."""
+    if not isinstance(root, (str, os.PathLike)):
+        raise PackageRefused("некорректный_вход", f"корень не путь: {type(root).__name__}")
+    try:
+        text = os.fspath(root)
+    except TypeError:
+        raise PackageRefused("некорректный_вход", "корень не путь")
+    if isinstance(text, bytes):
+        raise PackageRefused("некорректный_вход", "корень — байты")
+    if "\x00" in text:
+        raise PackageRefused("некорректный_вход", "NUL в корне")
+    _encodable(text, "корень")
+    return text
 
 
 def read_file(root: Path, relative: str, file_class: str, tables):
@@ -308,13 +379,15 @@ def read_file(root: Path, relative: str, file_class: str, tables):
     if not isinstance(file_class, str) or file_class not in classes:
         raise PackageRefused("неизвестный_класс_файла", f"{relative}: {file_class}")
     limits = tables.vocabulary["пакет"]
-    root = Path(root)
+    root = Path(_root_text(root))
     _check_path(root, relative)
     _policy(relative, limits)
     try:
         absolute = (root / relative).resolve()
         inside_runs = absolute.is_relative_to(state_module.RUNS_ROOT.resolve())
-    except OSError:
+        resolved_root = root.resolve()
+        measured = os.stat(resolved_root)
+    except (OSError, RuntimeError):
         raise PackageRefused("путь_вне_корня", relative)
     if inside_runs:
         raise PackageRefused("путь_запрещён", f"{relative}: внутри каталога прогонов")
@@ -325,7 +398,8 @@ def read_file(root: Path, relative: str, file_class: str, tables):
     if banned is not None:
         raise PackageRefused("путь_запрещён", f"{relative}: служебный каталог выше корня — {banned}")
 
-    data = _read_by_descriptors(root, relative, limits["предел_файла_байт"])
+    data = _read_by_descriptors(resolved_root, relative, limits["предел_файла_байт"],
+                                (measured.st_dev, measured.st_ino))
     if data is None:
         if file_class == "planned_output":
             # Declared, created later: absence is the normal case (§7.3).
@@ -459,8 +533,7 @@ def _bad(detail: str):
 
 
 def _validate_input(root, declared_files, sections, registries, stage):
-    if not isinstance(root, (str, os.PathLike)):
-        raise _bad(f"корень не путь: {type(root).__name__}")
+    _root_text(root)
     if not isinstance(stage, str):
         raise _bad(f"стадия не строка: {stage!r}")
     if not isinstance(declared_files, (list, tuple)):
@@ -615,28 +688,33 @@ _SCRIPT_TESTS = {
 def _skeleton_checked(text: str, scripts=None):
     """`(skeleton, first_foreign_letter)`.
 
-    NFKD, marks off, NFKC, casefold, look-alikes folded (one table with the
-    consensus engine), digits of any script to ASCII; only letters and digits
-    stay. With `scripts` given, a letter outside those alphabets is reported
-    instead of being dropped silently.
+    NFKD, marks off, NFKC, casefold, digits of any script to ASCII, look-alikes
+    folded (the consensus engine's table plus digit twins and the "one stick"
+    class); only letters and digits stay. With `scripts` given, a letter outside
+    those alphabets is reported instead of being dropped silently. A digit is
+    judged as a digit even when its twin is a letter (`0` -> `о`).
     """
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.category(ch).startswith("M"))
     text = unicodedata.normalize("NFKC", text).casefold()
-    text = unicodedata.normalize("NFKC", text).translate(tables_module._HOMOGLYPHS)
+    text = unicodedata.normalize("NFKC", text)
     kept, foreign = [], None
     for ch in text:
         category = unicodedata.category(ch)
         if category[0] not in "LN":
             continue
+        is_digit = False
         if category[0] == "N":
             digit = unicodedata.digit(ch, None)
             if digit is not None:
-                ch = str(digit)
-        if scripts is not None and not any(_SCRIPT_TESTS[name](ch) for name in scripts):
+                ch, is_digit = str(digit), True
+        folded = ch.translate(tables_module._SKELETON_CONFUSABLES)
+        probes = (ch,) if is_digit else (ch, folded)
+        if scripts is not None and not any(_SCRIPT_TESTS[name](probe)
+                                           for name in scripts for probe in probes):
             foreign = foreign or ch
             continue
-        kept.append(ch)
+        kept.append(folded)
     return "".join(kept), foreign
 
 
@@ -685,6 +763,34 @@ def _check_secrets(leaves: list, limits: dict) -> None:
             raise PackageRefused("похоже_на_секрет", channel)
 
 
+def _unexpected_mark(text: str, limits: dict) -> str | None:
+    """The first char of `text` outside the blind whitelist, or None.
+
+    Allowed: the categories of `допустимые_знаки_слепого` and its control codes,
+    minus every range of `невидимые_знаки` (variation selectors, Braille,
+    regional indicators, fillers live inside allowed categories).
+    """
+    rules = limits["допустимые_знаки_слепого"]
+    categories, controls = set(rules["категории"]), set(rules["управляющие"])
+    banned = _ranges(limits["невидимые_знаки"]["диапазоны"])
+    for ch in text:
+        code = ord(ch)
+        if code < 32:
+            if code in controls:
+                continue
+            return ch
+        if unicodedata.category(ch) not in categories or _in_ranges(code, banned):
+            return ch
+    return None
+
+
+def _check_marks(leaves: list, limits: dict) -> None:
+    for channel, text, _ in leaves:
+        mark = _unexpected_mark(text, limits)
+        if mark is not None:
+            raise PackageRefused("посторонний_знак", f"{channel}: U+{ord(mark):04X}")
+
+
 def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
     """Refuse a blind package in which anything hidden shows up.
 
@@ -694,6 +800,8 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
     """
     window, minimum = limits["мин_длина_следа"], limits["мин_длина_основы"]
     scripts, names = limits["письменности_скелета"], set(limits["скрытые_имена"])
+    gram, share = limits["длина_граммы"], limits["доля_граммов_процентов"]
+    _check_marks(leaves, limits)
     skeletons = []
     for channel, text, is_key in leaves:
         skeleton, foreign = _skeleton_checked(text, scripts)
@@ -734,14 +842,36 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
                     if joined[index:index + window] in grams:
                         raise PackageRefused("слепой_пакет_след_скрытого",
                                              f"{channel_at(index)}: след скрытого раздела {name}")
+                _check_share(name, skeleton, joined, gram, share, channel_at)
                 continue
             else:
                 needles = {skeleton}
+                _check_share(name, skeleton, joined, gram, share, channel_at)
             for needle in needles:
                 index = joined.find(needle)
                 if index >= 0:
                     raise PackageRefused("слепой_пакет_след_скрытого",
                                          f"{channel_at(index)}: след скрытого раздела {name}")
+
+
+def _check_share(name, skeleton, joined, size, percent, channel_at) -> None:
+    """A partly quoted hidden text: the share of its `size`-grams found in what is shown.
+
+    Replacing every third word kills every long window but leaves most short
+    grams alive; the share of surviving grams is what gives the quote away.
+    """
+    if len(skeleton) < size:
+        return
+    grams = {skeleton[i:i + size] for i in range(len(skeleton) - size + 1)}
+    found, first = set(), None
+    for index in range(len(joined) - size + 1):
+        piece = joined[index:index + size]
+        if piece in grams:
+            found.add(piece)
+            first = index if first is None else first
+    if found and len(found) * 100 >= percent * len(grams):
+        raise PackageRefused("слепой_пакет_след_скрытого",
+                             f"{channel_at(first)}: часть скрытого раздела {name} процитирована")
 
 
 # -- the build, in stages --------------------------------------------------------
@@ -810,6 +940,60 @@ def _read_declared_files(root: Path, declared_files, tables):
     return entries, files
 
 
+def _chain(path: str) -> list:
+    """`[(name, (st_dev, st_ino))]` from `/` down to `path`, which must be resolved."""
+    chain, current = [], "/"
+    chain.append(("/", _identity(current)))
+    for part in Path(path).parts[1:]:
+        current = os.path.join(current, part)
+        chain.append((part, _identity(current)))
+    return chain
+
+
+def _identity(path: str) -> tuple:
+    info = os.stat(path)
+    return info.st_dev, info.st_ino
+
+
+def _homes() -> list:
+    """Every spelling of the home directory: `$HOME` (as `Path.home` sees it) and the account's."""
+    found = []
+    try:
+        found.append(str(Path.home()))
+    except (RuntimeError, KeyError):
+        pass
+    try:
+        found.append(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        pass
+    return found
+
+
+def _check_root_place(root: Path) -> None:
+    """The build root is neither a home, nor above one (`/`, `/Users`), nor a hidden directory in one.
+
+    Identity, not text: case, NFC/NFD, bind mounts and links all lead to the same
+    (device, inode), so the comparison walks the chains of parents.
+    """
+    try:
+        root_chain = _chain(os.path.realpath(root))
+    except (OSError, RuntimeError, ValueError):
+        raise PackageRefused("файл_нечитаем", "корень не разрешается")
+    root_ids = [identity for _, identity in root_chain]
+    for home in _homes():
+        try:
+            home_chain = _chain(os.path.realpath(home))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        home_ids = [identity for _, identity in home_chain]
+        if root_ids[-1] in home_ids:
+            raise PackageRefused("путь_запрещён", "корень сборки — домашний каталог или выше него")
+        if home_ids[-1] in root_ids:
+            below = root_chain[root_ids.index(home_ids[-1]) + 1][0]
+            if below.startswith("."):
+                raise PackageRefused("путь_запрещён", "корень сборки — скрытый каталог в домашнем")
+
+
 def build_package(root, declared_files, sections, registries, stage,
                   blind: bool = False, tables=None, withheld=None) -> Package:
     """Assemble one verifiable package.
@@ -824,7 +1008,7 @@ def build_package(root, declared_files, sections, registries, stage,
     limits = tables.vocabulary["пакет"]
 
     _validate_input(root, declared_files, sections, registries, stage)
-    root = Path(root)
+    root = Path(_root_text(root))
     if stage not in tables.stages["стадии"]:
         raise PackageRefused("неизвестная_стадия", stage)
     try:
@@ -834,14 +1018,7 @@ def build_package(root, declared_files, sections, registries, stage,
     if inside_runs:
         raise PackageRefused("путь_запрещён", "корень сборки внутри каталога прогонов")
 
-    try:
-        home = Path.home().resolve()
-        resolved_root = root.resolve()
-    except (OSError, RuntimeError):
-        raise PackageRefused("файл_нечитаем", "корень не разрешается")
-    if resolved_root == home or (resolved_root.is_relative_to(home)
-                                 and resolved_root.relative_to(home).parts[0].startswith(".")):
-        raise PackageRefused("путь_запрещён", "корень сборки — домашний каталог или скрытый каталог в нём")
+    _check_root_place(root)
 
     forbidden = set(limits["не_попадает"]) & set(sections)
     if forbidden:

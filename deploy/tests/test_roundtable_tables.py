@@ -645,145 +645,214 @@ def test_the_package_rules_are_complete_and_pinned():
         "the reason two builds must hash the same has to stay written down")
 
 
-PACKAGE_RULES = {
-    'схемы_записей': {'решения': ['decision_id', 'kind', 'text_hash', 'status'],
- 'области': ['area_id'],
- 'журнал_общие': ['тип', 'создатель'],
- 'журнал_необязательные': ['id', 'время']},
-    'видимые_слепому_статусы_решений': ['закрыто'],
-    'видимые_слепому_создатели': ['предпроверка'],
-    'мин_длина_следа': 30,
-    'мин_длина_основы': 4,
-    'запрещённые_пути': ['.git',
- '.claude',
- '.codex',
- 'CLAUDE.md',
- 'CLAUDE*.md',
- 'AGENTS.md',
- 'AGENTS*.md',
- 'GEMINI*',
- '.cursor*',
- '.github',
- '.gnupg',
- 'codex-home',
- '.env',
- '.env.*',
- '.env*',
- '*.env',
- '*.env.*',
- '*.pem*',
- '*.key*',
- '.stc',
- '.ssh',
- '.aws',
- '.docker',
- '.kube',
- '.npmrc',
- '.netrc',
- '.pypirc',
- '.pgpass',
- '.git-credentials',
- '.gitconfig',
- '.htpasswd',
- '.envrc',
- '.mcp.json',
- '.claude.json',
- 'settings.local.json',
- '*secret*',
- '*credential*',
- '*password*',
- '*passwd*',
- '*apikey*',
- '*api?key*',
- 'creds*',
- '*private*',
- '*keystore*',
- '*wallet*',
- 'service-account*',
- 'docker-compose*',
- 'database.yml',
- '*auth*.json',
- 'token',
- 'token.*',
- 'tokens',
- 'tokens.*',
- '*_token',
- '*_token.*',
- '*.token',
- 'id_rsa*',
- 'id_dsa*',
- 'id_ecdsa*',
- 'id_ed25519*',
- '*.p12',
- '*.pfx',
- '*.jks',
- '*.tfstate*',
- '*.tfvars'],
-    'запрещённые_предки': ['.git',
- '.claude',
- '.codex',
- '.cursor*',
- '.github',
- '.gnupg',
- '.stc',
- '.ssh',
- '.aws',
- '.docker',
- '.kube',
- 'codex-home'],
-    'разрешённые_расширения': ['.md',
- '.txt',
- '.rst',
- '.py',
- '.ts',
- '.tsx',
- '.js',
- '.sql',
- '.sh',
- '.yaml',
- '.yml',
- '.json',
- '.toml'],
-    'признаки_секрета': ['-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----',
- 'PuTTY-User-Key-File',
- '(AKIA|ASIA)[0-9A-Z]{16}',
- 'gh[pousr]_[A-Za-z0-9]{36,}',
- 'sk-[A-Za-z0-9_-]{20,}',
- 'xox[baprs]-[A-Za-z0-9-]{10,}',
- 'AIza[\\w-]{35}',
- '\\d{8,10}:AA[\\w-]{33}',
- '(npm|glpat|hf|github_pat|sk_live|xapp)[_-][\\w-]{16,}',
- 'hooks\\.slack\\.com/services/',
- 'AccountKey=',
- '(?i)(password|passwd|secret|token|api[_-]?key|access[_-]?key|auth)\\s*[:=]\\s*[\'\\"]?[^\\s\'\\"]{6,}',
- '://[^/\\s:@]+:[^/\\s@]+@',
- 'Bearer\\s+[\\w.~+/-]{16,}',
- 'eyJ[\\w-]{10,}\\.eyJ[\\w-]{10,}\\.',
- '\\"(access|refresh|id)_token\\"\\s*:'],
-    'форматы_полей': {'decision_id': '[\\w.:-]{1,64}',
- 'area_id': '[\\w.:-]{1,64}',
- 'id': '[\\w.:-]{1,64}',
- 'kind': '[\\w-]{1,32}',
- 'status': '[\\w-]{1,32}',
- 'text_hash': '[0-9a-f]{64}',
- 'хеш_файла': '[0-9a-f]{64}',
- 'хеш_редакции': '[0-9a-f]{64}',
- 'хеш_вывода': '[0-9a-f]{64}',
- 'тип': '[a-z_]{1,32}',
- 'создатель': '[\\w]{1,32}',
- 'время': '\\d{4}-\\d{2}-\\d{2}([T ]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?)?',
- 'команда': '[\\s\\S]{1,200}',
- 'якорь': '[\\s\\S]{1,200}',
- 'путь': '[\\s\\S]{1,200}',
- 'версия_инструмента': '[\\w.+-]{1,32}',
- 'код_возврата': 'целое:-255..255',
- 'диапазон_строк': 'пара_целых:0..10000000'},
-    'письменности_скелета': ['кириллица', 'латиница', 'цифры'],
-    'скрытые_имена': ['автор', 'второй_критик'],
-    'разделы': ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения', 'предложенное_решение'],
-    'предел_раздела_байт': 65536,
-    'предел_числа_файлов': 64,
-}
+PACKAGE_RULES = {'схемы_записей': {'решения': ['decision_id', 'kind', 'text_hash', 'status'],
+                   'области': ['area_id'],
+                   'журнал_общие': ['тип', 'создатель'],
+                   'журнал_необязательные': ['id', 'время']},
+ 'видимые_слепому_статусы_решений': ['закрыто'],
+ 'видимые_слепому_создатели': ['предпроверка'],
+ 'мин_длина_следа': 30,
+ 'мин_длина_основы': 4,
+ 'запрещённые_пути': ['.git',
+                      '.claude',
+                      '.codex',
+                      'CLAUDE.md',
+                      'CLAUDE*.md',
+                      'AGENTS.md',
+                      'AGENTS*.md',
+                      'GEMINI*',
+                      '.cursor*',
+                      '.github',
+                      '.gnupg',
+                      'codex-home',
+                      '.env',
+                      '.env.*',
+                      '.env*',
+                      '*.env',
+                      '*.env.*',
+                      '*.pem*',
+                      '*.key*',
+                      '.stc',
+                      '.ssh',
+                      '.aws',
+                      '.docker',
+                      '.kube',
+                      '.npmrc',
+                      '.netrc',
+                      '.pypirc',
+                      '.pgpass',
+                      '.git-credentials',
+                      '.gitconfig',
+                      '.htpasswd',
+                      '.envrc',
+                      '.mcp.json',
+                      '.claude.json',
+                      'settings.local.json',
+                      '*secret*',
+                      '*credential*',
+                      '*password*',
+                      '*passwd*',
+                      '*apikey*',
+                      '*api?key*',
+                      'creds*',
+                      '*private*',
+                      '*keystore*',
+                      '*wallet*',
+                      'service-account*',
+                      'docker-compose*',
+                      'database.yml',
+                      '*auth*.json',
+                      'token',
+                      'token.*',
+                      'tokens',
+                      'tokens.*',
+                      '*_token',
+                      '*_token.*',
+                      '*.token',
+                      'id_rsa*',
+                      'id_dsa*',
+                      'id_ecdsa*',
+                      'id_ed25519*',
+                      '*.p12',
+                      '*.pfx',
+                      '*.jks',
+                      '*.tfstate*',
+                      '*.tfvars',
+                      '*.tfvars.json',
+                      'service_account*',
+                      'serviceAccountKey*',
+                      'key.json',
+                      'jwt.json',
+                      'storage_state*',
+                      'session.json',
+                      'cookies*',
+                      'kubeconfig*',
+                      'bearer*',
+                      '*access-token*',
+                      '*bot-token*',
+                      'token_cache*',
+                      'compose.yaml',
+                      'vault.y*ml',
+                      'seed.txt',
+                      'mnemonic*',
+                      'recovery_codes*',
+                      'shadow*',
+                      'authorized_keys*',
+                      '.auth'],
+ 'запрещённые_предки': ['.git',
+                        '.claude',
+                        '.codex',
+                        '.cursor*',
+                        '.github',
+                        '.gnupg',
+                        '.stc',
+                        '.ssh',
+                        '.aws',
+                        '.docker',
+                        '.kube',
+                        'codex-home'],
+ 'разрешённые_расширения': ['.md',
+                            '.txt',
+                            '.rst',
+                            '.py',
+                            '.ts',
+                            '.tsx',
+                            '.js',
+                            '.sql',
+                            '.sh',
+                            '.yaml',
+                            '.yml',
+                            '.json',
+                            '.toml'],
+ 'признаки_секрета': ['-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----',
+                      'PuTTY-User-Key-File',
+                      '(AKIA|ASIA)[0-9A-Z]{16}',
+                      'gh[pousr]_[A-Za-z0-9]{36,}',
+                      'sk-[A-Za-z0-9_-]{20,}',
+                      'xox[baprs]-[A-Za-z0-9-]{10,}',
+                      'AIza[\\w-]{35}',
+                      '\\d{8,10}:AA[\\w-]{33}',
+                      '(npm|glpat|hf|github_pat|sk_live|xapp)[_-][\\w-]{16,}',
+                      'ntn_[A-Za-z0-9]{30,}',
+                      '(?<![A-Za-z0-9])re_[A-Za-z0-9]{20,}',
+                      'shp(at|ca|pa|ss)_[A-Fa-f0-9]{32}',
+                      'gsk_[A-Za-z0-9]{20,}',
+                      'pypi-[A-Za-z0-9_-]{20,}',
+                      'ya29\\.[\\w-]{20,}',
+                      'whsec_[A-Za-z0-9]{16,}',
+                      '(?<![A-Za-z0-9])SG\\.[\\w-]{16,}\\.[\\w-]{16,}',
+                      'hooks\\.slack\\.com/services/',
+                      'AccountKey=',
+                      '(?:(?<![A-Za-z])|(?<=[a-z])(?=[A-Z]))(?:(?i:secret|token|passw(?:or)?d|passphrase|pwd|private[_-]?key|api[_-]?key|access[_-]?key|auth[_-]?key|credential)|(?<=[A-Za-z0-9][_.-])(?i:pass)|(?<=[a-z])Pass|(?i:pass)(?=[_.-][A-Za-z0-9]|[A-Z]))(?![\\w.-]{0,40}?(?i:_env|_name|_file|_path|_var|_url|_id|_header|_sock|_hit)(?![A-Za-z0-9])["\']?[ '
+                      '\\t]{0,20}(?:=>|:=|[:=]))(?:[A-Z][A-Za-z0-9_]{0,40}|[_.-][\\w.-]{0,40})?["\']?[ '
+                      '\\t]{0,20}(?:=>|:=|[:=])(?![-+?=])[ \\t]{0,20}(?:["\']|[|>][+-]?[ '
+                      '\\t]{0,20}\\n\\s{1,80})?(?![./~*])(?![^\\s"\']{0,200}(?:[(\\[<)}]|\\$\\{|\\$\\(|\\{\\{|\\*{4}|os\\.environ|process\\.env|getenv))(?!(?i:required|true|false|none|null|nil|undefined)(?![\\w]))(?!(?-i:[a-z_.]+|[A-Z_.]+)(?![^\\s"\']))(?![0-9._,]+(?![^\\s"\']))[^\\s"\']{6,}',
+                      '://[^/\\s:@]{0,64}+:(?![$<{%(])[^/\\s@]{1,128}+@',
+                      'Bearer\\s+[\\w.~+/-]{16,}',
+                      '(?<![\\w-])eyJ[\\w-]{10,}+\\.eyJ[\\w-]{10,}+\\.',
+                      '\\"(access|refresh|id)_token\\"\\s*:'],
+ 'форматы_полей': {'decision_id': '[\\wА-Яа-яЁё.:-]{1,64}',
+                   'area_id': '[\\wА-Яа-яЁё.:-]{1,64}',
+                   'id': '[\\wА-Яа-яЁё.:-]{1,64}',
+                   'kind': '[\\wА-Яа-яЁё-]{1,32}',
+                   'status': '[\\wА-Яа-яЁё-]{1,32}',
+                   'text_hash': '[0-9a-f]{64}',
+                   'хеш_файла': '[0-9a-f]{64}',
+                   'хеш_редакции': '[0-9a-f]{64}',
+                   'хеш_вывода': '[0-9a-f]{64}',
+                   'тип': '[a-z_]{1,32}',
+                   'создатель': '[\\wА-Яа-яЁё]{1,32}',
+                   'время': '\\d{4}-\\d{2}-\\d{2}([T '
+                            ']\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?)?',
+                   'команда': '[\\s\\S]{1,200}',
+                   'якорь': '[\\s\\S]{1,200}',
+                   'путь': '[\\s\\S]{1,200}',
+                   'версия_инструмента': '[\\w.+-]{1,32}',
+                   'код_возврата': 'целое:-255..255',
+                   'диапазон_строк': 'пара_целых:0..10000000'},
+ 'письменности_скелета': ['кириллица', 'латиница', 'цифры'],
+ 'скрытые_имена': ['автор', 'второй_критик'],
+ 'разделы': ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения', 'предложенное_решение'],
+ 'предел_раздела_байт': 65536,
+ 'предел_числа_файлов': 64,
+ 'невидимые_знаки': {'категории': ['Cf', 'Mn', 'Me', 'Co', 'Cn'],
+                     'диапазоны': ['U+034F',
+                                   'U+115F-1160',
+                                   'U+17B4-17B5',
+                                   'U+180B-180F',
+                                   'U+2800-28FF',
+                                   'U+3164',
+                                   'U+FE00-FE0F',
+                                   'U+FFA0',
+                                   'U+FFFC-FFFD',
+                                   'U+1F1E6-1F1FF',
+                                   'U+E0000-E007F',
+                                   'U+E0100-E01EF']},
+ 'допустимые_знаки_слепого': {'категории': ['Lu',
+                                            'Ll',
+                                            'Lt',
+                                            'Lm',
+                                            'Lo',
+                                            'Mn',
+                                            'Mc',
+                                            'Nd',
+                                            'Nl',
+                                            'No',
+                                            'Pc',
+                                            'Pd',
+                                            'Ps',
+                                            'Pe',
+                                            'Pi',
+                                            'Pf',
+                                            'Po',
+                                            'Sm',
+                                            'Sc',
+                                            'Sk',
+                                            'So',
+                                            'Zs'],
+                              'управляющие': [9, 10, 13]},
+ 'длина_граммы': 8,
+ 'доля_граммов_процентов': 30}
 
 
 def test_the_package_rules_are_pinned_to_their_exact_values():
@@ -4108,3 +4177,144 @@ def test_one_reply_cannot_back_two_permissions():
     assert len(keys) == len(set(keys)), "одно основание под двумя разрешениями"
     dates = [str(g["дата"]) for g in grants]
     assert dates == sorted(dates), "разрешения записаны не по порядку выдачи"
+
+
+# --- round 6 (Б2): invisible chars, whitelist of a blind package, gram share ----------------------
+
+@pytest.mark.parametrize("key,bad,why", [
+    ("длина_граммы", 3, "от 4"), ("длина_граммы", 31, "до 30"), ("длина_граммы", "8", "целое"),
+    ("длина_граммы", True, "целое"), ("длина_граммы", None, "целое"),
+    ("доля_граммов_процентов", 0, "от 1"), ("доля_граммов_процентов", 101, "до 100"),
+    ("доля_граммов_процентов", "30", "целое"), ("доля_граммов_процентов", 0.3, "целое"),
+    ("доля_граммов_процентов", True, "целое"),
+    ("невидимые_знаки", [], "нужны категории и диапазоны"), ("невидимые_знаки", {}, "нужны категории и диапазоны"),
+    ("невидимые_знаки", {"категории": ["Cf"]}, "нужны категории и диапазоны"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+200B"], "лишнее": 1}, "нужны категории и диапазоны"),
+    ("невидимые_знаки", {"категории": [], "диапазоны": ["U+200B"]}, "пуст"),
+    ("невидимые_знаки", {"категории": ["Cf", "Cf"], "диапазоны": ["U+200B"]}, "повтор"),
+    ("невидимые_знаки", {"категории": ["Xx"], "диапазоны": ["U+200B"]}, "не категория Юникода"),
+    ("невидимые_знаки", {"категории": ["cf"], "диапазоны": ["U+200B"]}, "не категория Юникода"),
+    ("невидимые_знаки", {"категории": [False], "диапазоны": ["U+200B"]}, "строка"),
+    ("невидимые_знаки", {"категории": "Cf", "диапазоны": ["U+200B"]}, "список"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": []}, "пуст"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": "U+200B"}, "список"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["200B"]}, "U\\+XXXX"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+200"]}, "U\\+XXXX"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+200b"]}, "U\\+XXXX"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+2800-27FF"]}, "вне порядка"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+110000"]}, "вне порядка"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+0-5"]}, "U\\+XXXX"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+2800-28FF-2900"]}, "U\\+XXXX"),
+    ("допустимые_знаки_слепого", [], "нужны категории и управляющие"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"]}, "нужны категории и управляющие"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": [], "лишнее": 1}, "нужны категории и управляющие"),
+    ("допустимые_знаки_слепого", {"категории": [], "управляющие": []}, "пуст"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu", "Lu"], "управляющие": []}, "повтор"),
+    ("допустимые_знаки_слепого", {"категории": ["Xx"], "управляющие": []}, "не категория Юникода"),
+    ("допустимые_знаки_слепого", {"категории": ["Cf"], "управляющие": []}, "нельзя допускать"),
+    ("допустимые_знаки_слепого", {"категории": ["Co"], "управляющие": []}, "нельзя допускать"),
+    ("допустимые_знаки_слепого", {"категории": ["Cn"], "управляющие": []}, "нельзя допускать"),
+    ("допустимые_знаки_слепого", {"категории": ["Cs"], "управляющие": []}, "нельзя допускать"),
+    ("допустимые_знаки_слепого", {"категории": ["Cc"], "управляющие": []}, "нельзя допускать"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu", "Cf"], "управляющие": []}, "нельзя допускать"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": [9, 9]}, "без повторов"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": [32]}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": [-1]}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": ["\t"]}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": [True]}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": 9}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": None}, "0..31"),
+    ("признаки_секрета", ["(?<!"], "не компилируется"),
+])
+def test_an_invalid_round6_package_rule_is_refused_with_a_reason(key, bad, why):
+    module, raw = _package_variant(lambda package, _raw: package.__setitem__(key, bad))
+    with pytest.raises(module.ContractError, match=why):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("key,good", [
+    ("длина_граммы", 4), ("длина_граммы", 30), ("длина_граммы", 12),
+    ("доля_граммов_процентов", 1), ("доля_граммов_процентов", 100), ("доля_граммов_процентов", 55),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+200B"]}),
+    ("невидимые_знаки", {"категории": ["Cf", "Cs"], "диапазоны": ["U+0000-10FFFF"]}),
+    ("невидимые_знаки", {"категории": ["Mn"], "диапазоны": ["U+E0000-E007F", "U+10FFFF"]}),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "управляющие": []}),
+    ("допустимые_знаки_слепого", {"категории": ["Lu", "No", "Zs"], "управляющие": [0, 31]}),
+])
+def test_another_valid_round6_package_rule_is_accepted(key, good):
+    module, raw = _package_variant(lambda package, _raw: package.__setitem__(key, good))
+    module.Tables.from_raw(raw).check()
+
+
+def test_the_trace_gram_cannot_exceed_the_trace_window():
+    def both(package, _raw):
+        package["мин_длина_следа"] = 10
+        package["длина_граммы"] = 11
+    module, raw = _package_variant(both)
+    with pytest.raises(module.ContractError, match="до 10"):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("section", ["невидимые_знаки", "допустимые_знаки_слепого"])
+def test_an_invented_key_inside_a_round6_record_is_not_accepted(section):
+    def invent(package, _raw):
+        package[section]["выдуманное"] = 1
+    module, raw = _package_variant(invent)
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("section,part", [("невидимые_знаки", "категории"), ("невидимые_знаки", "диапазоны"),
+                                          ("допустимые_знаки_слепого", "категории"),
+                                          ("допустимые_знаки_слепого", "управляющие")])
+def test_deleting_a_part_of_a_round6_record_is_a_named_error(section, part):
+    module, raw = _package_variant(lambda package, _raw: package[section].pop(part))
+    with pytest.raises(module.ContractError, match=section):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_yaml_norway_problem_cannot_turn_a_category_into_a_boolean():
+    # `No` (a number category) is `False` in YAML 1.1 if left unquoted: it must be refused, not read.
+    module, raw = _package_variant(
+        lambda package, _raw: package["допустимые_знаки_слепого"]["категории"].append(False))
+    with pytest.raises(module.ContractError, match="строка"):
+        module.Tables.from_raw(raw).check()
+    assert "No" in _at(VOCAB, "пакет", "допустимые_знаки_слепого", "категории")
+
+
+def test_code_ranges_are_parsed_as_inclusive_pairs():
+    module = import_tables_module()
+    assert module.parse_code_range("U+2800", "x") == (0x2800, 0x2800)
+    assert module.parse_code_range("U+2800-28FF", "x") == (0x2800, 0x28FF)
+    assert module.parse_code_range("U+E0000-E007F", "x") == (0xE0000, 0xE007F)
+    assert module.parse_code_range("U+10FFFF", "x") == (0x10FFFF, 0x10FFFF)
+    for bad in ("U+2800-", "u+2800", "U+28", "U+2800-27FF", "U+110000", 2800, None):
+        with pytest.raises(module.ContractError):
+            module.parse_code_range(bad, "x")
+
+
+def test_the_new_secret_rules_and_names_are_in_the_table_and_the_old_jwt_rule_is_gone():
+    package = _at(VOCAB, "пакет")
+    rules = package["признаки_секрета"]
+    assert r'(?<![\w-])eyJ[\w-]{10,}+\.eyJ[\w-]{10,}+\.' in rules
+    assert r'eyJ[\w-]{10,}\.eyJ[\w-]{10,}\.' not in rules
+    for prefix in ("ntn_", "shp", "gsk_", "pypi-", "ya29", "whsec_", "SG"):
+        assert any(prefix in rule for rule in rules), prefix
+    for name in ("service_account*", "serviceAccountKey*", "key.json", "jwt.json", "storage_state*", "session.json",
+                 "cookies*", "kubeconfig*", "bearer*", "*access-token*", "*bot-token*", "token_cache*",
+                 "compose.yaml", "vault.y*ml", "seed.txt", "mnemonic*", "recovery_codes*", "shadow*",
+                 "authorized_keys*", "*.tfvars.json", ".auth"):
+        assert name in package["запрещённые_пути"], name
+
+
+def test_the_consensus_engine_keeps_its_own_words_while_the_package_folds_more():
+    module = import_tables_module()
+    # the engine reads the base table only: words with l, i and digits stay as they were
+    for word in ("only", "if", "unless", "подтвердить", "0к"):
+        assert module._normal(word) == word.translate(module._HOMOGLYPHS)
+    assert module._normal("ок") == "ок" and module._normal("oк") == "ок"  # Latin o folds, as before
+    extra = module._SKELETON_CONFUSABLES
+    assert set(module._HOMOGLYPHS) < set(extra)
+    for digit, letter in (("0", "о"), ("3", "з"), ("6", "б"), ("4", "ч")):
+        assert extra[ord(digit)] == letter and ord(digit) not in module._HOMOGLYPHS
+    assert {extra[ord(c)] for c in "1lıіӏи"} == {"i"}

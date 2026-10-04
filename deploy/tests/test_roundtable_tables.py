@@ -1072,6 +1072,29 @@ def test_an_active_grant_needs_an_unambiguous_yes(tmp_path):
     assert verdict("отрицание_внутри", negated, consent=False) is None
 
 
+@pytest.mark.parametrize("reply", [
+    "ок на БК, but only after Б2", "ок на БК not now", "ок на БК nоt now",
+    "ок на БК after review", "ок на БК once ready", "ок на БК before Б2",
+    "ок на БК, bUt later", "ок на БК — no", "ок на БК never mind",
+    "ок на БК donʼt", "ок на БК wait", "ок на БК until Б2", "ок на БК when ready",
+    "ок на БК, нo пoзже", "ок на БК неt"])
+def test_english_and_lookalike_reservations_are_not_consent(reply):
+    """🚩 Круг 48: текст сворачивается в кириллицу, а английские слова перечней
+    отрицания и условия оставались латиницей и после свёртки не совпадали ни с
+    чем — «ок на БК, but only after Б2» читалось безоговорочным «да»."""
+    module = import_tables_module()
+    assert module._unambiguous_yes(reply, reply), f"{reply!r} засчитано согласием"
+
+
+@pytest.mark.parametrize("reply", [
+    "ОК на доработку блоков прогона, пакета и таблиц",
+    "ОК на расширение блоков пакета и идеи", "ОК на БК с расширением и на БИ",
+    "да", "разрешаю на Б2"])
+def test_a_plain_yes_with_a_scope_is_still_consent(reply):
+    module = import_tables_module()
+    assert module._unambiguous_yes(reply, reply) is None
+
+
 def test_a_chosen_option_counts_only_if_it_is_the_offered_yes(tmp_path):
     """Круг 46: Антон отвечает на развилку, копируя вариант целиком. Такой
     ответ — согласие, только если он дословно совпадает с вариантом карточки

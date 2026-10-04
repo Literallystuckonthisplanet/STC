@@ -2899,6 +2899,25 @@ def test_an_undone_and_redone_commit_is_exempt_only_with_proof(tmp_path, monkeyp
         assert any(torn[:7] in p for p in problems), f"{label}: исключение принято без доказательства"
 
 
+def test_the_commit_lists_of_closed_blocks_match_the_real_history():
+    """Круг 48: закрытие вписало списки коммитов, а сверял их с историей только
+    `authority` — ни один тест. Вычеркнутый из списка коммит не замечал никто:
+    замер нашёл тридцать таких подмен. Здесь сверка идёт по настоящей истории
+    проверяемой ветки; у открытого блока список ещё растёт, поэтому строже всего
+    — у закрытых, а сбой самой сверки не прощается никому."""
+    module = import_tables_module()
+    tables = module.load(TABLES)
+    open_blocks = {name for name, block in tables.raw["blocks"]["блоки"].items()
+                   if block.get("состояние") != "сделано"}
+
+    def about_open(problem: str) -> bool:
+        return any(problem.startswith(f"{name}:") or f"в коммитах {name} не назван" in problem
+                   for name in open_blocks)
+
+    problems = [p for p in module.write_scope_receipt(tables) if not about_open(p)]
+    assert problems == [], f"учёт закрытых блоков расходится с историей: {problems}"
+
+
 def test_only_the_closing_commit_may_stay_unlisted(tmp_path, monkeypatch):
     """Круг 47: закрывающая запись не может назвать саму себя в списке
     коммитов блока. Без записи допускается ровно она — коммит, сменивший

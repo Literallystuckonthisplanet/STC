@@ -12,6 +12,7 @@ its own test here. The load-bearing ones are the last three:
 """
 
 import importlib.util
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -1089,3 +1090,52 @@ def test_the_fingerprint_covers_the_engine_the_suites_and_the_ratchet():
                  "test_roundtable_tables.py", "test_roundtable_decide.py",
                  "test_roundtable_context.py"):
         assert name in covered, f"{name} не входит в слепок — его правка не сбросит записи"
+
+
+# --------------------------------------------------------------------------
+# Круг 47 — замер неизменной копии и повреждённые записи
+# --------------------------------------------------------------------------
+
+def test_a_damaged_saved_result_is_measured_again(tmp_path):
+    """Критик: «не поймано», записанное строкой "false", засчитывалось как
+    поймано — непустая строка истинна. Запись другой формы не доверяется, а
+    перемеряется."""
+    ratchet = _ratchet_module()
+    cache = tmp_path / "results.jsonl"
+    good = {"fingerprint": "f", "label": "a × убрать_правило", "caught": True, "guard": "t"}
+    damaged = [
+        {**good, "label": "b × убрать_правило", "caught": "false"},
+        {**good, "label": "c × убрать_правило", "caught": 1},
+        {**good, "label": 7},
+        {**good, "label": "d × убрать_правило", "guard": None},
+        ["не", "словарь"],
+    ]
+    cache.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [good, *damaged]),
+                     encoding="utf-8")
+    assert set(ratchet._recall(cache, "f")) == {"a × убрать_правило"}
+
+
+def test_the_ratchet_refuses_to_measure_an_uncommitted_version(tmp_path):
+    """Критик: соседняя сессия меняла код проверок посреди долгого замера —
+    следующие опыты шли на новом коде под прежним слепком. Замер теперь
+    идёт по неизменной копии сохранённой версии; незакоммиченные правки
+    в измеряемом — отказ, а не тихий замер «чего-то»."""
+    import subprocess
+    ratchet = _ratchet_module()
+    repo = tmp_path / "repo"
+    (repo / "deploy" / "tests").mkdir(parents=True)
+    (repo / "core" / "scripts" / "roundtable").mkdir(parents=True)
+    (repo / "core" / "scripts" / "roundtable" / "x.py").write_text("x = 1\n", encoding="utf-8")
+    run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
+    run("init", "-q"); run("add", "-A")
+    run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    assert ratchet._uncommitted(repo) == []
+    (repo / "core" / "scripts" / "roundtable" / "x.py").write_text("x = 2\n", encoding="utf-8")
+    assert ratchet._uncommitted(repo), "правка измеряемого кода не замечена"
+
+
+def test_inside_the_frozen_copy_the_fingerprint_names_the_commit(monkeypatch):
+    ratchet = _ratchet_module()
+    plain = ratchet._fingerprint(T.TABLES_DIR)
+    monkeypatch.setenv("RATCHET_FROZEN_COMMIT", "a" * 40)
+    assert ratchet._fingerprint(T.TABLES_DIR) != plain, "слепок не связан с версией"

@@ -560,6 +560,8 @@ def _fingerprint_files():
 
 def _fingerprint(tables_dir: Path) -> str:
     digest = hashlib.sha256()
+    # Внутри неизменной копии слепок называет и сохранённую версию.
+    digest.update(os.environ.get("RATCHET_FROZEN_COMMIT", "").encode("ascii") + b"\0")
     for path in _fingerprint_files() + sorted(Path(tables_dir).glob("*.yaml")):
         if not path.exists():
             continue
@@ -589,8 +591,13 @@ def _recall(cache: Path, fingerprint: str) -> dict:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(row, dict) and row.get("fingerprint") == fingerprint:
-            found[row["label"]] = (bool(row["caught"]), row.get("guard", ""))
+        # Круг 47: «не поймано», записанное строкой "false", засчитывалось как
+        # поймано — непустая строка истинна. Запись другой формы не доверяется:
+        # этот опыт просто перемеряется.
+        if (isinstance(row, dict) and row.get("fingerprint") == fingerprint
+                and isinstance(row.get("label"), str) and type(row.get("caught")) is bool
+                and isinstance(row.get("guard"), str)):
+            found[row["label"]] = (row["caught"], row["guard"])
     return found
 
 
@@ -616,6 +623,49 @@ def _measure(originals: dict, name: str, mutated_text: str, label: str):
         return caught, _short((failures or errors)[0]) if caught else ""
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+# Круг 47: соседняя сессия меняла код проверок посреди многочасового замера —
+# следующие опыты шли на новом коде под прежним слепком, а итог оставался
+# успешным. Замер идёт по НЕИЗМЕННОЙ копии сохранённой версии (отдельное
+# дерево git на коммите), а незакоммиченные правки измеряемого — отказ.
+MEASURED = ("core/scripts/roundtable", "deploy/tests")
+
+
+def _uncommitted(root: Path) -> list[str]:
+    done = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", *MEASURED],
+                          capture_output=True, text=True)
+    if done.returncode != 0:
+        return [f"git не ответил: {done.stderr.strip()}"]
+    return [line for line in done.stdout.splitlines() if line.strip()]
+
+
+def _measure_frozen(argv: list[str]) -> int:
+    """Перезапустить замер внутри отдельного дерева git на текущем коммите."""
+    dirty = _uncommitted(ROOT)
+    if dirty:
+        print("✗ в измеряемом есть незакоммиченные правки — неизменной версии нет:")
+        for line in dirty[:20]:
+            print(f"   {line}")
+        return 2
+    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+    frozen = Path(tempfile.mkdtemp(prefix="roundtable-frozen-")) / "tree"
+    added = subprocess.run(["git", "-C", str(ROOT), "worktree", "add", "--detach",
+                            str(frozen), head], capture_output=True, text=True)
+    if added.returncode != 0:
+        print(f"✗ неизменную копию не создать: {added.stderr.strip()}")
+        return 2
+    try:
+        print(f"замер неизменной копии коммита {head[:12]}: {frozen}", flush=True)
+        environment = dict(os.environ, RATCHET_FROZEN_COMMIT=head)
+        done = subprocess.run([sys.executable, "-u",
+                               str(frozen / "deploy/tests/mutate_roundtable_tables.py"), *argv],
+                              cwd=frozen, env=environment)
+        return done.returncode
+    finally:
+        subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", str(frozen)],
+                       capture_output=True)
 
 
 def main(verbose=False, only=None, only_class=None, jobs=1, resume=None) -> int:
@@ -774,4 +824,8 @@ if __name__ == "__main__":
         class_name = argv[argv.index("--class") + 1]
     jobs = int(argv[argv.index("--jobs") + 1]) if "--jobs" in argv else 1
     resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
+    if resume:
+        argv[argv.index("--resume") + 1] = str(Path(resume).resolve())
+    if not os.environ.get("RATCHET_FROZEN_COMMIT"):
+        sys.exit(_measure_frozen(argv))
     sys.exit(main("--verbose" in argv, name, class_name, jobs, resume))

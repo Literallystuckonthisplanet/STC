@@ -2871,6 +2871,47 @@ def test_an_undone_and_redone_commit_is_exempt_only_with_proof(tmp_path, monkeyp
         assert any(torn[:7] in p for p in problems), f"{label}: исключение принято без доказательства"
 
 
+def test_only_the_closing_commit_may_stay_unlisted(tmp_path, monkeypatch):
+    """Круг 47: закрывающая запись не может назвать саму себя в списке
+    коммитов блока. Без записи допускается ровно она — коммит, сменивший
+    состояние блока на «сделано», с пометкой этого блока и в его `пишет`.
+    Любой другой непомеченный в списке коммит — по-прежнему работа мимо учёта."""
+    module = import_tables_module()
+    git, commit = _git_repo(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    plan_path = "core/scripts/roundtable/tables/blocks.yaml"
+    canon = (module.TABLES_DIR / "blocks.yaml").read_text(encoding="utf-8")
+    commit({plan_path: canon}, "init")
+    work = commit({"core/scripts/roundtable/tables.py": "x"},
+                  "работа\n\nRoundtable-Block: БК\nCo-Authored-By: X <x@y>")
+    closed_plan = yaml.safe_load(canon)
+    closed_plan["блоки"]["БК"]["состояние"] = "сделано"
+    closed_text = yaml.safe_dump(closed_plan, allow_unicode=True, sort_keys=False)
+    raw = copy.deepcopy(module.load().raw)
+    raw["blocks"]["блоки"]["БК"]["состояние"] = "сделано"
+    raw["blocks"]["блоки"]["БК"]["коммиты"] = [work]
+    closing = commit({plan_path: closed_text},
+                     "закрытие\n\nRoundtable-Block: БК\nCo-Authored-By: X <x@y>")
+
+    def mine(problems):
+        return [p for p in problems if "БК" in p and not p.startswith(("Б1", "БТ2"))]
+
+    tables = module.Tables.from_raw(raw)
+    assert module._closing_commit(tables, "БК") == closing
+    assert not any(closing[:7] in p for p in module.write_scope_receipt(tables)), (
+        "закрывающая запись засчитана работой мимо учёта")
+    later = commit({"core/scripts/roundtable/tables.py": "y"},
+                   "после закрытия\n\nRoundtable-Block: БК\nCo-Authored-By: X <x@y>")
+    assert any(later[:7] in p and "не назван" in p for p in module.write_scope_receipt(tables)), (
+        "работа после закрытия прошла без записи")
+    # закрывающая запись, вышедшая за `пишет`, — отказ
+    stray = commit({plan_path: canon, "README": "z"}, "откат состояния")
+    reclosing = commit({plan_path: closed_text, "user/profile.md": "чужое"},
+                       "закрытие с лишним\n\nRoundtable-Block: БК\nCo-Authored-By: X <x@y>")
+    problems = module.write_scope_receipt(tables)
+    assert any(reclosing[:7] in p and "вышел за" in p for p in problems), problems
+
+
 def test_an_exemption_is_proven_by_content_not_by_file_names(tmp_path, monkeypatch):
     """Откат должен вернуть файлы, перекладка — повторить ту же правку.
 

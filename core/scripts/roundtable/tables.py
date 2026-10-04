@@ -2225,6 +2225,48 @@ def _paths(raw: str) -> list[str]:
     return [path for path in raw.split("\x00") if path]
 
 
+PLAN_TABLE = "core/scripts/roundtable/tables/blocks.yaml"
+
+
+_PLAN_AT: dict = {}
+
+
+def _state_at(commit: str, name: str) -> str | None:
+    key = (str(ROOT), commit)
+    if key not in _PLAN_AT:
+        text = _git("show", f"{commit}:{PLAN_TABLE}")
+        try:
+            _PLAN_AT[key] = yaml.safe_load(text) if text is not None else None
+        except yaml.YAMLError:
+            _PLAN_AT[key] = None
+    try:
+        return _PLAN_AT[key]["блоки"][name].get("состояние")
+    except (KeyError, TypeError, AttributeError):
+        return None
+
+
+def _closing_commit(tables: "Tables", name: str) -> str | None:
+    """Коммит, которым закрытый блок стал «сделано», — или None.
+
+    Круг 47: закрывающая запись не может назвать саму себя в списке
+    коммитов блока — её номер появляется только после сохранения. Без
+    записи в список допускается ровно она: последний коммит, в котором
+    состояние блока в таблице плана сменилось на «сделано», и только пока
+    блок закрыт. Выход за `пишет` проверяется у неё так же, как у названных.
+    """
+    block = tables.blocks.get(name)
+    if block is None or block.state != "сделано":
+        return None
+    history = _git("log", "--format=%H %P", "--", PLAN_TABLE)
+    for line in (history or "").splitlines():
+        sha, *parents = line.split()
+        if _state_at(sha, name) != "сделано":
+            continue
+        if not parents or _state_at(parents[0], name) != "сделано":
+            return sha
+    return None
+
+
 def write_scope_receipt(tables: "Tables") -> list[str]:
     """R19-7: коммиты каждого закрытого блока не выходят за его `пишет`.
 
@@ -2272,6 +2314,18 @@ def write_scope_receipt(tables: "Tables") -> list[str]:
             outside = [path for path in _paths(raw) if not within(path, block.writes)]
             if outside:
                 problems.append(f"{name}: {sha[:7]} вышел за `пишет`: {outside}")
+    for name, block in tables.blocks.items():
+        closing = _closing_commit(tables, name)
+        if closing is None or closing in listed:
+            continue
+        claimed = _git("log", "-1", f"--format={trailer_format}", closing) or ""
+        if name not in [v.strip() for v in claimed.split("\x02")]:
+            continue                                   # закрыт чужой пометкой — сверка ниже
+        raw = _git("-c", "core.quotePath=false", "diff-tree", "--root", "--no-commit-id",
+                   "--name-only", "-r", "--no-renames", "-z", closing)
+        outside = [path for path in _paths(raw or "") if not within(path, block.writes)]
+        if raw is None or outside:
+            problems.append(f"{name}: закрывающий {closing[:7]} вышел за `пишет`: {outside}")
     history = _git("log", f"--format=%H%x00{trailer_format}%x01")
     if history is None:
         return problems + ["git не отдал историю — работу мимо учёта не проверить"]
@@ -2280,7 +2334,8 @@ def write_scope_receipt(tables: "Tables") -> list[str]:
             continue
         sha, values = record.strip("\n").split("\x00", 1)
         for claimed in (v.strip() for v in values.split("\x02")):
-            if claimed and listed.get(sha) != claimed:
+            if claimed and listed.get(sha) != claimed \
+                    and _closing_commit(tables, claimed) != sha:
                 problems.append(f"{sha[:7]} помечен «{trailer}: {claimed}», но в коммитах "
                                 f"{claimed} не назван — работа мимо учёта")
     return problems + unparsed_block_marks(tables)

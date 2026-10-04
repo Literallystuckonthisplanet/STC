@@ -1012,17 +1012,35 @@ def test_an_active_grant_needs_an_unambiguous_yes(tmp_path):
                                      "native_uuid": ids[name], "цитата": text},
                                     tmp_path, consent=consent)
 
+    def verdict_text(text):
+        # отдельная запись переписки на каждую реплику
+        uid = f"bbbbbbbb-bbbb-cccc-dddd-{abs(hash(text)) % 10**12:012d}"
+        path = next((tmp_path / ".claude" / "projects").glob(f"*/{session}.jsonl"))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n" + json.dumps({"uuid": uid, "type": "user",
+                                            "message": {"content": text}}, ensure_ascii=False))
+        return module.resolve_basis({"вид": "событие_транскрипта", "сессия": session,
+                                     "native_uuid": uid, "цитата": text},
+                                    tmp_path, consent=True)
+
     assert verdict("целиком") is None
-    assert verdict("отдельной_строкой") is None
+    # ревью кода круга 46: согласие — вся реплика целиком, а не одна строка
     for name in ("отрицание_перед", "вопрос", "с_условием", "продолжение_словом",
-                 "склеено_слева", "условие_следом", "внутри_строки"):
-        assert "не целая строка" in (verdict(name) or ""), f"{name}: часть фразы засчитана согласием"
+                 "склеено_слева", "условие_следом", "внутри_строки", "отдельной_строкой"):
+        assert "не вся реплика" in (verdict(name) or ""), f"{name}: часть фразы засчитана согласием"
     # круг 46: целая строка, но без слова согласия или с условием — отказ
-    assert "нет слова согласия" in (
+    assert "не формула согласия" in (
         verdict("без_согласия", "Сейчас обсуждаем расширение работы") or "")
+    for name, text, why in (("да_ладно", "Да ладно, серьёзно такое делать", "не формула"),
+                            ("да_ты_что", "Да ты что, это плохая идея", "не формула"),
+                            ("никогда", "Да, никогда так делать", "не формула"),
+                            ("нет_строкой_ниже", "ОК на этот блок\nНет, стоп", "не формула"),
+                            ("двойник", "ОК на это, нe надо", "отрицание"),
+                            ("сначала", "ОК на это, сначала покажи план", "условие")):
+        assert why in (verdict_text(text) or ""), f"{name}: засчитано согласием"
     assert "условие" in (verdict("условие_следом",
                                  f"{quote}. Только после моего отдельного подтверждения") or "")
-    assert "отрицание" in (verdict("отрицание_внутри", negated) or "")
+    assert verdict("отрицание_внутри", negated) is not None, "отрицание засчитано согласием"
     # запись прошлого проверяется на происхождение, не на согласие
     assert verdict("отрицание_внутри", negated, consent=False) is None
 
@@ -1250,9 +1268,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 3}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 184
+    assert len(findings) == 185
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1473,6 +1491,7 @@ FINDING_PINS = {
     "R46-1": ("4013f5113bed", "117323c3e4c8"),
     "R46-2": ("245186a563bb", "6f55b18bec48"),
     "R46-3": ("b74cbf2eafc1", "7208c4c25413"),
+    "R46-4": ("4dca39bec501", "6f55b18bec48"),
 }
 
 
@@ -3241,7 +3260,7 @@ def test_a_permission_cannot_be_rewritten_in_place():
     # Круг 46: разрешение от 02.09 (реплика-жалоба, не «да») сознательно
     # перенесено в историю и заменено явным «да» Антона от 04.10 — это и
     # меняет слепок; запись перенесена целиком, а не переписана.
-    assert digest == "95568650d06e9a3aebe825a9e6e808bcaa16823ac6c25013dac0d8f5b3b8b1b4", (
+    assert digest == "1fdc8aa49817e7cc3fa9c949d8c4d190c950930ff26417b5e1e1e7b0d5d41152", (
         "выданное разрешение переписано: хеш объёма, список блоков или основание")
 
 

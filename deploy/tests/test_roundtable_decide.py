@@ -1052,3 +1052,40 @@ def test_a_block_entry_that_is_not_a_mapping_is_refused_by_name(tmp_path):
     _edit(directory, "blocks", lambda data: data["блоки"].__setitem__("Б99", True))
     error = _raises(T.ContractError, T.load, directory)
     assert "blocks.блоки.Б99: ожидалась карта полей" in str(error)
+
+
+# --------------------------------------------------------------------------
+# Круг 46 — сохранённый результат замера и продолжение после обрыва
+# --------------------------------------------------------------------------
+
+def test_a_saved_result_is_reused_only_for_the_same_code_and_tables(tmp_path):
+    """Критик: обвязка продолжения засчитывала поимку по старой записи после
+    того, как изменилась проверка, — в записи не было версии кода и таблиц.
+    Слепок теперь покрывает код движка, наборы проверок, сам измеритель и
+    таблицы; запись с другим слепком не засчитывается."""
+    ratchet = _ratchet_module()
+    fingerprint = ratchet._fingerprint(T.TABLES_DIR)
+    assert fingerprint == ratchet._fingerprint(T.TABLES_DIR), "слепок нестабилен"
+
+    directory = _copy(tmp_path)
+    _edit(directory, "issues",
+          lambda data: data["валидация"][0].__setitem__("правило", "другое правило"))
+    assert ratchet._fingerprint(directory) != fingerprint, "правка таблицы не меняет слепок"
+
+    cache = tmp_path / "results.jsonl"
+    ratchet._remember(cache, fingerprint, "a × убрать_правило", True, "test_x")
+    ratchet._remember(cache, "0" * 64, "b × убрать_правило", True, "test_y")
+    reused = ratchet._recall(cache, fingerprint)
+    assert set(reused) == {"a × убрать_правило"}, "засчитана запись чужой версии"
+    cache.write_text(cache.read_text(encoding="utf-8") + "{оборванная строка\n",
+                     encoding="utf-8")
+    assert set(ratchet._recall(cache, fingerprint)) == {"a × убрать_правило"}
+
+
+def test_the_fingerprint_covers_the_engine_the_suites_and_the_ratchet():
+    ratchet = _ratchet_module()
+    covered = {path.name for path in ratchet._fingerprint_files()}
+    for name in ("tables.py", "state.py", "mutate_roundtable_tables.py",
+                 "test_roundtable_tables.py", "test_roundtable_decide.py",
+                 "test_roundtable_context.py"):
+        assert name in covered, f"{name} не входит в слепок — его правка не сбросит записи"

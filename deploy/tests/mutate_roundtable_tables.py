@@ -95,13 +95,17 @@ The coordinator has taken this one to Anton separately; leave it as is.
                                                       [--class NAME]
 """
 
+import concurrent.futures
 import copy
+import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import yaml
@@ -538,7 +542,83 @@ def _format(path_name, path, class_name):
     return f"{path_name}: {rendered} × {class_name}"
 
 
-def main(verbose=False, only=None, only_class=None) -> int:
+# --------------------------------------------------------------------------
+# Круг 46: продолжение после обрыва. Полный замер идёт часами, а сессия
+# обрывается; сохранённые результаты позволяют продолжить. Критик показал,
+# чем это опасно: запись поимки, сделанная другой версией проверок, после
+# правки засчитывалась как прежде. Каждая запись несёт слепок того, что
+# решает исход, — код движка, наборы проверок, сам измеритель и таблицы, — и
+# засчитывается только при совпадении. Контрольная база проверяется заново
+# при каждом запуске: записи ложатся только поверх зелёной базы.
+# --------------------------------------------------------------------------
+
+def _fingerprint_files():
+    engine = sorted((SCRIPTS / "roundtable").rglob("*.py"))
+    return engine + [Path(__file__).resolve(), *SUITES,
+                     Path(__file__).with_name("conftest.py")]
+
+
+def _fingerprint(tables_dir: Path) -> str:
+    digest = hashlib.sha256()
+    for path in _fingerprint_files() + sorted(Path(tables_dir).glob("*.yaml")):
+        if not path.exists():
+            continue
+        digest.update(path.name.encode("utf-8") + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+_CACHE_LOCK = threading.Lock()
+
+
+def _remember(cache: Path, fingerprint: str, label: str, caught: bool, guard: str) -> None:
+    row = {"fingerprint": fingerprint, "label": label, "caught": caught, "guard": guard}
+    with _CACHE_LOCK, open(cache, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _recall(cache: Path, fingerprint: str) -> dict:
+    """Записи ЭТОЙ версии: метка → (поймана, сторож). Чужие и оборванные — мимо."""
+    found = {}
+    if not Path(cache).exists():
+        return found
+    for line in Path(cache).read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("fingerprint") == fingerprint:
+            found[row["label"]] = (bool(row["caught"]), row.get("guard", ""))
+    return found
+
+
+def _measure(originals: dict, name: str, mutated_text: str, label: str):
+    """Одна подмена на своей копии таблиц: (поймана, сторож)."""
+    scratch = Path(tempfile.mkdtemp(prefix="roundtable-mutant-"))
+    try:
+        for path, text in originals.items():
+            (scratch / path.name).write_text(text, encoding="utf-8")
+        (scratch / name).write_text(mutated_text, encoding="utf-8")
+        failures, errors = _pytest(scratch, stop_early=True)
+        # Finding 5: a collection ERROR only counts as caught once loading the
+        # still-mutated copy in THIS process raises the contract's own refusal.
+        contract_refusal = bool(errors) and _is_contract_refusal(scratch)
+        if errors and not contract_refusal:
+            raise RatchetDefect(
+                f"{label} дал ОШИБКУ {_short(errors[0])}, а не падение "
+                f"проверки, и загрузка мутанта в этом процессе не "
+                f"подтвердила ContractError. Мутант умер по чужой "
+                f"причине — это дефект измерения, а не пойманная "
+                f"мутация.")
+        caught = bool(failures) or contract_refusal
+        return caught, _short((failures or errors)[0]) if caught else ""
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def main(verbose=False, only=None, only_class=None, jobs=1, resume=None) -> int:
     # Finding 1: a typo in --only/--class used to filter out every table (or
     # every class), finish the loop over zero targets, and print "0 mutated,
     # 100 %" with exit code 0 — indistinguishable from a real, full pass.
@@ -583,6 +663,11 @@ def main(verbose=False, only=None, only_class=None) -> int:
         missed = {name: [] for name in CLASSES}
         guards = {}
 
+        fingerprint = _fingerprint(scratch)
+        recalled = _recall(Path(resume), fingerprint) if resume else {}
+        if resume:
+            print(f"продолжение: записей этой версии {len(recalled)}")
+        work = []
         for path in sorted(originals):
             if only and only != path.name:
                 continue
@@ -608,32 +693,38 @@ def main(verbose=False, only=None, only_class=None) -> int:
                         continue
 
                     mutated = _apply(data, target_path, new_value)
-                    path.write_text(
-                        yaml.dump(mutated, allow_unicode=True, sort_keys=False),
-                        encoding="utf-8")
                     totals[class_name] += 1
-                    failures, errors = _pytest(scratch, stop_early=True)
+                    work.append((class_name, label, path.name,
+                                 yaml.dump(mutated, allow_unicode=True, sort_keys=False)))
 
-                    # Finding 5: a collection ERROR only counts as caught once
-                    # loading the STILL-MUTATED copy in THIS process raises
-                    # the contract's own refusal — checked before the file is
-                    # restored, and never by pattern-matching pytest's own
-                    # (possibly truncated) summary text.
-                    contract_refusal = bool(errors) and _is_contract_refusal(path.parent)
-                    path.write_text(originals[path], encoding="utf-8")
+        def settle(class_name, label, caught, guard):
+            if caught:
+                caught_counts[class_name] += 1
+                guards[label] = guard
+            else:
+                missed[class_name].append(label)
 
-                    if errors and not contract_refusal:
-                        raise RatchetDefect(
-                            f"{label} дал ОШИБКУ {_short(errors[0])}, а не падение "
-                            f"проверки, и загрузка мутанта в этом процессе не "
-                            f"подтвердила ContractError. Мутант умер по чужой "
-                            f"причине — это дефект измерения, а не пойманная "
-                            f"мутация.")
-                    if failures or contract_refusal:
-                        caught_counts[class_name] += 1
-                        guards[label] = _short((failures or errors)[0])
-                    else:
-                        missed[class_name].append(label)
+        pending = []
+        for class_name, label, name, text in work:
+            if label in recalled:
+                settle(class_name, label, *recalled[label])
+            else:
+                pending.append((class_name, label, name, text))
+        texts = {path: text for path, text in originals.items()}
+
+        def run(job):
+            class_name, label, name, text = job
+            caught, guard = _measure(texts, name, text, label)
+            if resume:
+                _remember(Path(resume), fingerprint, label, caught, guard)
+            return class_name, label, caught, guard
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            for done, (class_name, label, caught, guard) in enumerate(
+                    pool.map(run, pending), start=1):
+                settle(class_name, label, caught, guard)
+                if resume and done % 50 == 0:
+                    print(f"… {done}/{len(pending)}", flush=True)
 
         grand_total = sum(totals.values())
         grand_caught = sum(caught_counts.values())
@@ -681,4 +772,6 @@ if __name__ == "__main__":
     class_name = None
     if "--class" in argv:
         class_name = argv[argv.index("--class") + 1]
-    sys.exit(main("--verbose" in argv, name, class_name))
+    jobs = int(argv[argv.index("--jobs") + 1]) if "--jobs" in argv else 1
+    resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
+    sys.exit(main("--verbose" in argv, name, class_name, jobs, resume))

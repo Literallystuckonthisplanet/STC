@@ -1076,7 +1076,27 @@ def test_a_chosen_option_counts_only_if_it_is_the_offered_yes(tmp_path):
              "native_uuid": ids[name], "цитата": quote}, tmp_path, consent=True)
 
     assert verdict("да", "Дать явное «да»") is None
-    assert "без согласия" in (verdict("нет", "Не давать — дыры остаются") or "")
+    # Круг 47: соседние формы — «Обсудить, давать ли да» и «да» с условием в
+    # скобках — согласием не являются, даже скопированные дословно.
+    for label in ("Обсудить, давать ли «да»", "Дать явное «да» (только после ревью)",
+                  "Да, но только Б1", "Дать «да» позже"):
+        option = f"{label} — вариант. Для тебя: секунда."
+        uid = f"cccccccc-bbbb-cccc-dddd-{abs(hash(label)) % 10**12:012d}"
+        card_id = f"dddddddd-bbbb-cccc-dddd-{abs(hash(label)) % 10**12:012d}"
+        path = next((tmp_path / ".claude" / "projects").glob(f"*/{session}.jsonl"))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n" + json.dumps({
+                "uuid": card_id, "parentUuid": ids["вопрос_человека"], "type": "assistant",
+                "message": {"content": [{"type": "text",
+                                         "text": f"🗳️ Развилка\n- {option}\n- Нет — Для тебя: ничего."}]}},
+                ensure_ascii=False))
+            handle.write("\n" + json.dumps({"uuid": uid, "parentUuid": card_id, "type": "user",
+                                            "message": {"content": option}}, ensure_ascii=False))
+        problem = module.resolve_basis(
+            {"вид": "событие_транскрипта", "подвид": "выбор_варианта", "сессия": session,
+             "native_uuid": uid, "цитата": option[:20]}, tmp_path, consent=True)
+        assert problem is not None and "вариант" in problem, f"{label!r}: засчитано согласием"
+    assert "не согласие" in (verdict("нет", "Не давать — дыры остаются") or "")
     assert "не вариант" in (verdict("отчёт", "Разрешение записано") or "")
     assert "не вариант" in (verdict("с_добавкой", "Дать явное «да»") or "")
 
@@ -1268,9 +1288,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 185
+    assert len(findings) == 188
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1492,6 +1512,9 @@ FINDING_PINS = {
     "R46-2": ("245186a563bb", "6f55b18bec48"),
     "R46-3": ("b74cbf2eafc1", "7208c4c25413"),
     "R46-4": ("4dca39bec501", "6f55b18bec48"),
+    "R47-1": ("e5ab1204231b", "aba5bb686500"),
+    "R47-2": ("f844c8aea88e", "b4c488e4ccec"),
+    "R47-3": ("cd4199c264ad", "6bc304a42d44"),
 }
 
 

@@ -782,14 +782,41 @@ def test_a_permission_is_granted_for_a_scope_and_not_for_a_name():
         != tables.blocks["Б3б"].scope_sha256(plan), "содержимое шлюза вне отпечатка"
 
 
+def _as_open(raw, name, wave=2):
+    """Вернуть закрытый блок в работу — для опытов, которым нужен открытый блок.
+
+    Круг 47: блоки прогона и таблиц закрыты, а опыты брали их примером
+    «блока в работе». Опыт открывает блок сам, на копии таблиц.
+    """
+    block = raw["blocks"]["блоки"][name]
+    block.pop("коммиты", None)
+    if "переоткрыт_из_за" in block:
+        block["состояние"] = "переоткрыт"
+    else:
+        block.pop("состояние", None)
+    raw["blocks"]["исполнение"]["выполнено"].pop(name, None)
+    raw["blocks"]["исполнение"]["блоки"].setdefault(name, {
+        "волна": wave, "исполнитель": "builder", "изоляция": "worktree",
+        "ревью": ["qa", "code-reviewer", "codex"]})
+    return raw
+
+
+def _only_listed(raw, keep):
+    """Для сверки по временной истории git: настоящие списки коммитов прочь."""
+    for name, block in raw["blocks"]["блоки"].items():
+        if name != keep and block.get("коммиты"):
+            block["коммиты"] = []
+    return raw
+
+
 def test_a_missing_scope_hash_is_not_a_wildcard():
     # `recorded is None` used to mean "covers anything", which turned every
     # permission back into a permission by name.
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
-    # разрешение, покрывающее Б1 (с круга 46 оно не первое в списке)
+    # разрешение, покрывающее открытый Б2
     at = next(i for i, g in enumerate(raw["blocks"]["разрешения_исполнения"])
-              if "Б1" in g["блоки"])
+              if "Б2" in g["блоки"])
     grant = raw["blocks"]["разрешения_исполнения"][at]
 
     without = copy.deepcopy(raw)
@@ -798,7 +825,7 @@ def test_a_missing_scope_hash_is_not_a_wildcard():
         module.Tables.from_raw(without).check()
 
     short = copy.deepcopy(raw)
-    short["blocks"]["разрешения_исполнения"][at]["scope_sha256"].pop("Б1")
+    short["blocks"]["разрешения_исполнения"][at]["scope_sha256"].pop("Б2")
     with pytest.raises(module.ContractError, match="не совпадает с блоками"):
         module.Tables.from_raw(short).check()
 
@@ -808,8 +835,8 @@ def test_a_missing_scope_hash_is_not_a_wildcard():
         module.Tables.from_raw(extra).check()
 
     wrong = copy.deepcopy(raw)
-    wrong["blocks"]["разрешения_исполнения"][at]["scope_sha256"]["Б1"] = "a" * 64
-    with pytest.raises(module.ContractError, match="Б1"):
+    wrong["blocks"]["разрешения_исполнения"][at]["scope_sha256"]["Б2"] = "a" * 64
+    with pytest.raises(module.ContractError, match="Б2"):
         module.Tables.from_raw(wrong).check()
     assert grant  # the untouched original is still the one that passes
 
@@ -1195,8 +1222,9 @@ def test_a_reopened_block_keeps_the_permission_it_was_first_started_under():
         "«делай дальше» — та самая реплика, которую я однажды объявил выдуманной")
     module = import_tables_module()
     tables = module.load()
-    for name in ("Б1", "Б2"):
-        assert tables.blocks[name].state == "переоткрыт"
+    # Б1 с тех пор закрыт (круг 47) — история всё равно хранит начало
+    assert tables.blocks["Б2"].state == "переоткрыт"
+    assert tables.blocks["Б1"].state in ("переоткрыт", "сделано")
 
 
 def test_a_drifted_fingerprint_closes_the_gate_rather_than_warning():
@@ -2281,9 +2309,9 @@ def test_nothing_is_worked_on_without_a_live_permission():
 def test_a_block_cannot_be_worked_on_under_a_stale_permission():
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
-    raw["blocks"]["блоки"]["Б1"]["приёмка"].append(
-        {"id": "Б1-99", "условие": "дописал себе работы после разрешения"})
-    with pytest.raises(module.ContractError, match="Б1: в работе"):
+    raw["blocks"]["блоки"]["Б2"]["приёмка"].append(
+        {"id": "Б2-99", "условие": "дописал себе работы после разрешения"})
+    with pytest.raises(module.ContractError, match="Б2: в работе"):
         module.Tables.from_raw(raw).check()
 
 
@@ -2347,7 +2375,7 @@ def test_an_absorbed_block_closes_only_with_its_absorber():
     # БИ waited on БТ2 while БТ2 closed with БИ: a deadlock running through two
     # different kinds of edge, which no cycle check would have seen.
     module = import_tables_module()
-    raw = copy.deepcopy(module.load().raw)
+    raw = _as_open(copy.deepcopy(module.load().raw), "БТ2")
     blocks = raw["blocks"]["блоки"]
     blocks["БТ2"]["состояние"] = "объединён_с"
     blocks["БТ2"]["объединён_с"] = "БИ"
@@ -2363,7 +2391,7 @@ def test_an_absorbed_block_closes_only_with_its_absorber():
 def test_absorption_cannot_be_circular():
     module = import_tables_module()
     for chain in (["БТ2", "БИ"], ["БТ2", "БИ", "Б9"]):
-        raw = copy.deepcopy(module.load().raw)
+        raw = _as_open(copy.deepcopy(module.load().raw), "БТ2")
         blocks = raw["blocks"]["блоки"]
         for name, nxt in zip(chain, chain[1:] + chain[:1]):
             blocks[name]["состояние"] = "объединён_с"
@@ -2377,7 +2405,7 @@ def test_absorbed_acceptance_is_compared_with_its_text():
     # Keeping every id and replacing every condition used to pass: the set
     # comparison saw nothing, and the criteria were gone.
     module = import_tables_module()
-    raw = copy.deepcopy(module.load().raw)
+    raw = _as_open(copy.deepcopy(module.load().raw), "БТ2")
     blocks = raw["blocks"]["блоки"]
     blocks["БТ2"]["состояние"] = "объединён_с"
     blocks["БТ2"]["объединён_с"] = "БИ"
@@ -2397,7 +2425,7 @@ def test_every_absorption_formula_fires_on_its_own():
     module = import_tables_module()
 
     def absorbed():
-        raw = copy.deepcopy(module.load().raw)
+        raw = _as_open(copy.deepcopy(module.load().raw), "БТ2")
         blocks = raw["blocks"]["блоки"]
         blocks["БТ2"]["состояние"] = "объединён_с"
         blocks["БТ2"]["объединён_с"] = "БИ"
@@ -2434,7 +2462,7 @@ def test_a_gate_lets_its_own_preconditions_close():
     # не откроется никогда — «блок из до_закрытия закрывается» проверяется
     # закрытием, а не отсутствием пересечения множеств.
     module = import_tables_module()
-    raw = copy.deepcopy(module.load().raw)
+    raw = _as_open(copy.deepcopy(module.load().raw), "БТ2")
     gate = raw["blocks"]["шлюзы"]["ремонт_после_ревью_12"]
     precondition = next(n for n in gate["до_закрытия"] if n == "БТ2")
     raw["blocks"]["блоки"][precondition].update(состояние="сделано", коммиты=["a" * 40])
@@ -2702,7 +2730,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert BLOCKS["списки"] == {'пункты_плана_PEV': ['результат_границы_и_что_не_меняется', 'затронутые_файлы_и_доказательства', 'критерии_приёмки_и_проверка', 'блоки_и_зависимости', 'делегирование_модель_изоляция', 'неразрешённые_решения_пользователя'], 'таблицы': ['vocabulary', 'run', 'issues', 'framing', 'precheck', 'blocks', 'stages', 'findings'], 'фикстуры_репетиции': ['tune-plan.md', 'tune-gold.json', 'holdout-plan.md', 'holdout-gold.json'], 'исходы_идеи': ['возражение_держит_стадию', 'нет_годного_варианта', 'частичная_негодность', 'оба_предпочли_неавторскую_и_назвали_авторскую_непроходной', 'нет_консенсусно_годного', 'подтверждён', 'оба_предпочли_неавторскую', 'расхождение', 'три_подхода_на_столе']}
     # исполнение меняется при каждом закрытии блока — поэтому слепком, и
     # обновляется той же правкой, что закрывает блок
-    assert _finding_digest(BLOCKS["исполнение"]) == "ad65a3724f65", (
+    assert _finding_digest(BLOCKS["исполнение"]) == "5471e66962d7", (
         "план исполнения изменён — шаг, проверка блока, роль или волна")
     assert BLOCKS["порядок_критики"]["классы_мутаций"] == ['убрать_правило', 'подменить_значение_на_допустимое', 'подменить_текст_сохранив_ID', 'подсунуть_недопустимое', 'соврать_в_ссылке', 'расширить_себе_объём', 'разорвать_доказательство'], (
         "из метода критика убран или подменён класс поломки")
@@ -2880,14 +2908,17 @@ def test_only_the_closing_commit_may_stay_unlisted(tmp_path, monkeypatch):
     git, commit = _git_repo(tmp_path)
     monkeypatch.setattr(module, "ROOT", tmp_path)
     plan_path = "core/scripts/roundtable/tables/blocks.yaml"
-    canon = (module.TABLES_DIR / "blocks.yaml").read_text(encoding="utf-8")
+    open_plan = yaml.safe_load((module.TABLES_DIR / "blocks.yaml").read_text(encoding="utf-8"))
+    open_plan["блоки"]["БК"]["состояние"] = "переоткрыт"
+    open_plan["блоки"]["БК"].pop("коммиты", None)
+    canon = yaml.safe_dump(open_plan, allow_unicode=True, sort_keys=False)
     commit({plan_path: canon}, "init")
     work = commit({"core/scripts/roundtable/tables.py": "x"},
                   "работа\n\nRoundtable-Block: БК\nCo-Authored-By: X <x@y>")
     closed_plan = yaml.safe_load(canon)
     closed_plan["блоки"]["БК"]["состояние"] = "сделано"
     closed_text = yaml.safe_dump(closed_plan, allow_unicode=True, sort_keys=False)
-    raw = copy.deepcopy(module.load().raw)
+    raw = _only_listed(copy.deepcopy(module.load().raw), "БК")
     raw["blocks"]["блоки"]["БК"]["состояние"] = "сделано"
     raw["blocks"]["блоки"]["БК"]["коммиты"] = [work]
     closing = commit({plan_path: closed_text},
@@ -3009,7 +3040,7 @@ def test_commits_of_a_closed_block_are_checked_against_its_scope(tmp_path, monke
     base = commit({"README": "x"}, "init")
 
     def tables_with(commits):
-        raw = copy.deepcopy(module.load().raw)
+        raw = _only_listed(copy.deepcopy(module.load().raw), "БТ2")
         raw["blocks"]["блоки"]["БК"]["коммиты"] = []
         raw["blocks"]["блоки"]["БТ2"]["состояние"] = "сделано"
         raw["blocks"]["блоки"]["БТ2"]["коммиты"] = commits
@@ -3140,7 +3171,7 @@ def test_a_commit_from_an_unmerged_branch_does_not_count(tmp_path, monkeypatch):
     base = commit({"README": "x"}, "init")
 
     def tables_with(commits):
-        raw = copy.deepcopy(module.load().raw)
+        raw = _only_listed(copy.deepcopy(module.load().raw), "БТ2")
         raw["blocks"]["блоки"]["БК"]["коммиты"] = []
         raw["blocks"]["блоки"]["БТ2"]["состояние"] = "сделано"
         raw["blocks"]["блоки"]["БТ2"]["коммиты"] = commits
@@ -3456,7 +3487,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "5e63add840e9dcb63adc780102bfb7e5bef1a478c59a45d424c931ddc058b82b", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "79a571001ead5e50b1bb5aa3c6d0ad511d5ce080ea1f215ce015de67d2c25d8b", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

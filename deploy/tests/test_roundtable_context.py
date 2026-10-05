@@ -2975,6 +2975,8 @@ def _in_channel(root, channel, text):
         sections["задача"] = text
     else:
         registries = _with(журнал_доказательств=[{**COMMAND, "команда": text}])
+    if channel != "file":
+        (root / "docs" / "plan.md").write_text("# План\nстрока\n", encoding="utf-8")
     return _outcome(lambda: _build(root, files, sections=sections, registries=registries))
 
 
@@ -3018,9 +3020,9 @@ def test_r8_1_a_bare_value_of_several_plain_words_is_a_secret_to_the_end_of_the_
 
 @pytest.mark.parametrize("text", [
     'password = "${DB PASSWORD}"', 'password = "<your password here>"', 'token: "[REDACTED VALUE]"',
-    'password = "os.environ get it"', 'token = "**** **** ****"', 'secret: "{{ vault secret }}"',
+    'token = "**** **** ****"', 'secret: "{{ vault secret }}"',
     'password = "required"', 'token = "None"', "token = 'true'", 'password = "ab c"',
-    'password = "./some path/file"', "token: the number of tokens",
+    "token: the number of tokens",
     "password = a very long note about it, not ending the line\nnext",
     "token = outside / 'x'", "secret: see the docs.\n"])
 def test_r8_1_placeholders_and_expressions_are_still_not_secrets(text):
@@ -3185,3 +3187,165 @@ def test_r8_c_the_extensions_are_read_from_the_table(root, tmp_path):
     on = _tables_edit(tmp_path / "t", lambda p: p.update(расширения_настроек=[".md"]))
     assert _outcome(lambda: _build(root, [("docs/conf.md", "existing_evidence")], tables=on)) == "похоже_на_секрет"
     assert _outcome(lambda: _build(root, [("docs/conf.md", "existing_evidence")])) is None
+
+
+# -- 9. round 9: a placeholder does not excuse the tail; the readings keep the order; NFKC twins of escape signs -------
+
+_FULL_PLACEHOLDERS = ["${DB_PASSWORD}", "$(cat pw.txt)", "$TOKEN", "****", "<value>", "[REDACTED]", "%(pw)s", "{{vault}}",
+                      "os.environ['P']", "process.env.PW", "getenv('P')", "./secrets/pw.txt", "~/.pw", "/run/secrets/pw",
+                      "required", "true", "None", "get_token(user)"]
+_TAILS = ["synthetic phrase", "synthetic phrase words", "literal passphrase"]
+_COVER_FORMS = [
+    lambda p, t: f"password: {p} {t}", lambda p, t: f"password = {p} {t}", lambda p, t: f"api_key: {p} {t}\n",
+    lambda p, t: f"SECRET_KEY={p} {t}", lambda p, t: f'password: "{p} {t}"', lambda p, t: f"token = '{p} {t}'",
+    lambda p, t: f'{{"password": "{p} {t}"}}', lambda p, t: f"password: |\n  {p} {t}\n"]
+
+
+def test_r9_1_the_critics_scenarios_a_placeholder_in_front_of_a_literal_tail_in_every_channel(root):
+    for channel in CHANNELS:
+        assert _in_channel(root, channel, "ordinary synthetic note") is None                    # positive control
+        assert _in_channel(root, channel, "password: ${DB_PASSWORD}") is None
+        assert _in_channel(root, channel, "password: ****") is None
+        assert _in_channel(root, channel, "password: ${P} synthetic phrase") == "похоже_на_секрет", channel
+        assert _in_channel(root, channel, 'password: "**** synthetic phrase"') == "похоже_на_секрет", channel
+
+
+@pytest.mark.parametrize("placeholder", _FULL_PLACEHOLDERS)
+def test_r9_1_every_kind_of_placeholder_followed_by_a_literal_tail_is_a_secret(placeholder):
+    missed = [form(placeholder, tail) for form in _COVER_FORMS for tail in _TAILS
+              if not _secret_found(form(placeholder, tail))]
+    assert not missed, missed[:4]
+
+
+@pytest.mark.parametrize("placeholder", _FULL_PLACEHOLDERS)
+def test_r9_1_a_whole_placeholder_alone_or_with_a_comment_is_still_not_a_secret(placeholder):
+    for form in (lambda p: f"password: {p}", lambda p: f"password = {p}  # from the vault",
+                 lambda p: f'password: "{p}"', lambda p: f"SECRET_KEY={p}\nnext: 1", lambda p: f"token = '{p}'  # x",
+                 lambda p: f"api_key: {p}\n"):
+        assert not _secret_found(form(placeholder)), form(placeholder)
+
+
+@pytest.mark.parametrize("channel", CHANNELS)
+def test_r9_1_a_covered_tail_is_found_in_every_channel_and_form(root, channel):
+    for placeholder in ("${P}", "****", "<value>", "os.environ['P']", "./pw.txt"):
+        for form in _COVER_FORMS[:5]:
+            text = form(placeholder, "synthetic phrase")
+            if channel == "evidence_command" and "\n" in text:
+                continue
+            assert _in_channel(root, channel, text) == "похоже_на_секрет", text
+
+
+def test_r9_1_a_markdown_file_and_a_settings_file_alike(root):
+    for name in ("docs/a.md", "docs/a.yaml"):
+        (root / name).write_text('password: "**** synthetic phrase"', encoding="utf-8")
+        assert _outcome(lambda: _build(root, [(name, "existing_evidence")])) == "похоже_на_секрет", name
+
+
+# -- 9.2 the readings keep the order ------------------------------------------------------------------------------------
+
+def _spell(piece, mode):
+    return {"raw": piece, "dec": "".join(f"&#{ord(c)};" for c in piece),
+            "uni": "".join("\\u%04x" % ord(c) for c in piece),
+            "hex": "".join(f"&#x{ord(c):x};" for c in piece)}[mode]
+
+
+def _split_reasons(root, text, parts, modes):
+    """Cut `text` into len(parts) pieces, spell each by its mode, put them into adjacent shown sections."""
+    pieces, previous = [], 0
+    for cut in list(parts) + [len(text)]:
+        pieces.append(text[previous:cut])
+        previous = cut
+    sections = dict(PLAIN)
+    for index, (piece, mode) in enumerate(zip(pieces, modes)):
+        sections[SHOWN[index]] = _spell(piece, mode)
+    return _outcome(lambda: _blind(root, sections=sections))
+
+
+def test_r9_2_the_critics_scenario_lu_and_ntik_in_neighbouring_sections(root):
+    assert _split_reasons(root, _NAME, [2], ["raw", "raw"]) == "слепой_пакет_след_скрытого"       # the control
+    assert _split_reasons(root, _NAME, [2], ["uni", "raw"]) == "слепой_пакет_след_скрытого"
+    sections = {**PLAIN, SHOWN[0]: "\\u041b\\u0443", SHOWN[1]: "нтик"}
+    assert _outcome(lambda: _blind(root, sections=sections)) == "слепой_пакет_след_скрытого"
+    assert _split_reasons(root, "общий", [2], ["raw", "raw"]) is None                            # positive control
+
+
+@pytest.mark.parametrize("modes", [("dec", "raw"), ("raw", "dec"), ("uni", "raw"), ("raw", "hex"), ("dec", "uni")])
+def test_r9_2_a_name_cut_at_every_position_between_two_neighbours(root, modes):
+    for cut in range(1, len(_NAME)):
+        assert _split_reasons(root, _NAME, [cut], modes) == "слепой_пакет_след_скрытого", (cut, modes)
+
+
+@pytest.mark.parametrize("modes", [("dec", "raw", "raw"), ("raw", "uni", "raw"), ("raw", "raw", "hex"),
+                                   ("dec", "uni", "hex"), ("uni", "raw", "dec")])
+def test_r9_2_a_name_cut_into_three_neighbours(root, modes):
+    for first in range(1, len(_NAME) - 1):
+        for second in range(first + 1, len(_NAME)):
+            assert _split_reasons(root, _NAME, [first, second], modes) == "слепой_пакет_след_скрытого", (first, second)
+
+
+@pytest.mark.parametrize("modes", [("dec", "raw"), ("raw", "uni"), ("hex", "dec")])
+def test_r9_2_a_sentence_cut_at_many_positions_between_two_neighbours(root, modes):
+    for cut in range(3, len(_SENTENCE) - 2, 4):
+        assert _split_reasons(root, _SENTENCE, [cut], modes) == "слепой_пакет_след_скрытого", (cut, modes)
+
+
+def test_r9_2_a_sentence_cut_into_three_neighbours(root):
+    for first in range(5, len(_SENTENCE) - 10, 11):
+        assert _split_reasons(root, _SENTENCE, [first, first + 9], ("dec", "raw", "uni")) == "слепой_пакет_след_скрытого"
+
+
+def test_r9_2_the_readings_are_whole_and_in_the_order_of_the_leaves():
+    leaves = [("a", "ab", False), ("b", "&#99;d", False), ("c", "ef", True)]
+    readings = C._readings(leaves)
+    assert readings[0] is leaves and len(readings) == 2
+    assert [text for _, text, _ in readings[1]] == ["ab", "cd", "ef"]
+    assert C._readings([("a", "plain", False)]) == [[("a", "plain", False)]]
+
+
+# -- 9.3 NFKC twins of the signs of an escape ----------------------------------------------------------------------------
+
+_LATIN = "Claudio"
+_LATIN_HIDDEN = {**WITHHELD, "автор": _LATIN}
+_SIGN_FORMS = {
+    "unicode4": lambda t: "".join("\\u%04x" % ord(c) for c in t),
+    "unicode_braces": lambda t: "".join("\\u{%x}" % ord(c) for c in t),
+    "unicode8": lambda t: "".join("\\U%08x" % ord(c) for c in t),
+    "hex_x": lambda t: "".join("\\x%02x" % ord(c) for c in t),
+    "octal": lambda t: "".join("\\%03o" % ord(c) for c in t),
+    "decimal_entity": lambda t: "".join("&#%d;" % ord(c) for c in t),
+    "hex_entity": lambda t: "".join("&#x%x;" % ord(c) for c in t),
+}
+_SIGNS = "\\ux&#;{}"
+
+
+def _twin(sign):
+    return chr(ord(sign) + 0xFEE0)
+
+
+@pytest.mark.parametrize("form", sorted(_SIGN_FORMS))
+def test_r9_3_a_full_width_twin_of_every_sign_of_an_escape_is_read_as_the_sign(root, form):
+    spelled = _SIGN_FORMS[form](_LATIN)
+    assert _blind_with(root, "про " + spelled, _LATIN_HIDDEN) == "слепой_пакет_след_скрытого"       # the control
+    assert _blind_with(root, "про общее дело", _LATIN_HIDDEN) is None
+    present = [sign for sign in _SIGNS if sign in spelled]
+    assert present
+    for sign in present:
+        for only_first in (True, False):
+            changed = spelled.replace(sign, _twin(sign), 1 if only_first else -1)
+            # a twin of a letter (`u`, `x`) is read as the letter; the twin of any other sign is not on the
+            # whitelist of the blind package and is refused as it stands
+            expected = "слепой_пакет_след_скрытого" if sign in "ux" else "посторонний_знак"
+            assert _blind_with(root, "про " + changed, _LATIN_HIDDEN) == expected, (form, sign)
+
+
+def test_r9_3_the_critics_scenario_a_full_width_u_in_the_first_escape(root):
+    spelled = "\\" + _twin("u") + "041b\\u0443\\u043d\\u0442\\u0438\\u043a"
+    assert _blind_with(root, "обсуждает " + spelled + " и план") == "слепой_пакет_след_скрытого"
+    assert _blind_with(root, "обсуждает \\u041b\\u0443\\u043d\\u0442\\u0438\\u043a и план") == "слепой_пакет_след_скрытого"
+
+
+def test_r9_3_secrets_get_the_same_reading():
+    for sign in "\\ux&#;":
+        text = "pass\\u0077ord = 'hunter2hunter2'".replace(sign, _twin(sign), 1) if sign in "\\u" else \
+               "pa&#115;sword = 'hunter2hunter2'".replace(sign, _twin(sign), 1)
+        assert _secret_found(text), text

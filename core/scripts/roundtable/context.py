@@ -372,7 +372,8 @@ def _looks_secret(text: str, limits: dict, settings: bool = False) -> str | None
 
     `settings`: the text is a settings file -- the stricter assignment rule joins the list."""
     variants = {text, unicodedata.normalize("NFKC", text), _strip_invisible(text, limits),
-                _strip_invisible(_unescaped(text), limits)}
+                _strip_invisible(_unescaped(text), limits),
+                _strip_invisible(_unescaped(unicodedata.normalize("NFKC", text)), limits)}
     patterns = list(limits["признаки_секрета"])
     if settings:
         patterns.append(limits["признак_секрета_настроек"])
@@ -840,15 +841,35 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
     letter outside the alphabets of the table is refused too, not skipped: a
     silent drop is exactly what a look-alike letter would hide behind.
     """
+    _check_marks(leaves, limits)
+    for reading in _readings(leaves):
+        if reading is not leaves:
+            _check_marks(reading, limits)
+        _check_reading(hidden, reading, limits)
+
+
+def _readings(leaves: list) -> list:
+    """The shown text read whole, in its own order, in up to three ways.
+
+    As it is; with the supported character escapes (`\u041b`, `&#1051;`) turned into the
+    characters they spell; and the same after NFKC, which turns a look-alike of an escape
+    sign (a full-width `u`) into the real one. Every leaf stays in its place in every
+    reading, so a name cut between two neighbours is whole in each of them. The decoding
+    is `_unescaped`, the one the secret search uses.
+    """
+    readings = [leaves]
+    for prepare in (lambda text: text, lambda text: unicodedata.normalize("NFKC", text)):
+        reading = [(channel, _unescaped(prepare(text)), is_key) for channel, text, is_key in leaves]
+        if reading not in readings and reading != leaves:
+            readings.append(reading)
+    return readings
+
+
+def _check_reading(hidden: dict, leaves: list, limits: dict) -> None:
+    """One reading of the shown text against everything hidden (marks are judged by the caller)."""
     window, minimum = limits["мин_длина_следа"], limits["мин_длина_основы"]
     scripts, names = limits["письменности_скелета"], set(limits["скрытые_имена"])
     gram, share = limits["длина_граммы"], limits["доля_граммов_процентов"]
-    # A leaf written with character escapes (`\u041b`, `&#1051;`) is read a second time as the
-    # characters it spells -- the same `_unescaped` that the secret search uses.
-    leaves = leaves + [(f"{channel} (записи символов)", decoded, is_key)
-                       for channel, text, is_key in leaves
-                       if (decoded := _unescaped(text)) != text]
-    _check_marks(leaves, limits)
     skeletons = []
     for channel, text, is_key in leaves:
         skeleton, foreign = _skeleton_checked(text, scripts)

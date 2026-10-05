@@ -95,7 +95,10 @@ def ignored_blockers(status_lines: list[str]) -> list[str]:
         if not line.startswith("!! "):
             continue
         entry = line[3:].rstrip("/")
-        if not REBUILDABLE.intersection(entry.split("/")):
+        parts = entry.split("/")
+        # The ignored folder itself, or a top-level output folder; a nested
+        # `config/build/secrets.json` is not a build output.
+        if parts[0] not in REBUILDABLE and parts[-1] not in REBUILDABLE:
             blockers.append(entry)
     return blockers
 
@@ -206,9 +209,9 @@ def find_repos(roots: tuple[Path, ...]) -> list[Path]:
 def process_cwds() -> set[Path] | None:
     """Working folders of all processes; None when they cannot be read."""
     probe = _run(["lsof", "-a", "-d", "cwd", "-Fn"], timeout=30)
-    if probe.returncode not in (0, 1):
-        return None
-    return {Path(line[1:]) for line in probe.stdout.splitlines() if line.startswith("n/")}
+    cwds = {Path(line[1:]).resolve() for line in probe.stdout.splitlines() if line.startswith("n/")}
+    # This process itself has a working folder: an empty set means lsof failed.
+    return cwds if probe.returncode in (0, 1) and cwds else None
 
 
 def _last_activity(path: Path, gitdir: Path) -> float:
@@ -227,7 +230,8 @@ def _last_activity(path: Path, gitdir: Path) -> float:
 def inspect_worktree(
     path: Path, repo: Path, main: str | None, cwds: set[Path] | None = None
 ) -> Worktree:
-    status = _git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
+    real = path.resolve()
+    status = _git(path, "status", "--porcelain", "--ignored", "--untracked-files=all", timeout=180)
     lines = status.stdout.splitlines()
     gitdir_raw = _git(path, "rev-parse", "--path-format=absolute", "--git-dir").stdout.strip()
     gitdir = Path(gitdir_raw) if gitdir_raw else path / ".git"
@@ -236,7 +240,7 @@ def inspect_worktree(
         busy = "идёт rebase/merge/bisect"
     elif cwds is None:
         busy = "не удалось проверить, кто работает в копии"
-    elif any(cwd == path or path in cwd.parents for cwd in cwds):
+    elif any(cwd == real or real in cwd.parents for cwd in cwds):
         busy = "в копии сейчас работает программа"
     merged = bool(main) and _git(path, "merge-base", "--is-ancestor", "HEAD", main).returncode == 0
     return Worktree(

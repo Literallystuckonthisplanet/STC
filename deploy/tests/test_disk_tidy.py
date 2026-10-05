@@ -156,3 +156,8 @@ def test_build_dir_outside_the_worktree_is_refused(tmp_path):
     nm = worktree / "node_modules" / ".next"
     nm.mkdir(parents=True)
     assert tidy.safe_build_dir(nm, worktree) is False
+
+
+def test_nested_folder_named_like_a_build_output_still_blocks():
+    assert tidy.ignored_blockers(["!! config/build/secrets.json"]) == ["config/build/secrets.json"]
+    assert tidy.ignored_blockers(["!! build/", "!! node_modules/.bin/x"]) == []

@@ -650,7 +650,8 @@ SHAPES = {
                         "письменности_скелета", "скрытые_имена", "запрещённые_предки",
                         "разрешённые_расширения", "признаки_секрета", "разделы",
                         "предел_раздела_байт", "предел_числа_файлов",
-                        "длина_граммы", "доля_граммов_процентов",
+                        "длина_граммы", "доля_граммов_процентов", "мин_знаков_хеша",
+                        "расширения_настроек", "признак_секрета_настроек",
                         форматы_полей=Mapping(TEXT),
                         невидимые_знаки=Record("категории", "диапазоны"),
                         допустимые_знаки_слепого=Record("категории", "управляющие", "диапазоны"),
@@ -1856,6 +1857,17 @@ class Tables:
                 re.compile(pattern)
             except re.error as error:
                 raise ContractError(f"{where}.признаки_секрета: {pattern!r} не компилируется — {error}")
+        settings = names(need("расширения_настроек"), f"{where}.расширения_настроек")
+        if set(settings) - set(need("разрешённые_расширения")):
+            raise ContractError(f"{where}.расширения_настроек: {sorted(set(settings) - set(need('разрешённые_расширения')))} "
+                                "нет среди разрешённых расширений")
+        strict = need("признак_секрета_настроек")
+        if not isinstance(strict, str) or not strict:
+            raise ContractError(f"{where}.признак_секрета_настроек: ожидалась непустая строка-шаблон")
+        try:
+            re.compile(strict)
+        except re.error as error:
+            raise ContractError(f"{where}.признак_секрета_настроек: не компилируется — {error}")
         formats = need("форматы_полей")
         if not isinstance(formats, dict) or not formats:
             raise ContractError(f"{where}.форматы_полей: ожидалась непустая карта")
@@ -1874,6 +1886,7 @@ class Tables:
                 f"{sorted(known_fields - set(formats))}")
 
         number("длина_граммы", 4, trace)
+        number("мин_знаков_хеша", 8, 64)
         number("доля_граммов_процентов", 1, 18)
         invisible = need("невидимые_знаки")
         if not isinstance(invisible, dict) or set(invisible) != {"категории", "диапазоны"}:

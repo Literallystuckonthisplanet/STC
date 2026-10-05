@@ -367,11 +367,16 @@ def _strip_invisible(text: str, limits: dict) -> str:
     return clean(unicodedata.normalize("NFKC", clean(text)))
 
 
-def _looks_secret(text: str, limits: dict) -> str | None:
-    """A secret signature in the raw text, without invisibles, or with escapes decoded."""
+def _looks_secret(text: str, limits: dict, settings: bool = False) -> str | None:
+    """A secret signature in the raw text, without invisibles, or with escapes decoded.
+
+    `settings`: the text is a settings file -- the stricter assignment rule joins the list."""
     variants = {text, unicodedata.normalize("NFKC", text), _strip_invisible(text, limits),
                 _strip_invisible(_unescaped(text), limits)}
-    for pattern in limits["признаки_секрета"]:
+    patterns = list(limits["признаки_секрета"])
+    if settings:
+        patterns.append(limits["признак_секрета_настроек"])
+    for pattern in patterns:
         if any(re.search(pattern, variant) for variant in variants):
             return pattern
     return None
@@ -433,7 +438,8 @@ def read_file(root: Path, relative: str, file_class: str, tables):
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise PackageRefused("файл_не_текст", relative)
-    if _looks_secret(text, limits) is not None:
+    settings = PurePosixPath(relative).suffix.casefold() in limits["расширения_настроек"]
+    if _looks_secret(text, limits, settings) is not None:
         raise PackageRefused("похоже_на_секрет", f"файл {relative}")
     return ManifestEntry(relative, file_class, digest(data), len(data)), text
 
@@ -837,6 +843,11 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
     window, minimum = limits["мин_длина_следа"], limits["мин_длина_основы"]
     scripts, names = limits["письменности_скелета"], set(limits["скрытые_имена"])
     gram, share = limits["длина_граммы"], limits["доля_граммов_процентов"]
+    # A leaf written with character escapes (`\u041b`, `&#1051;`) is read a second time as the
+    # characters it spells -- the same `_unescaped` that the secret search uses.
+    leaves = leaves + [(f"{channel} (записи символов)", decoded, is_key)
+                       for channel, text, is_key in leaves
+                       if (decoded := _unescaped(text)) != text]
     _check_marks(leaves, limits)
     skeletons = []
     for channel, text, is_key in leaves:
@@ -858,6 +869,7 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
         if name is not None:
             raise PackageRefused("слепой_пакет_след_скрытого",
                                  f"{channel}: хеш скрытого раздела {name}")
+    _check_hash_fragments(digests, leaves, limits["мин_знаков_хеша"])
 
     # Two streams: everything (keys too), and values only -- so that keys of a
     # record standing between two glued pieces cannot break the join.
@@ -894,6 +906,45 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
                 if index >= 0:
                     raise PackageRefused("слепой_пакет_след_скрытого",
                                          f"{channel_at(index)}: след скрытого раздела {name}")
+
+
+def _hex_stream(text: str) -> str:
+    """The hexadecimal digits of `text` in order, separators dropped.
+
+    Whitespace and punctuation vanish (a hash split by a line break, a dash or a
+    label stays one run); any other letter or digit breaks the run, so words
+    that merely contain hex letters do not glue into a hash.
+    """
+    out = []
+    for ch in unicodedata.normalize("NFKC", text).lower():
+        if ch in "0123456789abcdef":
+            out.append(ch)
+        elif ch.isalnum():
+            out.append("\0")
+    return "".join(out)
+
+
+def _check_hash_fragments(digests: dict, leaves: list, size: int) -> None:
+    """A known hidden hash -- or `size`+ digits of it in a row -- anywhere in the shown text.
+
+    Looked for in every leaf and in the glue of all leaves (and of the values
+    only, so that record keys cannot break it). Hashes of data that are not
+    hidden are not touched.
+    """
+    fragments = {}
+    for hashed, name in digests.items():
+        for index in range(len(hashed) - size + 1):
+            fragments[hashed[index:index + size]] = name
+    streams = [(channel, _hex_stream(text)) for channel, text, _ in leaves]
+    streams.append(("склейка", "".join(stream for _, stream in streams)))
+    streams.append(("склейка значений",
+                    "".join(_hex_stream(text) for _, text, is_key in leaves if not is_key)))
+    for channel, stream in streams:
+        for index in range(len(stream) - size + 1):
+            name = fragments.get(stream[index:index + size])
+            if name is not None:
+                raise PackageRefused("слепой_пакет_след_скрытого",
+                                     f"{channel}: хеш скрытого раздела {name}")
 
 
 def _check_share(name, skeleton, joined, size, percent, channel_at) -> None:

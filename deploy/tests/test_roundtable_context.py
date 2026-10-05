@@ -1846,8 +1846,8 @@ import re  # noqa: E402
 import signal  # noqa: E402
 
 
-def _secret_found(text, tables=TABLES):
-    return C._looks_secret(text, tables.vocabulary["пакет"]) is not None
+def _secret_found(text, tables=TABLES, settings=False):
+    return C._looks_secret(text, tables.vocabulary["пакет"], settings) is not None
 
 
 # -- 1. secrets in assignments ------------------------------------------------------
@@ -1948,7 +1948,7 @@ def test_r6_1_the_rules_do_not_refuse_the_files_of_this_repository():
             too_big.add(name)  # it would be refused for its size before any signature
             continue
         scanned += 1
-        if _secret_found(text):
+        if _secret_found(text, settings=Path(name).suffix.casefold() in LIMITS["расширения_настроек"]):
             refused[name] = True
     assert scanned > 100
     unexpected = sorted(set(refused) - set(INTENDED_STUBS))
@@ -2951,3 +2951,237 @@ def test_r7_7_descriptors_opened_by_the_walk_up_are_closed(root, monkeypatch):
     monkeypatch.setattr(C.os, "close", lambda d: (closed.append(d), real_close(d))[0])
     _build(root)
     assert opened and sorted(opened) == sorted(closed)
+
+
+# -- 8. round 8: a many-word password, escapes of the hidden, a hash inside a string ----------------------------------
+
+import hashlib  # noqa: E402
+
+
+def _outcome(call):
+    try:
+        call()
+    except C.PackageRefused as error:
+        return error.reason
+    return None
+
+
+def _in_channel(root, channel, text):
+    """The reason (or None) for `text` placed in one of the three channels, through the public build."""
+    sections, registries, files = dict(SECTIONS), REGISTRIES, [("docs/plan.md", "existing_evidence")]
+    if channel == "file":
+        (root / "docs" / "plan.md").write_text(text, encoding="utf-8")
+    elif channel == "section":
+        sections["задача"] = text
+    else:
+        registries = _with(журнал_доказательств=[{**COMMAND, "команда": text}])
+    return _outcome(lambda: _build(root, files, sections=sections, registries=registries))
+
+
+CHANNELS = ["file", "section", "evidence_command"]
+
+
+@pytest.mark.parametrize("channel", CHANNELS)
+def test_r8_1_a_password_of_several_words_is_refused_in_every_channel(root, channel):
+    assert _in_channel(root, channel, "ordinary synthetic note") is None                      # positive control
+    assert _in_channel(root, channel, "password = synthetic-token") == "похоже_на_секрет"     # the old control
+    assert _in_channel(root, channel, 'password = "synthetic phrase words"') == "похоже_на_секрет"
+    assert _in_channel(root, channel, "password = synthetic phrase words") == "похоже_на_секрет"
+
+
+_WORDS = ["synthetic phrase words", "my secret phrase here", "correct horse battery staple", "ab cd efgh",
+          "Synthetic Phrase Words", "ключ из нескольких слов", "x y z q w e r t y", "synthetic  phrase\twords"]
+# A bare (unquoted) value is judged as before by its first word, which must be long enough to be a value
+# at all (6 characters); a short first word in prose ("token: the number of tokens") is not a secret.
+_BARE_WORDS = ["synthetic phrase words", "correct horse battery staple", "Synthetic Phrase Words",
+               "synthetic phrase", "hunter2hunter2 and more words"]
+_PHRASE_FORMS = [
+    lambda v: 'password = "%s"' % v, lambda v: "DB_PASS='%s'" % v, lambda v: 'api_key: "%s"' % v,
+    lambda v: '{"token": "%s"}' % v, lambda v: 'SECRET_KEY="%s"' % v, lambda v: "secret => '%s'" % v,
+    lambda v: "# note\npasswd := \"%s\" # why\n" % v]
+_BARE_FORMS = [
+    lambda v: "password = %s" % v, lambda v: "api_key: %s\n" % v, lambda v: "SECRET_KEY=%s\nnext=1" % v,
+    lambda v: "token => %s." % v, lambda v: "pwd := %s" % v, lambda v: "secret : %s\r\n" % v]
+
+
+@pytest.mark.parametrize("words", _WORDS)
+def test_r8_1_a_quoted_value_after_a_secret_name_is_a_secret_however_many_words(words):
+    missed = [form(words) for form in _PHRASE_FORMS if not _secret_found(form(words))]
+    assert not missed, missed
+
+
+@pytest.mark.parametrize("words", _BARE_WORDS)
+def test_r8_1_a_bare_value_of_several_plain_words_is_a_secret_to_the_end_of_the_line(words):
+    missed = [form(words) for form in _BARE_FORMS if not _secret_found(form(words))]
+    assert not missed, missed
+
+
+@pytest.mark.parametrize("text", [
+    'password = "${DB PASSWORD}"', 'password = "<your password here>"', 'token: "[REDACTED VALUE]"',
+    'password = "os.environ get it"', 'token = "**** **** ****"', 'secret: "{{ vault secret }}"',
+    'password = "required"', 'token = "None"', "token = 'true'", 'password = "ab c"',
+    'password = "./some path/file"', "token: the number of tokens",
+    "password = a very long note about it, not ending the line\nnext",
+    "token = outside / 'x'", "secret: see the docs.\n"])
+def test_r8_1_placeholders_and_expressions_are_still_not_secrets(text):
+    assert not _secret_found(text), text
+
+
+# -- escapes of the hidden text in a blind package ----------------------------------------------------------------------
+
+_NAME, _SENTENCE = WITHHELD["автор"], WITHHELD["предложенное_решение"]
+_ESCAPE_FORMS = {
+    "unicode4": lambda t: "".join("\\u%04x" % ord(c) for c in t),
+    "unicode4_upper": lambda t: "".join("\\u%04X" % ord(c) for c in t),
+    "unicode_braces": lambda t: "".join("\\u{%x}" % ord(c) for c in t),
+    "unicode8": lambda t: "".join("\\U%08x" % ord(c) for c in t),
+    "decimal_entity": lambda t: "".join("&#%d;" % ord(c) for c in t),
+    "hex_entity": lambda t: "".join("&#x%x;" % ord(c) for c in t),
+    "hex_entity_upper": lambda t: "".join("&#X%X;" % ord(c) for c in t),
+}
+
+
+def _blind_with(root, text, withheld=WITHHELD):
+    return _outcome(lambda: _blind(root, sections={**PLAIN, SHOWN[0]: text}, withheld=withheld))
+
+
+def test_r8_2_the_critics_scenarios_name_and_sentence_in_character_escapes(root):
+    assert _blind_with(root, "общий контекст задачи") is None                                  # positive control
+    assert _blind_with(root, f"обсуждает {_NAME} и дальнейший план") == "слепой_пакет_след_скрытого"
+    assert _blind_with(root, "обсуждает " + "\\u041b\\u0443\\u043d\\u0442\\u0438\\u043a" + " и план") \
+        == "слепой_пакет_след_скрытого"
+    assert _blind_with(root, "обсуждает &#1051;&#1091;&#1085;&#1090;&#1080;&#1082; и план") \
+        == "слепой_пакет_след_скрытого"
+    assert _blind_with(root, "вариант " + _ESCAPE_FORMS["decimal_entity"](_SENTENCE)) \
+        == "слепой_пакет_след_скрытого"
+
+
+@pytest.mark.parametrize("form", sorted(_ESCAPE_FORMS))
+@pytest.mark.parametrize("what", ["name", "second_critic", "sentence", "half_sentence"])
+def test_r8_2_every_supported_escape_form_of_every_kind_of_hidden_text_is_a_trace(root, form, what):
+    hidden = {"name": _NAME, "second_critic": WITHHELD["второй_критик"], "sentence": _SENTENCE,
+              "half_sentence": _SENTENCE[:len(_SENTENCE) // 2]}[what]
+    assert _blind_with(root, "обсуждает " + _ESCAPE_FORMS[form](hidden) + " позже") == "слепой_пакет_след_скрытого"
+
+
+def test_r8_2_an_escaped_trace_is_found_in_every_shown_section(root):
+    # a blind package takes no files, and registry ids have a closed format without `&`, `;`, `\\`
+    for name in SHOWN:
+        assert _outcome(lambda: _blind(root, sections={**PLAIN, name: "про &#1051;&#1091;&#1085;&#1090;&#1080;&#1082;"})) \
+            == "слепой_пакет_след_скрытого", name
+
+
+def test_r8_2_escapes_that_spell_nothing_hidden_are_let_through_and_the_same_function_decodes_both(root):
+    assert _blind_with(root, "кавычка &#171; и тире &#8212; и \\u00ab") is None
+    assert _blind_with(root, "значок &#128512;") == "посторонний_знак"          # decoded, then judged like raw text
+    assert C._unescaped("&#1051;\\u0443") == "Лу"
+
+
+# -- a hash of the hidden text inside a string ---------------------------------------------------------------------------
+
+def _hashes():
+    for text in WITHHELD.values():
+        yield hashlib.sha256(text.encode("utf-8")).hexdigest()
+        yield hashlib.sha256(C._skeleton(text).encode("utf-8")).hexdigest()
+
+
+def test_r8_3_the_critics_scenarios_a_labelled_and_a_split_hash(root):
+    hidden_hash = hashlib.sha256(_SENTENCE.encode("utf-8")).hexdigest()
+    assert _blind_with(root, "общий контекст задачи") is None                                  # positive control
+    assert _blind_with(root, hidden_hash) == "слепой_пакет_след_скрытого"                     # whole leaf (old control)
+    assert _blind_with(root, "hash: " + hidden_hash) == "слепой_пакет_след_скрытого"
+    assert _blind_with(root, hidden_hash[:32] + "\n" + hidden_hash[32:]) == "слепой_пакет_след_скрытого"
+
+
+@pytest.mark.parametrize("kind", ["label", "newline", "spaces", "dashes", "colons", "prefix16", "suffix16",
+                                  "middle20", "upper", "prose_around", "bytes_of_four"])
+def test_r8_3_a_hash_of_hidden_text_in_any_dress_is_a_trace(root, kind):
+    size = LIMITS["мин_знаков_хеша"]
+    for hashed in _hashes():
+        text = {
+            "label": "hash: " + hashed, "newline": hashed[:23] + "\n" + hashed[23:],
+            "spaces": " ".join(hashed[i:i + 4] for i in range(0, 64, 4)),
+            "dashes": "-".join(hashed[i:i + 8] for i in range(0, 64, 8)),
+            "colons": ":".join(hashed[i:i + 2] for i in range(0, 64, 2)),
+            "prefix16": "commit " + hashed[:size], "suffix16": "see " + hashed[-size:],
+            "middle20": "(" + hashed[10:30] + ")", "upper": "SHA " + hashed.upper(),
+            "prose_around": "Контрольная сумма " + hashed[:30] + ", остальное потеряно",
+            "bytes_of_four": " ".join(hashed[i:i + 4] for i in range(0, 32, 4)),
+        }[kind]
+        assert _blind_with(root, text) == "слепой_пакет_след_скрытого", (kind, text)
+
+
+def test_r8_3_a_hash_cut_across_two_shown_strings_is_found_in_the_glue(root):
+    hashed = hashlib.sha256(_SENTENCE.encode("utf-8")).hexdigest()
+    sections = {**PLAIN, SHOWN[0]: "начало " + hashed[:9], SHOWN[1]: hashed[9:] + " конец"}
+    assert _outcome(lambda: _blind(root, sections=sections)) == "слепой_пакет_след_скрытого"
+
+
+def test_r8_3_fewer_digits_than_the_table_says_and_foreign_hashes_are_not_a_trace(root):
+    size = LIMITS["мин_знаков_хеша"]
+    hashed = hashlib.sha256(_SENTENCE.encode("utf-8")).hexdigest()
+    assert _blind_with(root, "коммит " + hashed[:size - 1]) is None
+    foreign = hashlib.sha256(b"not hidden at all").hexdigest()
+    assert _blind_with(root, "hash: " + foreign) is None
+    assert _blind_with(root, "см. " + "ab" * 40 + " и deadbeef") is None
+    # words made of hex letters do not glue into a hash
+    assert _blind_with(root, "face " + "bad " + "cafe " + "dead " + "beef") is None
+    ordinary = hashlib.sha256(b"x").hexdigest()
+    registries = _with(BLIND_REGISTRIES, решения=[_decision(text_hash=ordinary)])
+    assert _outcome(lambda: _blind(root, registries=registries)) is None                      # a registry hash is fine
+
+
+def test_r8_3_the_digit_count_is_read_from_the_table(root, tmp_path):
+    hashed = hashlib.sha256(_SENTENCE.encode("utf-8")).hexdigest()
+    short = _tables_edit(tmp_path / "t", lambda p: p.update(мин_знаков_хеша=8))
+    sections = {**PLAIN, SHOWN[0]: "код " + hashed[:8]}
+    assert _outcome(lambda: _blind(root, sections=sections)) is None
+    assert _outcome(lambda: C.build_package(root, [], sections, BLIND_REGISTRIES, "идея", blind=True,
+                                            tables=short, withheld=WITHHELD)) == "слепой_пакет_след_скрытого"
+
+
+# -- 8b. round 8, fork C: a bare value in a settings file is read to the end of the line ------------------------------
+
+_SETTINGS_TEXTS = ["password: my secret phrase", "db:\n  password: my secret phrase\n", "api_key = a b c d e f",
+                   'token: ab cd, efgh', "secret: |\n  my secret phrase\n", "{\"password\": \"my secret phrase\"}",
+                   "password: my secret phrase # note"]
+
+
+@pytest.mark.parametrize("suffix", [".yaml", ".yml", ".json", ".toml"])
+@pytest.mark.parametrize("text", _SETTINGS_TEXTS)
+def test_r8_c_a_settings_file_refuses_a_bare_multiword_value_with_a_short_first_word(root, suffix, text):
+    name = "docs/conf" + suffix
+    (root / name).write_text(text, encoding="utf-8")
+    assert _outcome(lambda: _build(root, [(name, "existing_evidence")])) == "похоже_на_секрет"
+
+
+@pytest.mark.parametrize("suffix", [".md", ".txt", ".rst", ".py", ".ts", ".sh"])
+def test_r8_c_prose_and_code_follow_the_general_rule(root, suffix):
+    name = "docs/note" + suffix
+    for text in ("password: my secret phrase", "db:\n  password: my secret phrase\n", "token: the number of tokens"):
+        (root / name).write_text(text, encoding="utf-8")
+        assert _outcome(lambda: _build(root, [(name, "existing_evidence")])) is None, (suffix, text)
+    (root / name).write_text("password: synthetic phrase words", encoding="utf-8")        # rule A still holds
+    assert _outcome(lambda: _build(root, [(name, "existing_evidence")])) == "похоже_на_секрет"
+
+
+@pytest.mark.parametrize("text", ["password: required", "token: true", "password: ${DB_PASSWORD}", "secret: <your secret>",
+                                  "password: os.environ get", "token: 'x'", "password: ab", "password: ~/.pw file",
+                                  "secret_name: my secret name", "password: ****", "api_key: [REDACTED]",
+                                  "db:\n  password:\n    user: admin\n"])
+def test_r8_c_placeholders_and_expressions_stay_allowed_in_settings_files(root, text):
+    (root / "docs" / "conf.yaml").write_text(text, encoding="utf-8")
+    assert _outcome(lambda: _build(root, [("docs/conf.yaml", "existing_evidence")])) is None, text
+
+
+def test_r8_c_section_and_registry_values_follow_the_general_rule(root):
+    for channel in ("section", "evidence_command"):
+        assert _in_channel(root, channel, "password: my secret phrase") is None
+        assert _in_channel(root, channel, "password: synthetic phrase words") == "похоже_на_секрет"
+
+
+def test_r8_c_the_extensions_are_read_from_the_table(root, tmp_path):
+    (root / "docs" / "conf.md").write_text("password: my secret phrase", encoding="utf-8")
+    on = _tables_edit(tmp_path / "t", lambda p: p.update(расширения_настроек=[".md"]))
+    assert _outcome(lambda: _build(root, [("docs/conf.md", "existing_evidence")], tables=on)) == "похоже_на_секрет"
+    assert _outcome(lambda: _build(root, [("docs/conf.md", "existing_evidence")])) is None

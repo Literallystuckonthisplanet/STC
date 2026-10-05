@@ -21,6 +21,9 @@ def _wt(**overrides):
         untracked=0,
         age_days=30,
         size_bytes=GB,
+        status_ok=True,
+        ignored_blockers=(),
+        busy="",
     )
     base.update(overrides)
     return tidy.Worktree(**base)
@@ -103,3 +106,53 @@ def test_parse_size_handles_docker_units():
 def test_human_size_is_readable():
     assert tidy.human(52 * GB) == "52 ГБ"
     assert tidy.human(300 * 1024 ** 2) == "300 МБ"
+
+
+def test_ignored_files_other_than_rebuildable_ones_keep_the_worktree():
+    """`git worktree remove` silently drops ignored files such as `.env`."""
+    lines = ["!! node_modules/", "!! apps/web/.next/", "!! .env.local", "!! db/dev.sqlite"]
+    assert tidy.ignored_blockers(lines) == [".env.local", "db/dev.sqlite"]
+    removable, reason = tidy.worktree_verdict(
+        _wt(ignored_blockers=(".env.local",)), min_age_days=7
+    )
+    assert removable is False
+    assert ".env.local" in reason
+
+
+def test_only_rebuildable_ignored_files_do_not_block():
+    lines = ["!! node_modules/", "!! .venv/", "!! src/__pycache__/", "!! graphify-out/"]
+    assert tidy.ignored_blockers(lines) == []
+
+
+def test_unreadable_status_is_treated_as_dirty():
+    """A git timeout or index.lock must never read as 'clean'."""
+    removable, reason = tidy.worktree_verdict(_wt(status_ok=False), min_age_days=7)
+    assert removable is False
+    assert "не удалось" in reason
+
+
+def test_busy_worktree_is_kept():
+    removable, reason = tidy.worktree_verdict(_wt(busy="идёт rebase"), min_age_days=7)
+    assert removable is False
+    assert reason == "идёт rebase"
+
+
+def test_pgrep_failure_counts_as_a_running_dev_server():
+    assert tidy.dev_server_from_returncode(0) is True
+    assert tidy.dev_server_from_returncode(1) is False
+    assert tidy.dev_server_from_returncode(2) is True
+
+
+def test_build_dir_outside_the_worktree_is_refused(tmp_path):
+    outside = tmp_path / "elsewhere" / ".next"
+    outside.mkdir(parents=True)
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / "app").symlink_to(tmp_path / "elsewhere")
+    assert tidy.safe_build_dir(worktree / "app" / ".next", worktree) is False
+    inside = worktree / ".next"
+    inside.mkdir()
+    assert tidy.safe_build_dir(inside, worktree) is True
+    nm = worktree / "node_modules" / ".next"
+    nm.mkdir(parents=True)
+    assert tidy.safe_build_dir(nm, worktree) is False

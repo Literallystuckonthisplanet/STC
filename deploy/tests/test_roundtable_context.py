@@ -910,7 +910,7 @@ def test_b2_8_ordinary_legitimate_input_is_not_refused(root):
 
 def test_b2_8_the_trace_length_is_a_rule_of_the_table(tmp_path, root):
     sections = {n: "общий контекст задачи" for n in SHOWN}
-    sections[SHOWN[0]] = "очереди сообщений"  # 15 chars: far below the window and the share
+    sections[SHOWN[0]] = "очереди"  # 7 chars: far below the window and the share
     assert _blind(root, sections=sections).hash
     sections[SHOWN[0]] = "очереди сообщений и воркерах"  # 28 normalised chars: below the shipped 30
     strict = _tables_with(tmp_path, мин_длина_следа=20)
@@ -1073,12 +1073,11 @@ def test_audit_7_a_file_unlinked_during_the_read_is_refused(root, monkeypatch):
 
 def test_audit_8_a_component_on_another_device_is_outside_the_root(root, monkeypatch):
     real = os.fstat
-    calls = []
+    docs = (root / "docs").stat().st_ino
 
     def spoof(descriptor):
         info = real(descriptor)
-        calls.append(info.st_dev)
-        if len(calls) == 2:  # the first call is the root, the second is `docs`
+        if info.st_ino == docs:
             fields = list(info)
             fields[2] = info.st_dev + 1
             return os.stat_result(fields)
@@ -1560,11 +1559,14 @@ def test_r5_1_an_accent_on_a_latin_letter_does_not_hide_a_name(root):
 
 def test_r5_1_digits_of_any_script_fold_to_ascii(root):
     hidden = {"автор": "Агент 7007"}
-    for shown in ("номер ٧٠٠٧", "номер \u096d\u0966\u0966\u096d",
-                  "номер ７００７", "номер 7007"):
+    # Round 7: a digit of another script is not on the closed whitelist -- refused, never folded silently.
+    for shown in ("номер ٧٠٠٧", "номер \u096d\u0966\u0966\u096d", "номер ７００７"):
         with pytest.raises(C.PackageRefused) as refused:
             _shown(root, shown, hidden)
-        assert refused.value.reason == "слепой_пакет_след_скрытого", shown
+        assert refused.value.reason == "посторонний_знак", shown
+    with pytest.raises(C.PackageRefused) as refused:
+        _shown(root, "номер 7007", hidden)
+    assert refused.value.reason == "слепой_пакет_след_скрытого"
 
 
 def test_r5_1_legitimate_mixed_text_passes(root):
@@ -1926,8 +1928,8 @@ INTENDED_STUBS = {
     "deploy/tests/test_deploy_safety.py": "TOKEN=нельзя: a fixture for a secret file",
     "deploy/tests/test_render.py": "a fake AWS key to see the commit guard fire",
     "deploy/tests/test_roundtable_isolation.py": "a test marker called TOKEN",
-    "deploy/tests/test_roundtable_state.py": "a prose comment: token=S._LIVE",
     "deploy/tests/test_weekly_audit.py": "token=super-secret-value-...: a fixture for the redactor",
+    "core/hooks/secret-scan-memory.sh": "a comment that mentions *_SECRET=value)",
 }
 
 
@@ -2149,16 +2151,20 @@ def test_r6_8_the_root_itself_is_never_followed_as_a_link(root, tmp_path):
 _REFUSED_RANGES = [(0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F), (0x2800, 0x28FF),
                    (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xFFFC, 0xFFFD),
                    (0x1F1E6, 0x1F1FF), (0xE0000, 0xE007F), (0xE0100, 0xE01EF)]
-_KEPT_CATEGORIES = {"Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Nd", "Nl", "No", "Pc", "Pd", "Ps", "Pe", "Pi",
-                    "Pf", "Po", "Sm", "Sc", "Sk", "So", "Zs"}
+_TYPOGRAPHY = [(0xA0, 0xA0), (0xA7, 0xA7), (0xAB, 0xAB), (0xB0, 0xB0), (0xB7, 0xB7), (0xBB, 0xBB),
+               (0x2010, 0x2015), (0x2018, 0x201E), (0x2022, 0x2022), (0x2026, 0x2026), (0x20AC, 0x20AC),
+               (0x2116, 0x2116)]
 
 
 def _expected_refused(code: int) -> bool:
+    """Closed list: letters and marks on them, printable ASCII, a short typography list, tab/LF/CR."""
     if code < 32:
         return code not in (9, 10, 13)
     if any(low <= code <= high for low, high in _REFUSED_RANGES):
         return True
-    return unicodedata.category(chr(code)) not in _KEPT_CATEGORIES
+    if 0x20 <= code <= 0x7E or any(low <= code <= high for low, high in _TYPOGRAPHY):
+        return False
+    return unicodedata.category(chr(code)) not in {"Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc"}
 
 
 def test_r6_5_every_code_point_is_judged_by_the_whitelist():
@@ -2224,7 +2230,7 @@ def test_r6_5_the_audit_examples_by_name(root):
 
 
 def test_r6_5_ordinary_text_passes_the_whitelist(root):
-    text = "Выгрузка для café: 2024, кафе №5 — «OK»; naïve résumé\n\tстрока (≥ 3 шт.) 50% €10, 25°C… é́"
+    text = "Выгрузка для café: 2024, кафе №5 — «OK»; naïve résumé\n\tстрока (3 шт.) 50% €10, 25°C… é́ § „цитата“"
     assert _blind(root, sections={**PLAIN, SHOWN[0]: text}).hash
 
 
@@ -2245,11 +2251,14 @@ def test_r6_5_the_whitelist_is_read_from_the_table(tmp_path, root):
             assert C.build_package(root, [], sections, BLIND_REGISTRIES, "идея", blind=True, tables=tables,
                                    withheld=WITHHELD).hash
 
-    check(lambda p: p["допустимые_знаки_слепого"]["категории"].remove("Sc"), "цена €10", True)
+    check(lambda p: p["допустимые_знаки_слепого"]["диапазоны"].remove("U+20AC"), "цена €10", True)
     check(lambda p: p["допустимые_знаки_слепого"].update(управляющие=[]), "a\tb", True)
     check(lambda p: p["допустимые_знаки_слепого"].update(управляющие=[9, 10, 11, 13]), "a\x0bb", False)
-    check(lambda p: p["допустимые_знаки_слепого"]["категории"].remove("Zs"), "a b", True)
-    check(lambda p: p["невидимые_знаки"].update(диапазоны=["U+034F"]), "a\u2800b", False)
+    check(lambda p: p["допустимые_знаки_слепого"]["диапазоны"].remove("U+0020-007E"), "a b", True)
+    check(lambda p: p["допустимые_знаки_слепого"]["категории"].remove("Mn"), "e\u0301", True)
+    check(lambda p: p["допустимые_знаки_слепого"]["диапазоны"].append("U+2200-22FF"), "a ∘ b", False)
+    check(lambda p: (p["допустимые_знаки_слепого"]["диапазоны"].append("U+2800"),
+                     p["невидимые_знаки"].update(диапазоны=["U+034F"])), "a\u2800b", False)
     check(lambda p: p["невидимые_знаки"]["диапазоны"].append("U+00A7"), "см. § 5", True)
 
 
@@ -2460,7 +2469,7 @@ def test_r6_6_a_digit_twin_does_not_hide_a_name(root, digit, letter):
     _caught(root, f"решил Aва{digit}рикс", {"автор": hidden})
 
 
-@pytest.mark.parametrize("twin", list("1lLiIıіІӏӀǀ|".replace("|", "")) + ["и", "ⅼ", "ⅰ", "ı"])
+@pytest.mark.parametrize("twin", list("1lLiIıіІӏӀǀ") + ["и", "ı"])
 def test_r6_6_every_member_of_the_one_stick_class_is_the_same_letter(root, twin):
     for hidden, shown in (("Claude", f"решил C{twin}aude"), ("Бибигон", f"решил Биб{twin}гон"),
                           ("Gemini", f"by Gem{twin}n{twin}"), ("Kimi", f"K{twin}m{twin}")):
@@ -2475,10 +2484,11 @@ def test_r6_6_the_audit_examples_by_name(root):
     _caught(root, "решил Л\u0443нтик", {"автор": "Лунтик"})
 
 
-def test_r6_6_digits_of_any_script_still_fold_before_their_twins(root):
-    _caught(root, "model C\u0660dex", {"второй_критик": "Codex"})   # Arabic-Indic zero
-    _caught(root, "model C\uff10dex", {"второй_критик": "Codex"})   # fullwidth zero
-    _caught(root, "model C\u09e6dex", {"второй_критик": "Codex"})   # Bengali zero
+def test_r6_6_digits_of_any_script_are_refused_not_folded(root):
+    for zero in ("\u0660", "\uff10", "\u09e6"):                    # Arabic-Indic, fullwidth, Bengali
+        with pytest.raises(C.PackageRefused) as refused:
+            _shown(root, f"model C{zero}dex", {"второй_критик": "Codex"})
+        assert refused.value.reason == "посторонний_знак"
 
 
 def test_r6_6_honest_digits_do_not_make_an_honest_text_a_trace(root):
@@ -2569,16 +2579,19 @@ def test_r6_7_the_share_and_the_gram_are_rules_of_the_table(tmp_path, root):
     shown = " ".join("слово" if i % 3 == 2 else w for i, w in enumerate(words))
     sections = {**PLAIN, SHOWN[0]: shown}
     hidden = {**WITHHELD, "предложенное_решение": _PROPOSAL}
-    lenient = _tables_edit(tmp_path, lambda p: p.update(доля_граммов_процентов=100))
-    assert C.build_package(root, [], sections, BLIND_REGISTRIES, "идея", blind=True, tables=lenient,
-                           withheld=hidden).hash
+    half = {**PLAIN, SHOWN[0]: " ".join("слово" if i % 2 else w for i, w in enumerate(words))}
+    assert C.build_package(root, [], half, BLIND_REGISTRIES, "идея", blind=True, tables=TABLES,
+                           withheld=hidden).hash   # ~11%: under the shipped 15
+    one = _tables_edit(tmp_path / "a", lambda p: p.update(доля_граммов_процентов=1))
+    with pytest.raises(C.PackageRefused):
+        C.build_package(root, [], half, BLIND_REGISTRIES, "идея", blind=True, tables=one, withheld=hidden)
     strict = _tables_edit(tmp_path / "b", lambda p: p.update(доля_граммов_процентов=1))
     other = " ".join(HONEST_TEXTS[:3])
     with pytest.raises(C.PackageRefused) as refused:
         C.build_package(root, [], {**PLAIN, SHOWN[0]: other + " " + _PROPOSAL.split(",")[1]}, BLIND_REGISTRIES,
                         "идея", blind=True, tables=strict, withheld=hidden)
     assert refused.value.reason == "слепой_пакет_след_скрытого"
-    tiny = _tables_edit(tmp_path / "c", lambda p: p.update(длина_граммы=4, доля_граммов_процентов=100))
+    tiny = _tables_edit(tmp_path / "c", lambda p: p.update(длина_граммы=4, доля_граммов_процентов=18))
     with pytest.raises(C.PackageRefused):
         C.build_package(root, [], {**PLAIN, SHOWN[0]: _PROPOSAL[:25]}, BLIND_REGISTRIES, "идея", blind=True,
                         tables=tiny, withheld={**WITHHELD, "предложенное_решение": _PROPOSAL[:25]})
@@ -2589,3 +2602,352 @@ def test_r6_7_the_share_applies_to_a_short_hidden_decision_too(root):
     with pytest.raises(C.PackageRefused) as refused:
         _blind(root, sections={**PLAIN, SHOWN[0]: "очередь сообщений"}, withheld={**WITHHELD, **hidden})
     assert refused.value.reason == "слепой_пакет_след_скрытого"
+
+
+# --------------------------------------------------------------------------
+# round 7: a closed whitelist, "leetspeak", exceptions only at the start of a value, 15%
+# --------------------------------------------------------------------------
+
+import random  # noqa: E402
+import string  # noqa: E402
+
+
+# -- 1. the closed whitelist: look-alike signs outside letters are refused, not dropped ---------------------
+
+@pytest.mark.parametrize("sign", ["🅒", "🅛", "🅐", "🅤", "🅓", "🅔", "∘", "℮", "×", "⊤", "ⅼ", "ⅰ", "Ⅳ", "①", "½", "²",
+                                  "٣", "７", "ℂ".replace("ℂ", "∂"), "‹", "›", "′", "¨", "™", "©", "®", "→", "✓",
+                                  "★", "🙂", "­", " ", " ", "　", " "])
+def test_r7_1_a_sign_outside_the_closed_list_is_refused_by_channel_and_code(root, sign):
+    with pytest.raises(C.PackageRefused) as refused:
+        _shown(root, f"решил {sign}", {"второй_критик": "Claude"})
+    assert refused.value.reason == "посторонний_знак"
+    assert f"U+{ord(sign):04X}" in refused.value.detail and refused.value.detail.startswith("раздел.")
+
+
+def test_r7_1_the_enclosed_alphabet_name_in_every_channel_is_refused_not_dropped(root):
+    name = "🅒🅛🅐🅤🅓🅔"
+    for kwargs in ({"sections": {**PLAIN, SHOWN[0]: name}},
+                   {"registries": {**BLIND_REGISTRIES, "журнал_доказательств": [{**PRE, "якорь": name}]}}):
+        with pytest.raises(C.PackageRefused) as refused:
+            _blind(root, withheld={**WITHHELD, "второй_критик": "Claude"}, **kwargs)
+        assert refused.value.reason == "посторонний_знак"
+
+
+def test_r7_1_every_char_of_the_shipped_whitelist_is_either_a_letter_ascii_or_named_typography():
+    # no Sm / Sc / Sk / So / Po / digit outside ASCII sits on the closed list by accident
+    rules = LIMITS["допустимые_знаки_слепого"]
+    assert all(category[0] in "LM" for category in rules["категории"])
+    allowed = C._ranges(rules["диапазоны"])
+    listed = [code for low, high in allowed for code in range(low, high + 1)]
+    assert {code for code in listed if code > 0x7E} == {code for low, high in _TYPOGRAPHY for code in range(low, high + 1)}
+
+
+def test_r7_1_the_skeleton_is_built_only_from_chars_the_whitelist_let_through(root):
+    # whatever the whitelist admits, the skeleton keeps as a letter/digit or drops as punctuation by rule
+    for code in range(0x110000):
+        if 0xD800 <= code <= 0xDFFF or C._unexpected_mark(chr(code), LIMITS) is not None:
+            continue
+        skeleton = C._skeleton(chr(code))
+        category = unicodedata.category(chr(code))
+        marks_only = all(unicodedata.category(c)[0] in "MZ" for c in unicodedata.normalize("NFKC", chr(code)))
+        if skeleton == "":
+            assert category[0] in "PSZCM" or marks_only or 0x20 <= code <= 0x7E, hex(code)
+
+
+# -- 2. leetspeak: the second reading of the shown text -------------------------------------------------------
+
+LEET_CASES = [("Claude", "Cl4ude"), ("Codex", "C0d3x"), ("Gemini", "G3mini"), ("Opus", "Opu5"), ("Gate", "Ga7e"),
+              ("Roger", "Ro9er"), ("Maze", "Ma2e"), ("Maria", "M@ria"), ("Rosa", "Ro$a"), ("Mala", "Ma|a"),
+              ("Maria", "Mar!a"), ("Matt", "Ma++"), ("Bobby", "8obby"), ("Alex", "4l3x"), ("Elias", "3li45")]
+
+
+@pytest.mark.parametrize("hidden,shown", LEET_CASES)
+@pytest.mark.parametrize("who", ["автор", "второй_критик"])
+def test_r7_2_a_leetspeak_name_is_a_trace(root, hidden, shown, who):
+    _caught(root, f"решил {shown} сделать", {who: hidden})
+    _caught(root, shown.upper(), {who: hidden})
+
+
+def test_r7_2_every_pair_of_the_leet_table_is_covered_by_a_generated_case(root):
+    table = {chr(code): letter for code, letter in T._LEET.items()}
+    assert table == {"4": "a", "3": "e", "5": "s", "7": "t", "8": "b", "9": "g", "2": "z", "1": "l", "0": "o",
+                     "@": "a", "$": "s", "|": "l", "!": "i", "+": "t"}
+    for sign, letter in table.items():
+        hidden = f"Xq{letter}rvmz"
+        _caught(root, f"решил Xq{sign}rvmz", {"второй_критик": hidden})
+        _caught(root, f"Xq{sign}rvmz".upper(), {"второй_критик": hidden})
+
+
+def test_r7_2_the_leet_table_lives_beside_the_other_one_and_the_engine_does_not_use_it():
+    assert set(T._LEET) == {ord(c) for c in "4357829" + "10" + "@$|!+"}
+    for word in ("only", "if", "no", "подтвердить"):
+        assert T._normal(word) == word.translate(T._HOMOGLYPHS)
+    assert T._normal("n0") == "n0".translate(T._HOMOGLYPHS)
+
+
+@pytest.mark.parametrize("text", [
+    "Срок: за 3 дня, версия v2.5, 4 человека, 10 из 10, 2024 год, 5 этапов, 7 шагов, 8 часов, 9 тестов",
+    "Бюджет $50, 100% + 5%, а также 1 + 1 = 2; пункт 3! и пункт 4!", "Сделать A | B | C, выбрать из 3 вариантов",
+    "Отчёт №12 от 01.02.2026: 306 строк, 4 ошибки, 0 замечаний", "Нужно 2 + 2 человека и 9 серверов, срок 30 дней!"])
+def test_r7_2_honest_numbers_and_signs_do_not_make_a_false_trace(root, text):
+    hidden = {"автор": "Лунтик", "второй_критик": "Бибигон", "предложенное_решение": _PROPOSAL}
+    assert _shown(root, text, hidden).hash
+    assert _shown(root, text, {"автор": "Claude", "второй_критик": "Gemini"}).hash
+
+
+def test_r7_2_the_hidden_text_with_its_own_digits_still_matches_itself(root):
+    _caught(root, "агент 7007 решил", {"автор": "Агент 7007"})
+    _caught(root, "agent 4 reporting", {"автор": "Agent 4 reporting"})
+
+
+def test_r7_2_the_leet_reading_covers_windows_and_grams_too(root):
+    hidden = "построить сервис выгрузки отчётов на очереди сообщений"
+    leet = hidden.replace("о", "0").replace("е", "3")
+    leet = "".join({"a": "4"}.get(ch, ch) for ch in "postroit servis vygruzki otchetov na ocheredi soobsheniy")
+    # a Latin transliteration written in leetspeak is not claimed to be caught; the same Latin text in
+    # plain spelling is, which keeps the windows honest on the ordinary reading
+    long_hidden = "Build the export service on a message queue with background workers and keep results"
+    _traced(root, sections={**PLAIN, SHOWN[0]: long_hidden.replace("e", "3").replace("o", "0")},
+            withheld={**WITHHELD, "предложенное_решение": long_hidden})
+    assert leet
+
+
+# -- 3. the assignment rule: exceptions only at the start of a value ----------------------------------------------
+
+_PRINTABLE = [c for c in string.printable if not c.isspace()]
+
+
+def _escaped(value, quote):
+    return value.replace("\\", "\\\\").replace(quote, "\\" + quote)
+
+
+_SIX_FORMS = [
+    lambda v: 'password = "%s"' % _escaped(v, '"'), lambda v: "DB_PASS='%s'" % _escaped(v, "'"),
+    lambda v: "SECRET_KEY=%s" % v, lambda v: "api_key: %s" % v,
+    lambda v: '{"token": "%s"}' % _escaped(v, '"'), lambda v: "password: |\n  %s\n" % v]
+
+
+def test_r7_3_a_thousand_random_passwords_from_the_whole_printable_set_are_caught():
+    rnd = random.Random(20261005)
+    misses = [0] * len(_SIX_FORMS)
+    examples = []
+    for _ in range(1000):
+        value = "".join(rnd.choice(_PRINTABLE) for _ in range(rnd.randint(8, 24)))
+        for index, form in enumerate(_SIX_FORMS):
+            if not _secret_found(form(value)):
+                misses[index] += 1
+                examples.append(len(examples))
+    assert all(missed <= 10 for missed in misses), misses          # >= 99% in every form
+    assert sum(misses) <= 0.01 * 1000 * len(_SIX_FORMS), misses    # and overall
+
+
+@pytest.mark.parametrize("password", [
+    "Zq8wXk2m(P9vLr4Tn", "Zq8wXk2mP9vLr4Tn)", "Zq8w<k2mP9vLr>4Tn", "Zq8w${x}k2mP9vLr4Tn", "Zq8w[k2mP9vLr4Tn",
+    "Zq8wXk2m[0]P9vLr4Tn", "Zq8wXk2m{{x}}P9vLr", "p@ss(w0rd)hunter2", "get_token(x)Zq8wXk2m9",
+    "Zq8wXk2mP9vLr4Tn****", "Zq8w/Xk2mP9v/Lr4Tn", "./Zq8wXk2m9!", "~Zq8wXk2m9@x", "os.environZq8wXk2m9",
+    "getenvZq8wXk2m", "process.envZq8wXk", "required!Zq8wXk2", "trueZq8wXk2m9", "NoneZq8wXk2m9!", "Zq8wXk2mP9vLr4Tn\\",
+    "a" * 12 + "A1", "9" * 5 + "x" + "y" * 5])
+def test_r7_3_a_special_char_inside_a_value_does_not_excuse_it(password):
+    for form in _SIX_FORMS:
+        assert _secret_found(form(password)), (password, form(password)[:20])
+
+
+@pytest.mark.parametrize("text", [
+    "password = get_token(user)", "token = secrets.token_hex(16)", "password = Config.load(path)",
+    "api_key = os.environ['KEY']", "api_key = os.environ.get('KEY')", "secret = process.env.SECRET_TOKEN",
+    "token = getenv('T')", "password: ${DB_PASSWORD}", "password: $(cat pw.txt)", "password: {{ vault.pw }}",
+    "password: %(pw)s", "secret: <your-secret>", "token: $TOKEN", "token = '*****'", "token: ****************",
+    "password: ./secrets/pw.txt", "password: ~/.pw", "password: /run/secrets/pw", "secret: .env.*.local",
+    "token: Optional[str]", "token = tokens[0]", "secret = [REDACTED]", "password = ['a', 'b']",
+    "password = {}", "api_key = {'a': 1}", 'token = f"x-{uuid.uuid4().hex}"', "token = self._token",
+    "password = DEFAULT_PASSWORD", "secret_key: required", "password = None", "token = false",
+    "password: null", "token: undefined"])
+def test_r7_3_values_that_are_expressions_at_the_start_are_still_not_secrets(text):
+    assert not _secret_found(text), text
+
+
+# -- 4. the share: 15% -----------------------------------------------------------------------------------------------
+
+def _paragraphs():
+    text = (ROOT / "docs" / "roundtable.md").read_text(encoding="utf-8")
+    found = [" ".join(p.split()) for p in re.split(r"\n\s*\n", text)]
+    found = [p for p in found if len(p) > 300 and not p.startswith(("|", "```", "<!--", "- ", "#"))
+             and "|" not in p and "`" not in p[:20]]
+    return [p for p in found if C._unexpected_mark(p, LIMITS) is None]
+
+
+def _drop_or_replace(text, step, offset, delete):
+    words = text.split()
+    kept = []
+    for index, word in enumerate(words):
+        if index % step == offset:
+            if not delete:
+                kept.append("слово")
+        else:
+            kept.append(word)
+    return " ".join(kept)
+
+
+def test_r7_4_every_third_word_replaced_or_deleted_at_all_three_shifts_is_a_trace(root):
+    paragraphs = _paragraphs()
+    assert len(paragraphs) >= 6
+    for paragraph in paragraphs[:8]:
+        for offset in range(3):
+            for delete in (False, True):
+                shown = _drop_or_replace(paragraph, 3, offset, delete)
+                with pytest.raises(C.PackageRefused) as refused:
+                    _blind(root, sections={**PLAIN, SHOWN[0]: shown},
+                           withheld={**WITHHELD, "предложенное_решение": paragraph})
+                assert refused.value.reason == "слепой_пакет_след_скрытого", (offset, delete, paragraph[:40])
+
+
+def test_r7_4_unrelated_paragraphs_of_the_document_do_not_trip_the_share_pairwise(root):
+    paragraphs = _paragraphs()[:12]
+    for hidden, shown in itertools.permutations(paragraphs, 2):
+        assert _blind(root, sections={**PLAIN, SHOWN[0]: shown},
+                      withheld={**WITHHELD, "предложенное_решение": hidden}).hash, (hidden[:40], shown[:40])
+
+
+def test_r7_4_the_shipped_share_is_fifteen_and_the_ceiling_is_eighteen():
+    assert LIMITS["доля_граммов_процентов"] == 15
+
+
+# -- 5. key names ----------------------------------------------------------------------------------------------------
+
+_GLUED = ["PGPASSWORD", "authtoken", "accesstoken", "bottoken", "DBPASSWORD", "CLIENTSECRET", "APPSECRET", "JWTSECRET",
+          "password1", "passwd2", "secret_key2", "ENCRYPTION_KEY", "signing_key", "MASTER_KEY", "app_key", "SESSION_KEY",
+          "hmac_key", "salt", "SALT", "dsn", "DSN", "encryptionKey", "signingKey", "masterKey", "sessionKey", "hmacKey",
+          "appKey", "SENTRY_DSN", "PASSWORD_SALT", "refreshtoken", "csrftoken"]
+
+
+@pytest.mark.parametrize("key", _GLUED)
+def test_r7_5_a_glued_or_numbered_key_name_is_a_key_name(key):
+    for form in ("%s = 'Zq8wXk2mP9vLr4Tn'", "%s: Zq8wXk2mP9vLr4Tn", '"%s": "Zq8wXk2mP9vLr4Tn"', "%s=Zq8wXk2mP9vLr4Tn"):
+        assert _secret_found(form % key), (key, form)
+
+
+@pytest.mark.parametrize("text", ["asphalt = 'Zq8wXk2mP9vLr4Tn'", "bypass = 'Zq8wXk2mP9vLr4Tn'",
+                                  "passport: Zq8wXk2mP9vLr4Tn", "salty: Zq8wXk2mP9vLr4Tn", "dsnx: Zq8wXk2mP9vLr4Tn",
+                                  "pwdx = Zq8wXk2mP9vLr4Tn", "compass: Zq8wXk2mP9vLr4Tn"])
+def test_r7_5_short_words_keep_their_guard(text):
+    assert not _secret_found(text), text
+
+
+def _more_tokens():
+    return {"stripe-restricted": "r" + "k_live_" + "a" * 20, "docker": "dck" + "r_pat_" + "a" * 24,
+            "linear": "li" + "n_api_" + "a" * 30, "supabase": "sb" + "p_" + "a1" * 20, "digitalocean": "do" + "p_v1_" + "ab" * 20,
+            "sentry": "snt" + "rys_" + "a" * 30, "replicate": "r" + "8_" + "a" * 30,
+            "basic": "Authorization: Bas" + "ic " + "dXNlcjpwYXNzd29yZA==", "basic-json": '"authorization": "Bas' + 'ic dXNlcjpwYXNzd29yZA=="'}
+
+
+@pytest.mark.parametrize("name", sorted(_more_tokens()))
+@pytest.mark.parametrize("where", ["file", "section", "registry"])
+def test_r7_5_the_new_token_formats_are_caught_wherever_they_are(root, name, where):
+    text = _more_tokens()[name]
+    files, sections, registries = None, SECTIONS, REGISTRIES
+    if where == "file":
+        _write(root, "docs/leak.md", f"заметка\n{text}\nконец")
+        files = [("docs/leak.md", "existing_evidence")]
+    elif where == "section":
+        sections = {**SECTIONS, "задача": f"делаем {text} вот"}
+    else:
+        registries = _with(журнал_доказательств=[{**SPAN, "якорь": text}])
+    assert _reason(root, files, sections=sections, registries=registries) == "похоже_на_секрет"
+
+
+@pytest.mark.parametrize("text", ["Basic authentication", "Authorization: Basic auth is weak", "r8_ prefix", "sbp_ prefix",
+                                  "dop_v1_ prefix", "rk_live_ prefix", "lin_api_ prefix", "chr8_something_long_enough_here"])
+def test_r7_5_a_bare_prefix_or_a_phrase_is_not_a_secret(text):
+    assert not _secret_found(text), text
+
+
+# -- 6. YAML forms and escapes ------------------------------------------------------------------------------------------
+
+_PW = "Zq8wXk2mP9vLr4Tn"
+YAML_FORMS = [
+    f"password: |\r\n  {_PW}\r\n", f"password: |2\n    {_PW}\n", f"password: >2-\n  {_PW}\n", f"password: |+1\n  {_PW}\n",
+    f"password: | # the secret\n  {_PW}\n", f"password: >- # note\r\n  {_PW}\r\n", f"password:\n  {_PW}\n",
+    f"password:\r\n    {_PW}\r\n", f"password: # comment\n  {_PW}\n", f"password:\n\n  {_PW}\n",
+    f"password: &a {_PW}\n", f"password: !!str {_PW}\n", f"password: &a !!str {_PW}\n", f"password: !secret {_PW}\n",
+    f"password: &anchor |\n  {_PW}\n", f"password: !!str |\n  {_PW}\n", f"password: '{_PW}'\r\n",
+    f'password: "{_PW}" # trailing\n', f"  nested:\n    password: |-\n      {_PW}\n"]
+
+
+@pytest.mark.parametrize("text", YAML_FORMS)
+def test_r7_6_every_yaml_spelling_of_a_value_is_found(text):
+    assert _secret_found(text), repr(text)
+
+
+@pytest.mark.parametrize("text", [
+    "password:\n  user: admin\n  host: example", "secret:\n  name: my-secret\n", "password:\n  - one\n  - two\n",
+    "token:\n  username: someone\n", "password: # nothing here\nnext: value\n", "secret:\nusername: unindented-value\n"])
+def test_r7_6_a_nested_mapping_or_an_unindented_next_key_is_not_a_value(text):
+    assert not _secret_found(text), repr(text)
+
+
+@pytest.mark.parametrize("text", [
+    r"pass\u{77}ord = 'hunter2hunter2'", r"pa&#x73;sword = 'hunter2hunter2'", r"pas&#115;word = 'hunter2hunter2'",
+    "pa&#x73;s&#119;ord: hunter2hunter2", r"\u{50}assword: hunter2hunter2", "AK&#73;A" + "ABCDEFGHIJKLMNOP",
+    "AK&#x49;A" + "ABCDEFGHIJKLMNOP", r"AK\u{49}A" + "ABCDEFGHIJKLMNOP", r"AK\u{0049}A" + "ABCDEFGHIJKLMNOP"])
+def test_r7_6_more_escapes_are_read_the_way_the_critic_reads_them(text):
+    assert _secret_found(text), text
+
+
+def test_r7_6_a_broken_escape_is_left_alone():
+    assert not _secret_found(r"путь \u{110000} и \u{} и &#xZZ; и &#99999999999; и \u{")
+
+
+# -- 7. the root is judged by the directories actually opened -----------------------------------------------------------
+
+def test_r7_7_the_descriptor_walk_alone_refuses_a_root_that_is_a_hidden_directory_of_the_home(home, monkeypatch):
+    monkeypatch.setattr(C, "_check_root_place", lambda root: None)       # the early, by-path check is switched off
+    root = home / ".config" / "p"
+    with pytest.raises(C.PackageRefused) as refused:
+        C.read_file(root, "docs/plan.md", "existing_evidence", TABLES)
+    assert refused.value.reason == "путь_запрещён"
+    assert C.read_file(home / "Work" / "p", "docs/plan.md", "existing_evidence", TABLES)[1] == "текст"
+
+
+def test_r7_7_read_file_is_checked_on_its_own_not_only_through_the_build(home):
+    for bad in (home, home / ".config" / "p", home.parent, Path("/")):
+        with pytest.raises(C.PackageRefused) as refused:
+            C.read_file(bad, "docs/plan.md", "existing_evidence", TABLES)
+        assert refused.value.reason == "путь_запрещён", bad
+
+
+def test_r7_7_a_directory_of_the_chain_that_is_a_hidden_directory_of_the_home_is_refused(tmp_path, root, monkeypatch):
+    docs = (root / "docs").stat()
+    monkeypatch.setattr(C, "_home_places", lambda: [([(0, 1)], {(docs.st_dev, docs.st_ino)})])
+    monkeypatch.setattr(C, "_check_root_place", lambda root: None)
+    assert _reason(root, [("docs/plan.md", "existing_evidence")]) == "путь_запрещён"
+
+
+def test_r7_7_the_root_is_judged_by_inode_whatever_the_spelling(home, tmp_path):
+    (tmp_path / "via").symlink_to(home / ".config", target_is_directory=True)
+    for spelling in (tmp_path / "via" / "p", home / "Work" / ".." / ".config" / "p",
+                     tmp_path / "users" / "me" / "." / ".config" / "p"):
+        with pytest.raises(C.PackageRefused) as refused:
+            C.read_file(spelling, "docs/plan.md", "existing_evidence", TABLES)
+        assert refused.value.reason == "путь_запрещён", spelling
+
+
+@pytest.mark.skipif(not Path("/System/Volumes/Data").is_dir(), reason="no firmlinks on this system")
+def test_r7_7_a_firmlink_spelling_of_the_real_home_is_still_the_home():
+    real = Path.home()
+    twin = Path("/System/Volumes/Data") / str(real).lstrip("/")
+    if not twin.is_dir() or not twin.samefile(real):
+        pytest.skip("the home is not under the data volume")
+    for spelling in (twin, twin / ".ssh"):
+        if spelling.is_dir():
+            with pytest.raises(C.PackageRefused) as refused:
+                C.build_package(spelling, [], SECTIONS, REGISTRIES, "план", tables=TABLES)
+            assert refused.value.reason == "путь_запрещён", spelling
+
+
+def test_r7_7_descriptors_opened_by_the_walk_up_are_closed(root, monkeypatch):
+    opened, closed = [], []
+    real_open, real_close = os.open, os.close
+    monkeypatch.setattr(C.os, "open", lambda *a, **k: (opened.append(real_open(*a, **k)), opened[-1])[1])
+    monkeypatch.setattr(C.os, "close", lambda d: (closed.append(d), real_close(d))[0])
+    _build(root)
+    assert opened and sorted(opened) == sorted(closed)

@@ -653,7 +653,7 @@ SHAPES = {
                         "длина_граммы", "доля_граммов_процентов",
                         форматы_полей=Mapping(TEXT),
                         невидимые_знаки=Record("категории", "диапазоны"),
-                        допустимые_знаки_слепого=Record("категории", "управляющие"),
+                        допустимые_знаки_слепого=Record("категории", "управляющие", "диапазоны"),
                         схемы_записей=Record("решения", "области", "журнал_общие",
                                              "журнал_необязательные")),
         "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
@@ -1874,7 +1874,7 @@ class Tables:
                 f"{sorted(known_fields - set(formats))}")
 
         number("длина_граммы", 4, trace)
-        number("доля_граммов_процентов", 1, 100)
+        number("доля_граммов_процентов", 1, 18)
         invisible = need("невидимые_знаки")
         if not isinstance(invisible, dict) or set(invisible) != {"категории", "диапазоны"}:
             raise ContractError(f"{where}.невидимые_знаки: нужны категории и диапазоны")
@@ -1884,14 +1884,17 @@ class Tables:
         for span in names(invisible["диапазоны"], f"{where}.невидимые_знаки.диапазоны"):
             parse_code_range(span, f"{where}.невидимые_знаки.диапазоны")
         allowed = need("допустимые_знаки_слепого")
-        if not isinstance(allowed, dict) or set(allowed) != {"категории", "управляющие"}:
-            raise ContractError(f"{where}.допустимые_знаки_слепого: нужны категории и управляющие")
+        if not isinstance(allowed, dict) or set(allowed) != {"категории", "управляющие", "диапазоны"}:
+            raise ContractError(f"{where}.допустимые_знаки_слепого: нужны категории, управляющие и диапазоны")
         for category in names(allowed["категории"], f"{where}.допустимые_знаки_слепого.категории"):
             if category not in UNICODE_CATEGORIES:
                 raise ContractError(f"{where}.допустимые_знаки_слепого.категории: {category!r} — не категория Юникода")
-            if category in ("Cf", "Co", "Cn", "Cs", "Cc"):
-                raise ContractError(f"{where}.допустимые_знаки_слепого.категории: {category} "
-                                    "нельзя допускать в слепой пакет (управляющие — отдельным списком)")
+            if category[0] not in "LM":
+                raise ContractError(f"{where}.допустимые_знаки_слепого.категории: {category} — "
+                                    "в слепой пакет допустимы только буквы и знаки при них; "
+                                    "остальное — диапазонами, управляющие — отдельным списком")
+        for span in names(allowed["диапазоны"], f"{where}.допустимые_знаки_слепого.диапазоны"):
+            parse_code_range(span, f"{where}.допустимые_знаки_слепого.диапазоны")
         controls = allowed["управляющие"]
         if (not isinstance(controls, list) or len(set(controls)) != len(controls)
                 or not all(isinstance(c, int) and not isinstance(c, bool) and 0 <= c < 32 for c in controls)):
@@ -2760,6 +2763,14 @@ _SKELETON_CONFUSABLES = {
     **{ord(ch): "i" for ch in "1lLiIıіІӏӀǀⅼⅰ"},
     ord("и"): "i", ord("И"): "i",
 }
+
+# Круг 7: второй вариант скелета — «литспик»: цифры и ASCII-знаки, которыми пишут буквы
+# латиницы. Прежде такие знаки выбрасывались (@, $, |, !, +) или становились кириллицей.
+# Скелет в этом варианте строится из показанного текста; скрытое всегда в обычном варианте.
+_LEET = str.maketrans({
+    "4": "a", "3": "e", "5": "s", "7": "t", "8": "b", "9": "g", "2": "z", "1": "l", "0": "o",
+    "@": "a", "$": "s", "|": "l", "!": "i", "+": "t",
+})
 
 
 def _denylist(words: str) -> re.Pattern:

@@ -32,8 +32,14 @@ What is guaranteed, and by what:
   name) by its stem, which survives declension, prefixes and look-alikes.
 
 A partial quote is found by the share of the hidden text's 8-grams that survive
-(`доля_граммов_процентов`, ~30%): replacing every third word leaves more than
-that; replacing every second word does not, and that limit is accepted.
+(`доля_граммов_процентов`, 15%; the table ceiling is 18). Measured on the paragraphs
+of docs/roundtable.md: replacing or deleting every third word leaves 21-65% (the
+weakest case is 21%, so the margin over 15 is thin); unrelated paragraphs share at
+most about 5%; replacing every second word leaves 2-11% and is NOT found.
+
+The shown text is read twice: as it is, and as "leetspeak" (`4->a 3->e 5->s 7->t
+8->b 9->g 2->z 1->l 0->o @->a $->s |->l !->i +->t`), so `Cl4ude` or `M@ria` meets the
+hidden `Claude` / `Maria`. The hidden text is read the ordinary way only.
 
 Deliberately NOT guaranteed (accepted, not overlooked): a reordering of words,
 base64/hex or any other re-encoding, a translation and a paraphrase are not
@@ -44,9 +50,13 @@ and a list of signatures read from the table (formats of known keys, a general
 assignment / URL-password rule over the raw text, the text without invisibles
 and the text with `\\uXXXX` / `\\xXX` decoded), not a scanner: a secret that
 is only base64, reversed or split over lines is not found. Every character of a
-blind package must come from the whitelist `допустимые_знаки_слепого`; the rest
-(format, private-use, unassigned, tags, variation selectors, Braille, regional
-indicators, fillers) is refused as `посторонний_знак`, never dropped silently.
+blind package must come from the CLOSED whitelist `допустимые_знаки_слепого`
+(letters and marks on them, printable ASCII, a short typography list, tab/LF/CR);
+the rest (symbols, enclosed letters, digits of other scripts, format, private-use,
+unassigned, tags, variation selectors, Braille, regional indicators, fillers) is
+refused as `посторонний_знак`, never dropped silently. The assignment rule's
+exceptions (a call, a placeholder, `os.environ`, a path, a bare word) apply only to
+the START of a value: a special char inside a password does not excuse it.
 
 Path rules are refusals, not warnings (§6.9). `existing_evidence` must exist;
 `planned_output` is created later, so its absence is normal (§7.3).
@@ -219,6 +229,12 @@ def _read_by_descriptors(root: Path, relative: str, cap: int, identity=None):
         if identity is not None and (root_info.st_dev, root_info.st_ino) != identity:
             raise PackageRefused("файл_изменился", "корень подменён между проверкой и открытием")
         root_device = root_info.st_dev
+        places = _home_places()
+        try:
+            _refuse_place(current, places)
+        except OSError as error:
+            raise PackageRefused("файл_нечитаем", f"корень: {error.strerror or error}")
+        forbidden = {identity for above, hidden in places for identity in (above[0], *hidden)}
 
         def spelled(directory, part):
             if len(part.encode("utf-8", "surrogateescape")) > 255:
@@ -246,8 +262,11 @@ def _read_by_descriptors(root: Path, relative: str, cap: int, identity=None):
             except OSError as error:
                 raise _classify_open_error(error, part, opened[-1], relative)
             opened.append(current)
-            if os.fstat(current).st_dev != root_device:
+            here = os.fstat(current)
+            if here.st_dev != root_device:
                 raise PackageRefused("путь_вне_корня", f"{relative}: другая файловая система")
+            if (here.st_dev, here.st_ino) in forbidden:
+                raise PackageRefused("путь_запрещён", f"{relative}: каталог цепочки — дом или скрытый каталог дома")
         if not spelled(current, parts[-1]):
             return None
         name = parts[-1]
@@ -316,14 +335,19 @@ def _in_ranges(code: int, ranges) -> bool:
     return any(low <= code <= high for low, high in ranges)
 
 
-_ESCAPES = re.compile(r"\\U[0-9a-fA-F]{8}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}|\\[0-7]{3}")
+_ESCAPES = re.compile(r"\\U[0-9a-fA-F]{8}|\\u\{[0-9a-fA-F]{1,6}\}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}"
+                      r"|\\[0-7]{3}|&#[xX][0-9a-fA-F]{1,6};|&#[0-9]{1,7};")
 
 
 def _unescaped(text: str) -> str:
-    """Записи \\uXXXX, \\UXXXXXXXX, \\xXX и восьмеричные -- символами: так видит критик."""
+    """Записи \\uXXXX, \\u{X}, \\UXXXXXXXX, \\xXX, восьмеричные и &#x70; / &#112; -- символами."""
     def one(match):
         token = match.group(0)
         try:
+            if token.startswith("&#"):
+                return chr(int(token[3:-1], 16) if token[2] in "xX" else int(token[2:-1]))
+            if token.startswith("\\u{"):
+                return chr(int(token[3:-1], 16))
             return chr(int(token[2:], 16) if token[1] in "uUx" else int(token[1:], 8))
         except (ValueError, OverflowError):
             return token
@@ -685,14 +709,16 @@ _SCRIPT_TESTS = {
 }
 
 
-def _skeleton_checked(text: str, scripts=None):
+def _skeleton_checked(text: str, scripts=None, leet: bool = False):
     """`(skeleton, first_foreign_letter)`.
 
     NFKD, marks off, NFKC, casefold, digits of any script to ASCII, look-alikes
     folded (the consensus engine's table plus digit twins and the "one stick"
     class); only letters and digits stay. With `scripts` given, a letter outside
     those alphabets is reported instead of being dropped silently. A digit is
-    judged as a digit even when its twin is a letter (`0` -> `о`).
+    judged as a digit even when its twin is a letter (`0` -> `о`). With `leet`,
+    digits and ASCII signs that stand for Latin letters (`@ $ | ! +` and
+    `4 3 5 7 8 9 2 1 0`) are read as those letters first.
     """
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.category(ch).startswith("M"))
@@ -701,13 +727,16 @@ def _skeleton_checked(text: str, scripts=None):
     kept, foreign = [], None
     for ch in text:
         category = unicodedata.category(ch)
-        if category[0] not in "LN":
-            continue
         is_digit = False
         if category[0] == "N":
             digit = unicodedata.digit(ch, None)
             if digit is not None:
                 ch, is_digit = str(digit), True
+        if leet and ch in _LEET_KEYS:
+            kept.append(ch.translate(tables_module._LEET).translate(tables_module._SKELETON_CONFUSABLES))
+            continue
+        if category[0] not in "LN":
+            continue
         folded = ch.translate(tables_module._SKELETON_CONFUSABLES)
         probes = (ch,) if is_digit else (ch, folded)
         if scripts is not None and not any(_SCRIPT_TESTS[name](probe)
@@ -718,8 +747,11 @@ def _skeleton_checked(text: str, scripts=None):
     return "".join(kept), foreign
 
 
-def _skeleton(text: str) -> str:
-    return _skeleton_checked(text)[0]
+_LEET_KEYS = frozenset("4357829" + "10" + "@$|!+")
+
+
+def _skeleton(text: str, leet: bool = False) -> str:
+    return _skeleton_checked(text, leet=leet)[0]
 
 
 def _leaves(node, channel: str):
@@ -764,14 +796,16 @@ def _check_secrets(leaves: list, limits: dict) -> None:
 
 
 def _unexpected_mark(text: str, limits: dict) -> str | None:
-    """The first char of `text` outside the blind whitelist, or None.
+    """The first char of `text` outside the closed blind whitelist, or None.
 
-    Allowed: the categories of `допустимые_знаки_слепого` and its control codes,
-    minus every range of `невидимые_знаки` (variation selectors, Braille,
-    regional indicators, fillers live inside allowed categories).
+    Allowed: letters (and marks on them) by category, the control codes, and the
+    ranges of `допустимые_знаки_слепого` (printable ASCII, a short typography
+    list) -- minus every range of `невидимые_знаки`. Symbols, maths, enclosed
+    letters, digits of other scripts and the like are not on the list.
     """
     rules = limits["допустимые_знаки_слепого"]
     categories, controls = set(rules["категории"]), set(rules["управляющие"])
+    allowed = _ranges(rules["диапазоны"])
     banned = _ranges(limits["невидимые_знаки"]["диапазоны"])
     for ch in text:
         code = ord(ch)
@@ -779,7 +813,9 @@ def _unexpected_mark(text: str, limits: dict) -> str | None:
             if code in controls:
                 continue
             return ch
-        if unicodedata.category(ch) not in categories or _in_ranges(code, banned):
+        if _in_ranges(code, banned):
+            return ch
+        if not (_in_ranges(code, allowed) or unicodedata.category(ch) in categories):
             return ch
     return None
 
@@ -808,6 +844,9 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
         if foreign is not None:
             raise PackageRefused("посторонняя_письменность", f"{channel}: U+{ord(foreign):04X}")
         skeletons.append((channel, skeleton, is_key))
+    # The second reading of the shown text: "leetspeak" (Cl4ude, M@ria). The hidden text is
+    # always read in the ordinary way, so a hidden name with a real digit still matches itself.
+    leet_skeletons = [(channel, _skeleton(text, leet=True), is_key) for channel, text, is_key in leaves]
 
     # A hash of a hidden text -- of the raw text or of its skeleton -- is a trace.
     digests = {}
@@ -822,7 +861,10 @@ def _check_traces(hidden: dict, leaves: list, limits: dict) -> None:
 
     # Two streams: everything (keys too), and values only -- so that keys of a
     # record standing between two glued pieces cannot break the join.
-    for stream in (skeletons, [piece for piece in skeletons if not piece[2]]):
+    streams = []
+    for readings in (skeletons, leet_skeletons):
+        streams.extend((readings, [piece for piece in readings if not piece[2]]))
+    for stream in streams:
         joined = "".join(skeleton for _, skeleton, _ in stream)
         starts, position = [], 0
         for _, skeleton, _ in stream:
@@ -940,16 +982,6 @@ def _read_declared_files(root: Path, declared_files, tables):
     return entries, files
 
 
-def _chain(path: str) -> list:
-    """`[(name, (st_dev, st_ino))]` from `/` down to `path`, which must be resolved."""
-    chain, current = [], "/"
-    chain.append(("/", _identity(current)))
-    for part in Path(path).parts[1:]:
-        current = os.path.join(current, part)
-        chain.append((part, _identity(current)))
-    return chain
-
-
 def _identity(path: str) -> tuple:
     info = os.stat(path)
     return info.st_dev, info.st_ino
@@ -969,29 +1001,83 @@ def _homes() -> list:
     return found
 
 
-def _check_root_place(root: Path) -> None:
-    """The build root is neither a home, nor above one (`/`, `/Users`), nor a hidden directory in one.
+def _ids_upwards(descriptor: int) -> list:
+    """`[(st_dev, st_ino)]` of this directory and every parent up to `/`, walked by `..` from a descriptor.
 
-    Identity, not text: case, NFC/NFD, bind mounts and links all lead to the same
-    (device, inode), so the comparison walks the chains of parents.
+    The descriptor given stays the caller's; the ones opened here are closed here.
     """
+    ids, current, own = [], descriptor, None
     try:
-        root_chain = _chain(os.path.realpath(root))
-    except (OSError, RuntimeError, ValueError):
-        raise PackageRefused("файл_нечитаем", "корень не разрешается")
-    root_ids = [identity for _, identity in root_chain]
+        for _ in range(512):
+            info = os.fstat(current)
+            ids.append((info.st_dev, info.st_ino))
+            parent = os.open("..", os.O_RDONLY | os.O_DIRECTORY, dir_fd=current)
+            if own is not None:
+                os.close(own)
+            own, current = parent, parent
+            parent_info = os.fstat(parent)
+            if (parent_info.st_dev, parent_info.st_ino) == ids[-1]:
+                break
+    finally:
+        if own is not None:
+            os.close(own)
+    return ids
+
+
+def _home_places() -> list:
+    """For each home that exists: `(ids of the home and everything above it, ids of its hidden directories)`."""
+    places = []
     for home in _homes():
         try:
-            home_chain = _chain(os.path.realpath(home))
-        except (OSError, RuntimeError, ValueError):
+            descriptor = os.open(os.path.realpath(home), os.O_RDONLY | os.O_DIRECTORY)
+        except (OSError, ValueError):
             continue
-        home_ids = [identity for _, identity in home_chain]
-        if root_ids[-1] in home_ids:
+        try:
+            above = _ids_upwards(descriptor)
+            hidden = set()
+            for entry in os.scandir(descriptor):
+                if entry.name.startswith("."):
+                    try:
+                        info = entry.stat()
+                    except OSError:
+                        continue
+                    hidden.add((info.st_dev, info.st_ino))
+        except OSError:
+            continue
+        finally:
+            os.close(descriptor)
+        places.append((above, hidden))
+    return places
+
+
+def _refuse_place(descriptor: int, places=None) -> None:
+    """The build root is neither a home, nor above one (`/`, `/Users`), nor a hidden directory in one.
+
+    Identity, not text: case, NFC/NFD, firmlinks, bind mounts and links all lead to
+    the same (device, inode), so the opened directory is walked up by `..` and
+    compared with the home chain, however the root was spelled.
+    """
+    root_chain = _ids_upwards(descriptor)
+    for above, hidden in (_home_places() if places is None else places):
+        if root_chain[0] in above:
             raise PackageRefused("путь_запрещён", "корень сборки — домашний каталог или выше него")
-        if home_ids[-1] in root_ids:
-            below = root_chain[root_ids.index(home_ids[-1]) + 1][0]
-            if below.startswith("."):
+        if above[0] in root_chain:
+            below = root_chain[root_chain.index(above[0]) - 1]
+            if below in hidden:
                 raise PackageRefused("путь_запрещён", "корень сборки — скрытый каталог в домашнем")
+
+
+def _check_root_place(root: Path) -> None:
+    try:
+        descriptor = os.open(os.path.realpath(root), os.O_RDONLY | os.O_DIRECTORY)
+    except (OSError, ValueError):
+        raise PackageRefused("файл_нечитаем", "корень не разрешается")
+    try:
+        _refuse_place(descriptor)
+    except OSError as error:
+        raise PackageRefused("файл_нечитаем", f"корень: {error.strerror or error}")
+    finally:
+        os.close(descriptor)
 
 
 def build_package(root, declared_files, sections, registries, stage,

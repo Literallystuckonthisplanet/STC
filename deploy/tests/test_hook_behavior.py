@@ -132,6 +132,33 @@ def test_h06_injects_startup_but_not_compact(tmp_path):
     assert compact.stdout == ""
 
 
+def _fake_core(tmp_path, nudge_output):
+    """A core whose disk_tidy.py reports a fixed free-space verdict."""
+    core = tmp_path / "core"
+    (core / "scripts").mkdir(parents=True)
+    (core / "rules").symlink_to(REPO / "core" / "rules")
+    (core / "scripts" / "disk_tidy.py").write_text(
+        f"print({nudge_output!r}, end='')\n", encoding="utf-8"
+    )
+    return core
+
+
+def test_h06_disk_nudge_fires_only_when_space_is_low(tmp_path):
+    low = _run(
+        "session-start-context.sh", {"source": "startup"}, tmp_path,
+        STC_CORE=str(_fake_core(tmp_path / "low", "12 ГБ < 50 ГБ")),
+    )
+    fine = _run(
+        "session-start-context.sh", {"source": "startup"}, tmp_path,
+        STC_CORE=str(_fake_core(tmp_path / "fine", "")),
+    )
+    assert low.returncode == fine.returncode == 0
+    assert ">>> DISK: free space 12 ГБ < 50 ГБ" in low.stdout
+    assert "--apply` only after the user's yes" in low.stdout
+    assert "DISK" not in fine.stdout
+    assert "rules/behavior.md" in fine.stdout
+
+
 def test_h06_claude_delivers_full_rules_in_bounded_parts(tmp_path):
     primary = _run(
         "session-start-context.sh",

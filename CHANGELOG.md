@@ -11,6 +11,23 @@ release notes.
 
 ## [Unreleased]
 
+### Added — disk cleanup with a low-space reminder
+- `core/scripts/disk_tidy.py` measures what can be safely freed and frees it
+  only with `--apply`: Docker build cache and images unused for 3+ days,
+  package caches (npm, uv, pip, pnpm), merged worktrees with no edits and no
+  new files, `.next` folders untouched for 7+ days while no dev server runs.
+  Never touched: Docker volumes, models, transcripts, unmerged or dirty
+  worktrees. Heavy commands run with background priority, and each worktree
+  is re-checked right before removal.
+- H06 adds one line at session start when free space drops below 50 GB, so
+  the agent offers the cleanup; the hook reads only free space, the measuring
+  happens in the script's own run.
+- Why: the 05.10.2026 audit found the disk 93% full, mostly agent leftovers —
+  52 GB of Docker alone (one test image rebuilt under a new name on every run,
+  plus build cache). Ready cleaners (CleanMyMac, npkill, `docker system
+  prune`) do not know the rules about volumes, untracked files and unmerged
+  worktrees, so the script composes the standard commands instead.
+
 ### Added — the decision journal runs in Codex
 - Codex `UserPromptSubmit` supplies `transcript_path` and `session_id`, so the
   old reason to keep H23 off no longer holds. The hook reads only the caller's

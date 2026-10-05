@@ -63,7 +63,7 @@ map" below). One file = one guard (single-responsibility, auditable).
 | **read-first router** (edit project code) | `read-first-router.sh` H10 | 💉 domain reminders (DS / security / docs / data / tdd / legal / reuse) |
 | **git guard** (Bash) | `block-dangerous-git.sh` H01 | 🔒 dangerous patterns + 🔒 I08 push-to-main + 💉 I17 commit-verify |
 | **agent guard** (Task) | `agent-reuse-contract.sh` H04 | 🔒 I21 build-agent reuse-contract + 🔒 FR-28 fork-protocol marker (executors must stop on architectural/business forks, DECIDED lines for trivia) + 💉 I20 reviewer baseline |
-| **session guards** (UserPromptSubmit / SessionStart / Stop) | `prompt-safety-reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 + `prompt-lens.sh` H22 | H03: SELF-EXEC + I05b secret-in-prompt. H06: initial always-context inject + audit cadence. H08: link integrity. H22: prompt lens (FR-30) — additive hint, NOT a rewrite. |
+| **session guards** (UserPromptSubmit / SessionStart / Stop) | `prompt-safety-reminder.sh` H03 + `session-start-context.sh` H06 + `link-integrity-guard.sh` H08 + `prompt-lens.sh` H22 | H03: SELF-EXEC + I05b secret-in-prompt. H06: initial always-context inject + audit cadence + low-disk nudge (<50 GB → offer `disk_tidy.py`). H08: link integrity. H22: prompt lens (FR-30) — additive hint, NOT a rewrite. |
 
 Beyond the 6-guard map (legitimate extras):
 

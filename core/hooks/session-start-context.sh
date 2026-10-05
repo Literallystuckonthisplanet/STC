@@ -65,6 +65,20 @@ if [ "${STC_H06_PART:-primary}" != "secondary" ] && [ -f "$AUDIT_FILE" ]; then
   fi
 fi
 
+# Disk nudge: free space below 50 GB → offer the safe cleanup. The 05.10.2026
+# audit found the disk 93% full of agent leftovers (Docker, caches, worktrees).
+# Only statfs is read here; measuring what to free is the script's own run.
+TIDY="${STC_CORE}/scripts/disk_tidy.py"
+if [ "${STC_H06_PART:-primary}" != "secondary" ] && [ -f "$TIDY" ]; then
+  LOW=$(python3 "$TIDY" --nudge 50 2>/dev/null)
+  if [ -n "$LOW" ]; then
+    case "$USER_LANG" in
+      ru) echo ">>> ДИСК: свободно $LOW. Предложи уборку: сначала \`python3 $TIDY\` (только показ), удаление — \`--apply\` после «да» пользователя." ;;
+      *) echo ">>> DISK: free space $LOW. Offer a cleanup: first \`python3 $TIDY\` (report only); \`--apply\` only after the user's yes." ;;
+    esac
+  fi
+fi
+
 # The always-context rules. ${STC_CORE} resolves to ~/.stc/core (shared, cross-
 # harness). 3 firing-rule files (behavior/pev/session) are injected here;
 # project_docs.md stays lazy (read by anchor [[project-docs]] when writing

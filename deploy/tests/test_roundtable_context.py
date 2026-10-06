@@ -3349,3 +3349,23 @@ def test_r9_3_secrets_get_the_same_reading():
         text = "pass\\u0077ord = 'hunter2hunter2'".replace(sign, _twin(sign), 1) if sign in "\\u" else \
                "pa&#115;sword = 'hunter2hunter2'".replace(sign, _twin(sign), 1)
         assert _secret_found(text), text
+
+
+# --------------------------------------------------------------------------
+# закрытие: приставка токена внутри идентификатора — не секрет
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "тест: test_r8_1_a_password_of_several_words_is_refused_in_every_channel",
+    "def store_re_" + "abcdefghijklmnopqrstuv" + "():",
+    "x = helper_sbp_" + "abcdefghijklmnopqrstuvwx"])
+def test_a_token_prefix_inside_an_identifier_is_not_a_secret(text):
+    """Закрытие пакета: приставки токенов (`r8_`, `re_`, `sbp_`…) срабатывали
+    после подчёркивания — имя теста в реестре находок читалось ключом доступа.
+    Перед приставкой не должно быть ни буквы, ни цифры, ни подчёркивания."""
+    assert not _secret_found(text), text
+
+
+@pytest.mark.parametrize("token", ["r8_", "re_", "sbp_", "dckr_pat_"])
+def test_a_token_prefix_at_a_word_start_is_still_a_secret(token):
+    assert _secret_found("key " + token + "Ab3" * 10), token

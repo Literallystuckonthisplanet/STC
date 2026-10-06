@@ -645,6 +645,413 @@ def test_the_package_rules_are_complete_and_pinned():
         "the reason two builds must hash the same has to stay written down")
 
 
+PACKAGE_RULES = {'схемы_записей': {'решения': ['decision_id', 'kind', 'text_hash', 'status'],
+                   'области': ['area_id'],
+                   'журнал_общие': ['тип', 'создатель'],
+                   'журнал_необязательные': ['id', 'время']},
+ 'видимые_слепому_статусы_решений': ['закрыто'],
+ 'видимые_слепому_создатели': ['предпроверка'],
+ 'мин_длина_следа': 30,
+ 'мин_длина_основы': 4,
+ 'запрещённые_пути': ['.git',
+                      '.claude',
+                      '.codex',
+                      'CLAUDE.md',
+                      'CLAUDE*.md',
+                      'AGENTS.md',
+                      'AGENTS*.md',
+                      'GEMINI*',
+                      '.cursor*',
+                      '.github',
+                      '.gnupg',
+                      'codex-home',
+                      '.env',
+                      '.env.*',
+                      '.env*',
+                      '*.env',
+                      '*.env.*',
+                      '*.pem*',
+                      '*.key*',
+                      '.stc',
+                      '.ssh',
+                      '.aws',
+                      '.docker',
+                      '.kube',
+                      '.npmrc',
+                      '.netrc',
+                      '.pypirc',
+                      '.pgpass',
+                      '.git-credentials',
+                      '.gitconfig',
+                      '.htpasswd',
+                      '.envrc',
+                      '.mcp.json',
+                      '.claude.json',
+                      'settings.local.json',
+                      '*secret*',
+                      '*credential*',
+                      '*password*',
+                      '*passwd*',
+                      '*apikey*',
+                      '*api?key*',
+                      'creds*',
+                      '*private*',
+                      '*keystore*',
+                      '*wallet*',
+                      'service-account*',
+                      'docker-compose*',
+                      'database.yml',
+                      '*auth*.json',
+                      'token',
+                      'token.*',
+                      'tokens',
+                      'tokens.*',
+                      '*_token',
+                      '*_token.*',
+                      '*.token',
+                      'id_rsa*',
+                      'id_dsa*',
+                      'id_ecdsa*',
+                      'id_ed25519*',
+                      '*.p12',
+                      '*.pfx',
+                      '*.jks',
+                      '*.tfstate*',
+                      '*.tfvars',
+                      '*.tfvars.json',
+                      'service_account*',
+                      'serviceAccountKey*',
+                      'key.json',
+                      'jwt.json',
+                      'storage_state*',
+                      'session.json',
+                      'cookies*',
+                      'kubeconfig*',
+                      'bearer*',
+                      '*access-token*',
+                      '*bot-token*',
+                      'token_cache*',
+                      'compose.yaml',
+                      'vault.y*ml',
+                      'seed.txt',
+                      'mnemonic*',
+                      'recovery_codes*',
+                      'shadow*',
+                      'authorized_keys*',
+                      '.auth'],
+ 'запрещённые_предки': ['.git',
+                        '.claude',
+                        '.codex',
+                        '.cursor*',
+                        '.github',
+                        '.gnupg',
+                        '.stc',
+                        '.ssh',
+                        '.aws',
+                        '.docker',
+                        '.kube',
+                        'codex-home'],
+ 'разрешённые_расширения': ['.md',
+                            '.txt',
+                            '.rst',
+                            '.py',
+                            '.ts',
+                            '.tsx',
+                            '.js',
+                            '.sql',
+                            '.sh',
+                            '.yaml',
+                            '.yml',
+                            '.json',
+                            '.toml'],
+ 'признаки_секрета': ['-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----',
+                      'PuTTY-User-Key-File',
+                      '(AKIA|ASIA)[0-9A-Z]{16}',
+                      'gh[pousr]_[A-Za-z0-9]{36,}',
+                      'sk-[A-Za-z0-9_-]{20,}',
+                      'xox[baprs]-[A-Za-z0-9-]{10,}',
+                      'AIza[\\w-]{35}',
+                      '\\d{8,10}:AA[\\w-]{33}',
+                      '(npm|glpat|hf|github_pat|sk_live|rk_live|xapp)[_-][\\w-]{16,}',
+                      '(?<![A-Za-z0-9_])(dckr_pat|lin_api|dop_v1|sntrys|sbp|r8)_[\\w+/=-]{20,}',
+                      'ntn_[A-Za-z0-9]{30,}',
+                      '(?<![A-Za-z0-9_])re_[A-Za-z0-9]{20,}',
+                      'shp(at|ca|pa|ss)_[A-Fa-f0-9]{32}',
+                      'gsk_[A-Za-z0-9]{20,}',
+                      'pypi-[A-Za-z0-9_-]{20,}',
+                      'ya29\\.[\\w-]{20,}',
+                      'whsec_[A-Za-z0-9]{16,}',
+                      '(?<![A-Za-z0-9])SG\\.[\\w-]{16,}\\.[\\w-]{16,}',
+                      'hooks\\.slack\\.com/services/',
+                      'AccountKey=',
+                      '(?:(?:(?<![A-Za-z])|(?<=[a-z])(?=[A-Z]))(?i:pwd|salt|dsn)|(?<=[A-Za-z0-9][_.-])(?i:pass)|(?<=[a-z])Pass|(?i:pass)(?=[_.-][A-Za-z0-9]|[A-Z])|(?i:secret|token|passw(?:or)?d|passphrase|private[_-]?key|api[_-]?key|access[_-]?key|auth[_-]?key|credential|encryption[_-]?key|signing[_-]?key|master[_-]?key|app[_-]?key|session[_-]?key|hmac[_-]?key))(?![\\w.-]{0,40}?(?i:_env|_name|_file|_path|_var|_url|_id|_header|_sock|_hit)(?![A-Za-z0-9])["\']?[ \\t]{0,20}(?:=>|:=|=(?!=[ \\t])|:(?![-+?=])))(?:[A-Z][A-Za-z0-9_]{0,40}|[0-9]\\w{0,40}|[_.-][\\w.-]{0,40})?["\']?[ \\t]{0,20}(?:=>|:=|=(?!=[ \\t])|:(?![-+?=]))[ \\t]{0,20}(?:[&!][^\\s"\']{0,40}[ \\t]+){0,2}(?:[|>](?:[1-9][+-]?|[+-][1-9]?)?[ \\t]*(?:#[^\\r\\n]{0,200})?\\r?\\n(?:[ \\t]{0,80}\\r?\\n){0,5}[ \\t]{1,80}|(?:#[^\\r\\n]{0,200})?\\r?\\n(?:[ \\t]{0,80}\\r?\\n){0,5}[ \\t]{1,80}(?![^\\s]{0,200}:(?!\\S)))?(?=(?P<q>["\'])|)(?:(?(q)(?P=q))(?:\\$\\{[^}\\r\\n]{0,80}\\}|\\$\\([^)\\r\\n]{0,80}\\)|\\$[A-Za-z_]\\w*|\\*{4,}|<[^<>\\r\\n]{1,80}>|\\[[A-Za-z_-]{2,30}\\]|%\\([^)\\r\\n]{0,40}\\)[sd]?|\\{\\{[^}\\r\\n]{0,40}\\}\\}|(?:os\\.environ|os\\.getenv|process\\.env|System\\.getenv|getenv)[^\\s]{0,80}|[./~][\\w./~*-]*|(?i:required|true|false|none|null|nil|undefined)|[A-Za-z_][\\w.]{2,}[(\\[][^\\s]{0,80}[)\\]])[ \\t]+(?:(?:\\$\\{[^}\\r\\n]{0,80}\\}|\\$\\([^)\\r\\n]{0,80}\\)|\\$[A-Za-z_]\\w*|\\*{4,}|<[^<>\\r\\n]{1,80}>|\\[[A-Za-z_-]{2,30}\\]|%\\([^)\\r\\n]{0,40}\\)[sd]?|\\{\\{[^}\\r\\n]{0,40}\\}\\}|(?:os\\.environ|os\\.getenv|process\\.env|System\\.getenv|getenv)[^\\s]{0,80}|[./~][\\w./~*-]*|(?i:required|true|false|none|null|nil|undefined)|[A-Za-z_][\\w.]{2,}[(\\[][^\\s]{0,80}[)\\]])[ \\t]+){0,2}(?!#)(?P<k>))?(?!["\']?(?:(?i:required|true|false|none|null|nil|undefined)(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[A-Za-z][\\w\'-]*(?:[ \\t]+[A-Za-z][\\w\'-]*)*[ \\t]*[.,;!]?[ \\t]*(?:\\r?\\n|\\Z))["\',;`]{0,3})(?!\\S)))(?!["\']?(?:(?-i:[a-z_.]+|[A-Z_.]+)(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[A-Za-z][\\w\'-]*(?:[ \\t]+[A-Za-z][\\w\'-]*)*[ \\t]*[.,;!]?[ \\t]*(?:\\r?\\n|\\Z))["\',;`]{0,3})(?!\\S)))(?!["\']?(?:[0-9._,]+(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[A-Za-z][\\w\'-]*(?:[ \\t]+[A-Za-z][\\w\'-]*)*[ \\t]*[.,;!]?[ \\t]*(?:\\r?\\n|\\Z))["\',;`]{0,3})(?!\\S)))(?!["\']?(?:(?:[a-z_][a-z0-9_.]{2,}|[A-Z][a-z]{2,}[\\w.]*|\\w{1,40}(?:\\.[a-z_]\\w{2,})+)[(\\[](?:[rbf]?[\\"\']|(?:[^\\s]{0,200}[)\\]])?(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[A-Za-z][\\w\'-]*(?:[ \\t]+[A-Za-z][\\w\'-]*)*[ \\t]*[.,;!]?[ \\t]*(?:\\r?\\n|\\Z))["\',;`]{0,3})(?!\\S))))(?!["\']?(?:\\[(?:\\]|f?[\\"\'])|\\{(?:\\}|[\\"\'])))(?!["\']?(?:<[^<>\\r\\n]{1,80}>(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[A-Za-z][\\w\'-]*(?:[ \\t]+[A-Za-z][\\w\'-]*)*[ \\t]*[.,;!]?[ \\t]*(?:\\r?\\n|\\Z))["\',;`]{0,3})(?!\\S)))(?!["\']?(?:\\[[A-Za-z_ -]{2,30}\\](?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[A-Za-z][\\w\'-]*(?:[ \\t]+[A-Za-z][\\w\'-]*)*[ \\t]*[.,;!]?[ \\t]*(?:\\r?\\n|\\Z))["\',;`]{0,3})(?!\\S)))(?!["\']?(?:\\$[A-Za-z_]\\w*(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[A-Za-z][\\w\'-]*(?:[ \\t]+[A-Za-z][\\w\'-]*)*[ \\t]*[.,;!]?[ \\t]*(?:\\r?\\n|\\Z))["\',;`]{0,3})(?!\\S)))(?!["\']?(?:\\$\\{|\\$\\(|\\{\\{(?:[ \\t]|\\w+\\}\\})|%\\())(?!["\']?(?:[fF][\\"\'][^\\s]{0,200}\\{))(?!["\']?(?:(?:os\\.environ|os\\.getenv|process\\.env|System\\.getenv|getenv)(?![\\w])))(?!["\']?(?:\\*{4}))(?!["\']?(?:[./~*][\\w./~* -]*(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[A-Za-z][\\w\'-]*(?:[ \\t]+[A-Za-z][\\w\'-]*)*[ \\t]*[.,;!]?[ \\t]*(?:\\r?\\n|\\Z))["\',;`]{0,3})(?!\\S)))(?:"(?:[^"\\\\\\r\\n]|\\\\.){6}|\'(?:[^\'\\\\\\r\\n]|\\\\.){6}|(?:[^\\s"\'\\\\]|\\\\.)\\S{5,}|(?(k)(?(q)(?:[^"\'\\\\\\r\\n]|\\\\.){6}|(?!))|(?!)))',
+                      '://[^/\\s:@]{0,64}+:(?![$<{%(])[^/\\s@]{1,128}+@',
+                      'Bearer\\s+[\\w.~+/-]{16,}',
+                      '(?i:authorization)["\']?\\s{0,4}[:=]\\s{0,4}["\']?Basic\\s{1,4}[A-Za-z0-9+/=]{12,}',
+                      '(?<![\\w-])eyJ[\\w-]{10,}+\\.eyJ[\\w-]{10,}+\\.',
+                      '\\"(access|refresh|id)_token\\"\\s*:'],
+ 'форматы_полей': {'decision_id': '[\\wА-Яа-яЁё.:-]{1,64}',
+                   'area_id': '[\\wА-Яа-яЁё.:-]{1,64}',
+                   'id': '[\\wА-Яа-яЁё.:-]{1,64}',
+                   'kind': '[\\wА-Яа-яЁё-]{1,32}',
+                   'status': '[\\wА-Яа-яЁё-]{1,32}',
+                   'text_hash': '[0-9a-f]{64}',
+                   'хеш_файла': '[0-9a-f]{64}',
+                   'хеш_редакции': '[0-9a-f]{64}',
+                   'хеш_вывода': '[0-9a-f]{64}',
+                   'тип': '[a-z_]{1,32}',
+                   'создатель': '[\\wА-Яа-яЁё]{1,32}',
+                   'время': '\\d{4}-\\d{2}-\\d{2}([T '
+                            ']\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?)?',
+                   'команда': '[\\s\\S]{1,200}',
+                   'якорь': '[\\s\\S]{1,200}',
+                   'путь': '[\\s\\S]{1,200}',
+                   'версия_инструмента': '[\\w.+-]{1,32}',
+                   'код_возврата': 'целое:-255..255',
+                   'диапазон_строк': 'пара_целых:0..10000000'},
+ 'письменности_скелета': ['кириллица', 'латиница', 'цифры'],
+ 'скрытые_имена': ['автор', 'второй_критик'],
+ 'разделы': ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения', 'предложенное_решение'],
+ 'предел_раздела_байт': 65536,
+ 'предел_числа_файлов': 64,
+ 'невидимые_знаки': {'категории': ['Cf', 'Mn', 'Me', 'Co', 'Cn'],
+                     'диапазоны': ['U+034F',
+                                   'U+115F-1160',
+                                   'U+17B4-17B5',
+                                   'U+180B-180F',
+                                   'U+2800-28FF',
+                                   'U+3164',
+                                   'U+FE00-FE0F',
+                                   'U+FFA0',
+                                   'U+FFFC-FFFD',
+                                   'U+1F1E6-1F1FF',
+                                   'U+E0000-E007F',
+                                   'U+E0100-E01EF']},
+ 'допустимые_знаки_слепого': {'категории': ['Lu', 'Ll', 'Lt', 'Lm', 'Lo', 'Mn', 'Mc'],
+                              'управляющие': [9, 10, 13],
+                              'диапазоны': ['U+0020-007E',
+                                            'U+00A0',
+                                            'U+00A7',
+                                            'U+00AB',
+                                            'U+00B0',
+                                            'U+00B7',
+                                            'U+00BB',
+                                            'U+2010-2015',
+                                            'U+2018-201E',
+                                            'U+2022',
+                                            'U+2026',
+                                            'U+20AC',
+                                            'U+2116']},
+ 'длина_граммы': 8,
+ 'мин_знаков_хеша': 16,
+ 'расширения_настроек': ['.yaml', '.yml', '.json', '.toml'],
+ 'признак_секрета_настроек': '(?:(?:(?<![A-Za-z])|(?<=[a-z])(?=[A-Z]))(?i:pwd|salt|dsn)|(?<=[A-Za-z0-9][_.-])(?i:pass)|(?<=[a-z])Pass|(?i:pass)(?=[_.-][A-Za-z0-9]|[A-Z])|(?i:secret|token|passw(?:or)?d|passphrase|private[_-]?key|api[_-]?key|access[_-]?key|auth[_-]?key|credential|encryption[_-]?key|signing[_-]?key|master[_-]?key|app[_-]?key|session[_-]?key|hmac[_-]?key))(?![\\w.-]{0,40}?(?i:_env|_name|_file|_path|_var|_url|_id|_header|_sock|_hit)(?![A-Za-z0-9])["\']?[ \\t]{0,20}(?:=>|:=|=(?!=[ \\t])|:(?![-+?=])))(?:[A-Z][A-Za-z0-9_]{0,40}|[0-9]\\w{0,40}|[_.-][\\w.-]{0,40})?["\']?[ \\t]{0,20}(?:=>|:=|=(?!=[ \\t])|:(?![-+?=]))[ \\t]{0,20}(?:[&!][^\\s"\']{0,40}[ \\t]+){0,2}(?:[|>](?:[1-9][+-]?|[+-][1-9]?)?[ \\t]*(?:#[^\\r\\n]{0,200})?\\r?\\n(?:[ \\t]{0,80}\\r?\\n){0,5}[ \\t]{1,80}|(?:#[^\\r\\n]{0,200})?\\r?\\n(?:[ \\t]{0,80}\\r?\\n){0,5}[ \\t]{1,80}(?![^\\s]{0,200}:(?!\\S)))?(?=(?P<q>["\'])|)(?:(?(q)(?P=q))(?:\\$\\{[^}\\r\\n]{0,80}\\}|\\$\\([^)\\r\\n]{0,80}\\)|\\$[A-Za-z_]\\w*|\\*{4,}|<[^<>\\r\\n]{1,80}>|\\[[A-Za-z_-]{2,30}\\]|%\\([^)\\r\\n]{0,40}\\)[sd]?|\\{\\{[^}\\r\\n]{0,40}\\}\\}|(?:os\\.environ|os\\.getenv|process\\.env|System\\.getenv|getenv)[^\\s]{0,80}|[./~][\\w./~*-]*|(?i:required|true|false|none|null|nil|undefined)|[A-Za-z_][\\w.]{2,}[(\\[][^\\s]{0,80}[)\\]])[ \\t]+(?:(?:\\$\\{[^}\\r\\n]{0,80}\\}|\\$\\([^)\\r\\n]{0,80}\\)|\\$[A-Za-z_]\\w*|\\*{4,}|<[^<>\\r\\n]{1,80}>|\\[[A-Za-z_-]{2,30}\\]|%\\([^)\\r\\n]{0,40}\\)[sd]?|\\{\\{[^}\\r\\n]{0,40}\\}\\}|(?:os\\.environ|os\\.getenv|process\\.env|System\\.getenv|getenv)[^\\s]{0,80}|[./~][\\w./~*-]*|(?i:required|true|false|none|null|nil|undefined)|[A-Za-z_][\\w.]{2,}[(\\[][^\\s]{0,80}[)\\]])[ \\t]+){0,2}(?!#)(?P<k>))?(?!["\']?(?:(?i:required|true|false|none|null|nil|undefined)(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[^\\s#])["\',;`]{0,3})(?!\\S)))(?!["\']?(?:(?-i:[a-z_.]+|[A-Z_.]+)(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[^\\s#])["\',;`]{0,3})(?!\\S)))(?!["\']?(?:[0-9._,]+(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[^\\s#])["\',;`]{0,3})(?!\\S)))(?!["\']?(?:(?:[a-z_][a-z0-9_.]{2,}|[A-Z][a-z]{2,}[\\w.]*|\\w{1,40}(?:\\.[a-z_]\\w{2,})+)[(\\[](?:[rbf]?[\\"\']|(?:[^\\s]{0,200}[)\\]])?(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[^\\s#])["\',;`]{0,3})(?!\\S))))(?!["\']?(?:\\[(?:\\]|f?[\\"\'])|\\{(?:\\}|[\\"\'])))(?!["\']?(?:<[^<>\\r\\n]{1,80}>(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[^\\s#])["\',;`]{0,3})(?!\\S)))(?!["\']?(?:\\[[A-Za-z_ -]{2,30}\\](?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[^\\s#])["\',;`]{0,3})(?!\\S)))(?!["\']?(?:\\$[A-Za-z_]\\w*(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[^\\s#])["\',;`]{0,3})(?!\\S)))(?!["\']?(?:\\$\\{|\\$\\(|\\{\\{(?:[ \\t]|\\w+\\}\\})|%\\())(?!["\']?(?:[fF][\\"\'][^\\s]{0,200}\\{))(?!["\']?(?:(?:os\\.environ|os\\.getenv|process\\.env|System\\.getenv|getenv)(?![\\w])))(?!["\']?(?:\\*{4}))(?!["\']?(?:[./~*][\\w./~* -]*(?(q)(?P=q)["\',;`]{0,2}|(?![ \\t]+[^\\s#])["\',;`]{0,3})(?!\\S)))(?:"(?:[^"\\\\\\r\\n]|\\\\.){6}|\'(?:[^\'\\\\\\r\\n]|\\\\.){6}|(?:[^\\s"\'\\\\]|\\\\.)\\S{5,}|(?(k)(?(q)(?:[^"\'\\\\\\r\\n]|\\\\.){6}|(?!))|(?!))|[A-Za-z0-9_][^\\s"\'\\\\]{0,4}[ \\t]+[^\\s#](?=[^\\r\\n]{4}))',
+ 'доля_граммов_процентов': 15}
+
+
+def test_the_package_rules_are_pinned_to_their_exact_values():
+    # Each value is a rule the package code reads. A deleted key, or another
+    # perfectly valid value, would silently change what reaches a critic.
+    package = _at(VOCAB, "пакет")
+    for key, expected in PACKAGE_RULES.items():
+        assert package.get(key) == expected, key
+
+
+def _package_variant(mutate):
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    mutate(raw["vocabulary"]["пакет"], raw)
+    return module, raw
+
+
+READ_BY_CODE = sorted(set(PACKAGE_RULES) | {
+    "предел_файла_байт", "предел_пакета_байт", "отвергается", "не_попадает", "реестры",
+    "виды_решений_в_реестре", "канонизация"})
+
+
+@pytest.mark.parametrize("key", READ_BY_CODE)
+def test_deleting_a_package_rule_is_a_named_error_not_a_key_error(key):
+    module, raw = _package_variant(lambda package, _raw: package.pop(key))
+    with pytest.raises(module.ContractError, match=key):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("table,path", [
+    ("stages", ("слепой_вопрос", "показываем")), ("stages", ("слепой_вопрос", "прячем")),
+    ("stages", ("слепой_вопрос",)), ("stages", ("стадии",)),
+    ("vocabulary", ("отпечаток",)), ("vocabulary", ("создатели_доказательства",)),
+    ("precheck", ("классы_файлов",))])
+def test_deleting_what_the_package_reads_from_other_tables_is_a_named_error(table, path):
+    def drop(_package, raw):
+        node = raw[table]
+        for key in path[:-1]:
+            node = node[key]
+        del node[path[-1]]
+    module, raw = _package_variant(drop)
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("key,bad,why", [
+    ("мин_длина_следа", 7, "от 8"), ("мин_длина_следа", 201, "до 200"), ("мин_длина_следа", "30", "целое"),
+    ("мин_длина_следа", True, "целое"),
+    ("мин_длина_основы", 1, "от 2"), ("мин_длина_основы", 31, "до 30"), ("мин_длина_основы", None, "целое"),
+    ("предел_раздела_байт", 0, "от 1"), ("предел_раздела_байт", -1, "от 1"),
+    ("предел_раздела_байт", 2 ** 30, "раздел не может"), ("предел_раздела_байт", "много", "целое"),
+    ("предел_файла_байт", 2 ** 30, "файл не может"), ("предел_файла_байт", 0, "от 1"),
+    ("предел_числа_файлов", 0, "от 1"), ("предел_числа_файлов", 1.5, "целое"), ("предел_числа_файлов", None, "целое"),
+    ("запрещённые_пути", [], "пуст"), ("запрещённые_пути", ".git", "список"),
+    ("запрещённые_пути", [".git", ".git"], "повтор"), ("запрещённые_пути", [""], "строка"),
+    ("запрещённые_пути", ["a/b"], "компонента"), ("запрещённые_пути", ["*"], "компонента"),
+    ("разрешённые_расширения", [], "пуст"), ("разрешённые_расширения", ["md"], "расширение"),
+    ("разрешённые_расширения", [".MD"], "расширение"), ("разрешённые_расширения", [".tar.gz"], "расширение"),
+    ("разрешённые_расширения", ["."], "расширение"),
+    ("признаки_секрета", [], "пуст"), ("признаки_секрета", ["("], "не компилируется"),
+    ("признаки_секрета", "AKIA", "список"),
+    ("форматы_полей", {}, "непустая"), ("форматы_полей", [], "непустая"),
+    ("форматы_полей", {"text_hash": "(", "decision_id": "x", "area_id": "x"}, "не компилируется"),
+    ("форматы_полей", {"decision_id": "x", "area_id": "x"}, "text_hash"),
+    ("разделы", [], "пуст"), ("разделы", "задача", "список"), ("разделы", ["задача"], "слепого вопроса"),
+    ("разделы", PACKAGE_RULES["разделы"] + ["git_история"], "вне пакета"),
+    ("видимые_слепому_статусы_решений", [], "пуст"), ("видимые_слепому_статусы_решений", "закрыто", "список"),
+    ("видимые_слепому_создатели", [], "пуст"), ("видимые_слепому_создатели", ["никто"], "никто не создаёт"),
+    ("схемы_записей", [], "карта"), ("схемы_записей", {}, "нет "),
+    ("отвергается", [], "пуст"), ("не_попадает", "x", "список"), ("реестры", [], "пуст"),
+    ("виды_решений_в_реестре", [], "пуст"), ("канонизация", "", "строка"),
+    ("письменности_скелета", [], "пуст"), ("письменности_скелета", ["греческий"], "допустимы"),
+    ("письменности_скелета", "кириллица", "список"), ("письменности_скелета", ["цифры", "цифры"], "повтор"),
+    ("скрытые_имена", [], "пуст"), ("скрытые_имена", ["предложенное_решение_x"], "не входят"),
+    ("скрытые_имена", "автор", "список"),
+    ("запрещённые_предки", [], "пуст"), ("запрещённые_предки", ["a/b"], "компонента"),
+    ("запрещённые_предки", ["*"], "компонента"), ("запрещённые_предки", ".git", "список"),
+])
+def test_an_invalid_package_rule_is_refused_with_a_reason(key, bad, why):
+    module, raw = _package_variant(lambda package, _raw: package.__setitem__(key, bad))
+    with pytest.raises(module.ContractError, match=why):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_trace_length_bounds_are_exactly_8_and_200():
+    for good in (8, 200):
+        module, raw = _package_variant(lambda package, _raw, good=good: package.update(мин_длина_следа=good))
+        module.Tables.from_raw(raw).check()
+    module, raw = _package_variant(lambda package, _raw: package.update(мин_длина_основы=30))
+    module.Tables.from_raw(raw).check()  # the stem may equal the window, not exceed it
+
+
+@pytest.mark.parametrize("part,bad,why", [
+    ("решения", ["decision_id", "kind"], "status"),
+    ("решения", ["kind", "text_hash", "status"], "decision_id"),
+    ("решения", [], "пуст"),
+    ("области", ["title"], "area_id"),
+    ("журнал_общие", ["тип"], "тип и создатель"),
+    ("журнал_общие", ["тип", "создатель", "путь"], "поля отпечатка"),
+    ("журнал_необязательные", ["тип"], "и обязательное"),
+    ("журнал_необязательные", ["якорь"], "поля отпечатка"),
+    ("журнал_необязательные", ["id", "id"], "повторы"),
+])
+def test_an_invalid_record_schema_is_refused_with_a_reason(part, bad, why):
+    module, raw = _package_variant(
+        lambda package, _raw: package["схемы_записей"].__setitem__(part, bad))
+    with pytest.raises(module.ContractError, match=why):
+        module.Tables.from_raw(raw).check()
+    module, raw = _package_variant(lambda package, _raw: package["схемы_записей"].pop(part))
+    with pytest.raises(module.ContractError, match=part):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("spec,why", [
+    ("", "непустая строка"), (None, "непустая строка"), (5, "непустая строка"),
+    ("целое:5..1", "границы"), ("целое:a..b", "границы"), ("целое:1", "границы"), ("целое:", "границы"),
+    ("пара_целых:9..0", "границы"), ("пара_целых:0..", "границы"), ("(", "не компилируется"),
+])
+def test_a_malformed_field_format_is_refused_with_a_reason(spec, why):
+    module, raw = _package_variant(
+        lambda package, _raw: package["форматы_полей"].__setitem__("время", spec))
+    with pytest.raises(module.ContractError, match=why):
+        module.Tables.from_raw(raw).check()
+
+
+def test_field_formats_are_parsed_into_their_three_kinds():
+    module = import_tables_module()
+    assert module.parse_field_format("целое:-5..7", "x") == ("int", -5, 7)
+    assert module.parse_field_format("пара_целых:0..9", "x") == ("pair", 0, 9)
+    kind, compiled = module.parse_field_format("[0-9]{3}", "x")
+    assert kind == "regex" and compiled.fullmatch("123") and not compiled.fullmatch("12")
+
+
+def test_every_field_of_every_record_schema_has_a_format_and_no_format_is_orphaned():
+    package = _at(VOCAB, "пакет")
+    schemas = package.get("схемы_записей", {})
+    fields = (set(schemas.get("решения", [])) | set(schemas.get("области", []))
+              | set(schemas.get("журнал_общие", [])) | set(schemas.get("журнал_необязательные", []))
+              | {f for names in _at(VOCAB, "отпечаток").values() for f in names})
+    assert fields and set(package.get("форматы_полей", {})) == fields
+
+    def drop_one(package, _raw):
+        del package["форматы_полей"]["хеш_вывода"]
+    module, raw = _package_variant(drop_one)
+    with pytest.raises(module.ContractError, match="нет формата"):
+        module.Tables.from_raw(raw).check()
+
+    def orphan(package, _raw):
+        package["форматы_полей"]["лишнее_поле"] = "x"
+    module, raw = _package_variant(orphan)
+    with pytest.raises(module.ContractError, match="нет ни в одной схеме"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_hidden_names_are_a_subset_of_what_the_blind_question_hides():
+    stages_hidden = set(_at(STAGES, "слепой_вопрос", "прячем"))
+    names = set(_at(VOCAB, "пакет", "скрытые_имена"))
+    assert names and names <= stages_hidden
+    assert "предложенное_решение" in stages_hidden - names, "the proposal is found by windows, not stems"
+
+
+def test_an_empty_list_of_optional_journal_fields_is_valid():
+    def empty(package, _raw):
+        package["схемы_записей"]["журнал_необязательные"] = []
+        for field in ("id", "время"):  # their formats would be orphans
+            del package["форматы_полей"][field]
+    module, raw = _package_variant(empty)
+    module.Tables.from_raw(raw).check()
+
+
+def test_an_invented_package_rule_is_not_accepted():
+    module, raw = _package_variant(lambda package, _raw: package.__setitem__("выдуманное", 1))
+    with pytest.raises(module.ContractError, match="выдуманные поля"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_shown_sections_must_be_declared_and_must_not_also_be_hidden():
+    def drop_shown(package, raw):
+        first = raw["stages"]["слепой_вопрос"]["показываем"][0]
+        package["разделы"] = [s for s in package["разделы"] if s != first]
+    module, raw = _package_variant(drop_shown)
+    with pytest.raises(module.ContractError, match="слепого вопроса"):
+        module.Tables.from_raw(raw).check()
+
+    def overlap(_package, raw):
+        raw["stages"]["слепой_вопрос"]["прячем"].append(raw["stages"]["слепой_вопрос"]["показываем"][0])
+    module, raw = _package_variant(overlap)
+    with pytest.raises(module.ContractError, match="и показываются, и прячутся"):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_author_and_the_second_critic_are_not_sections():
+    # They are data of `withheld`; as sections they would contradict `не_попадает`.
+    package = _at(VOCAB, "пакет")
+    for name in ("автор", "второй_критик"):
+        assert name in _at(STAGES, "слепой_вопрос", "прячем")
+        assert name not in package.get("разделы", [name])
+
+    def add(package, _raw):
+        package["разделы"].append("имя_автора")
+    module, raw = _package_variant(add)
+    with pytest.raises(module.ContractError, match="вне пакета"):
+        module.Tables.from_raw(raw).check()
+
+
 def test_the_attempt_journal_declares_its_key_states_and_flag():
     # Б1 reads all four out of the table: a private copy inside state.py would
     # be the "two sources" shape again, and this journal is what decides whether
@@ -814,6 +1221,7 @@ def test_a_missing_scope_hash_is_not_a_wildcard():
     # permission back into a permission by name.
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
+    _as_open(raw, "Б2")                       # круг 49: Б2 закрыт, опыт открывает его на копии
     # разрешение, покрывающее открытый Б2
     at = next(i for i, g in enumerate(raw["blocks"]["разрешения_исполнения"])
               if "Б2" in g["блоки"])
@@ -1245,8 +1653,8 @@ def test_a_reopened_block_keeps_the_permission_it_was_first_started_under():
         "«делай дальше» — та самая реплика, которую я однажды объявил выдуманной")
     module = import_tables_module()
     tables = module.load()
-    # Б1 с тех пор закрыт (круг 47) — история всё равно хранит начало
-    assert tables.blocks["Б2"].state == "переоткрыт"
+    # Б1 закрыт (круг 47), Б2 — круг 49; история всё равно хранит начало
+    assert tables.blocks["Б2"].state in ("переоткрыт", "сделано")
     assert tables.blocks["Б1"].state in ("переоткрыт", "сделано")
 
 
@@ -1339,9 +1747,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 188
+    assert len(findings) == 196
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1378,10 +1786,10 @@ def test_a_finding_may_only_be_assigned_to_a_block_still_open():
 # текста, и от честного добавления находки — опыт «подменить текст» засчитывался
 # по чужой причине. Пофамильный замок называет ИМЕННО подменённую запись.
 FINDING_PINS = {
-    "R12-1": ("d42435e985cb", "47f0fb0e39bc"),
+    "R12-1": ("d42435e985cb", "2d6c9f4e91d2"),
     "R12-2": ("0564a10f5873", "9de06c2ce087"),
     "R12-3": ("dcf654104cbe", "e173a2874f02"),
-    "R12-4": ("4d5e8e6c7b4f", "8203d1780a9c"),
+    "R12-4": ("4d5e8e6c7b4f", "da9ff660c5ca"),
     "R12-5": ("88870441b246", "538f2142283b"),
     "R13-1": ("f4a1639d8eb9", "ed1f59c2795a"),
     "R13-2": ("0d92d292b923", "42eefe36abaa"),
@@ -1566,6 +1974,14 @@ FINDING_PINS = {
     "R47-1": ("e5ab1204231b", "aba5bb686500"),
     "R47-2": ("f844c8aea88e", "b4c488e4ccec"),
     "R47-3": ("cd4199c264ad", "6bc304a42d44"),
+    "R48-1": ("2464ffdd48c2", "db974a4194fe"),
+    "R48-2": ("0bd1de2c879d", "a065cfcc50d7"),
+    "R48-3": ("7511ca9efa30", "20c12f286dae"),
+    "R48-4": ("185b04edad26", "4e439eead339"),
+    "R48-5": ("a615bc3ffbe1", "323dd89ab839"),
+    "R49-1": ("6da0cea344a8", "55c349e28ad9"),
+    "R49-2": ("ae2ede53d80e", "517cdebfd6f3"),
+    "R49-3": ("69fa02510e33", "e47597ee3487"),
 }
 
 
@@ -1696,9 +2112,9 @@ ACCEPTANCE_PINS = {
     "БТ": "180756ee6304",
     "БК": "8c00dca467df",
     "Б1": "3986dec70100",
-    "Б2": "41b48bdcb612",
+    "Б2": "7733a36e8877",
     "БТ2": "5d702ef36ec0",
-    "БИ": "0f8aa9c0e853",
+    "БИ": "29434be6e3e6",
     "БУ": "70ae8b633cc0",
     "БА": "b9b744de6264",
     "Б15": "a8d864b664bc",
@@ -1732,9 +2148,9 @@ DECLARATION_PINS = {
     "БТ": "5298357c3d59",
     "БК": "856039134ef7",
     "Б1": "17da98f9ff42",
-    "Б2": "b0db61c1d929",
+    "Б2": "3e44a1c9dc9e",
     "БТ2": "fa2a9ea3d8e3",
-    "БИ": "3a92d09a972d",
+    "БИ": "86d72c212883",
     "БУ": "902f372b6c42",
     "БА": "b8b4637b2524",
     "Б15": "be76e85c2c91",
@@ -2332,6 +2748,7 @@ def test_nothing_is_worked_on_without_a_live_permission():
 def test_a_block_cannot_be_worked_on_under_a_stale_permission():
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
+    _as_open(raw, "Б2")
     raw["blocks"]["блоки"]["Б2"]["приёмка"].append(
         {"id": "Б2-99", "условие": "дописал себе работы после разрешения"})
     with pytest.raises(module.ContractError, match="Б2: в работе"):
@@ -2364,7 +2781,8 @@ def test_every_hold_reason_is_reported_not_just_the_first():
     # A block can be unpermitted *and* waiting on a dependency *and* under a
     # gate. Printing one of the three sends the reader to fix the wrong thing.
     tables = import_tables_module().load()
-    reasons = tables.hold_reasons("Б15")
+    # круг 49: Б15 ждал Б2, а Б2 закрыт — три причины сразу теперь у Б4
+    reasons = tables.hold_reasons("Б4")
     assert len(reasons) >= 3, reasons
     assert any("нет разрешения" in r for r in reasons)
     assert any("ждёт зависимость" in r for r in reasons)
@@ -2753,7 +3171,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert BLOCKS["списки"] == {'пункты_плана_PEV': ['результат_границы_и_что_не_меняется', 'затронутые_файлы_и_доказательства', 'критерии_приёмки_и_проверка', 'блоки_и_зависимости', 'делегирование_модель_изоляция', 'неразрешённые_решения_пользователя'], 'таблицы': ['vocabulary', 'run', 'issues', 'framing', 'precheck', 'blocks', 'stages', 'findings'], 'фикстуры_репетиции': ['tune-plan.md', 'tune-gold.json', 'holdout-plan.md', 'holdout-gold.json'], 'исходы_идеи': ['возражение_держит_стадию', 'нет_годного_варианта', 'частичная_негодность', 'оба_предпочли_неавторскую_и_назвали_авторскую_непроходной', 'нет_консенсусно_годного', 'подтверждён', 'оба_предпочли_неавторскую', 'расхождение', 'три_подхода_на_столе']}
     # исполнение меняется при каждом закрытии блока — поэтому слепком, и
     # обновляется той же правкой, что закрывает блок
-    assert _finding_digest(BLOCKS["исполнение"]) == "5471e66962d7", (
+    assert _finding_digest(BLOCKS["исполнение"]) == "182c829f6b5b", (
         "план исполнения изменён — шаг, проверка блока, роль или волна")
     assert BLOCKS["порядок_критики"]["классы_мутаций"] == ['убрать_правило', 'подменить_значение_на_допустимое', 'подменить_текст_сохранив_ID', 'подсунуть_недопустимое', 'соврать_в_ссылке', 'расширить_себе_объём', 'разорвать_доказательство'], (
         "из метода критика убран или подменён класс поломки")
@@ -3394,10 +3812,10 @@ def test_a_permission_cannot_be_rewritten_in_place():
               for g in BLOCKS["разрешения_исполнения"]]
     digest = hashlib.sha256(
         json.dumps(grants, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-    # Круг 46: разрешение от 02.09 (реплика-жалоба, не «да») сознательно
-    # перенесено в историю и заменено явным «да» Антона от 04.10 — это и
-    # меняет слепок; запись перенесена целиком, а не переписана.
-    assert digest == "1fdc8aa49817e7cc3fa9c949d8c4d190c950930ff26417b5e1e1e7b0d5d41152", (
+    # 04.10 19:24: объём пакета и идеи расширен по явному «да» Антона; прежние
+    # разрешения на них (22.09 и 04.10 16:04) перенесены в историю целиком —
+    # это и меняет слепок.
+    assert digest == "0ab2c2430d1bcb474a544f5d25fba76eddf50c425ac752e0c7aa9aa2e3a5e2ff", (
         "выданное разрешение переписано: хеш объёма, список блоков или основание")
 
 
@@ -3529,7 +3947,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "79a571001ead5e50b1bb5aa3c6d0ad511d5ce080ea1f215ce015de67d2c25d8b", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "a84bc069469b037898706828e7023a509f8f9f688491eeab47dac21666e50e1c", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 
@@ -3764,3 +4182,190 @@ def test_one_reply_cannot_back_two_permissions():
     assert len(keys) == len(set(keys)), "одно основание под двумя разрешениями"
     dates = [str(g["дата"]) for g in grants]
     assert dates == sorted(dates), "разрешения записаны не по порядку выдачи"
+
+
+# --- round 6 (Б2): invisible chars, whitelist of a blind package, gram share ----------------------
+
+@pytest.mark.parametrize("key,bad,why", [
+    ("длина_граммы", 3, "от 4"), ("длина_граммы", 31, "до 30"), ("длина_граммы", "8", "целое"),
+    ("длина_граммы", True, "целое"), ("длина_граммы", None, "целое"),
+    ("мин_знаков_хеша", 7, "от 8"), ("мин_знаков_хеша", 65, "до 64"), ("мин_знаков_хеша", "16", "целое"),
+    ("мин_знаков_хеша", True, "целое"), ("мин_знаков_хеша", None, "целое"),
+    ("расширения_настроек", [], "пуст"), ("расширения_настроек", [".md", ".md"], "повтор"),
+    ("расширения_настроек", [".ini"], "нет среди разрешённых"), ("расширения_настроек", "yaml", "список"),
+    ("признак_секрета_настроек", "", "непустая"), ("признак_секрета_настроек", ["x"], "непустая"),
+    ("признак_секрета_настроек", "(?<!", "не компилируется"),
+    ("доля_граммов_процентов", 0, "от 1"), ("доля_граммов_процентов", 19, "до 18"),
+    ("доля_граммов_процентов", "30", "целое"), ("доля_граммов_процентов", 0.3, "целое"),
+    ("доля_граммов_процентов", True, "целое"),
+    ("невидимые_знаки", [], "нужны категории и диапазоны"), ("невидимые_знаки", {}, "нужны категории и диапазоны"),
+    ("невидимые_знаки", {"категории": ["Cf"]}, "нужны категории и диапазоны"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+200B"], "лишнее": 1}, "нужны категории и диапазоны"),
+    ("невидимые_знаки", {"категории": [], "диапазоны": ["U+200B"]}, "пуст"),
+    ("невидимые_знаки", {"категории": ["Cf", "Cf"], "диапазоны": ["U+200B"]}, "повтор"),
+    ("невидимые_знаки", {"категории": ["Xx"], "диапазоны": ["U+200B"]}, "не категория Юникода"),
+    ("невидимые_знаки", {"категории": ["cf"], "диапазоны": ["U+200B"]}, "не категория Юникода"),
+    ("невидимые_знаки", {"категории": [False], "диапазоны": ["U+200B"]}, "строка"),
+    ("невидимые_знаки", {"категории": "Cf", "диапазоны": ["U+200B"]}, "список"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": []}, "пуст"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": "U+200B"}, "список"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["200B"]}, "U\\+XXXX"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+200"]}, "U\\+XXXX"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+200b"]}, "U\\+XXXX"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+2800-27FF"]}, "вне порядка"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+110000"]}, "вне порядка"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+0-5"]}, "U\\+XXXX"),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+2800-28FF-2900"]}, "U\\+XXXX"),
+    ("допустимые_знаки_слепого", [], "нужны категории, управляющие и диапазоны"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"]}, "нужны категории, управляющие и диапазоны"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "управляющие": [], "лишнее": 1}, "нужны категории, управляющие и диапазоны"),
+    ("допустимые_знаки_слепого", {"категории": [], "диапазоны": ["U+0020-007E"], "управляющие": []}, "пуст"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu", "Lu"], "диапазоны": ["U+0020-007E"], "управляющие": []}, "повтор"),
+    ("допустимые_знаки_слепого", {"категории": ["Xx"], "диапазоны": ["U+0020-007E"], "управляющие": []}, "не категория Юникода"),
+    ("допустимые_знаки_слепого", {"категории": ["Cf"], "диапазоны": ["U+0020-007E"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Co"], "диапазоны": ["U+0020-007E"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Cn"], "диапазоны": ["U+0020-007E"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Cs"], "диапазоны": ["U+0020-007E"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Cc"], "диапазоны": ["U+0020-007E"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Sm"], "диапазоны": ["U+0020"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Nd"], "диапазоны": ["U+0020"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Po"], "диапазоны": ["U+0020"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Zs"], "диапазоны": ["U+0020"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": [], "управляющие": []}, "пуст"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["20"], "управляющие": []}, "U\\+XXXX"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0050-0020"], "управляющие": []}, "вне порядка"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020", "U+0020"], "управляющие": []}, "повтор"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": "U+0020", "управляющие": []}, "список"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu", "Cf"], "диапазоны": ["U+0020-007E"], "управляющие": []}, "только буквы"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "управляющие": [9, 9]}, "без повторов"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "управляющие": [32]}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "управляющие": [-1]}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "диапазоны": ["U+0020-007E"], "управляющие": ["\t"]}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "управляющие": [True]}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "управляющие": 9}, "0..31"),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "управляющие": None}, "0..31"),
+    ("признаки_секрета", ["(?<!"], "не компилируется"),
+])
+def test_an_invalid_round6_package_rule_is_refused_with_a_reason(key, bad, why):
+    module, raw = _package_variant(lambda package, _raw: package.__setitem__(key, bad))
+    with pytest.raises(module.ContractError, match=why):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("key,good", [
+    ("длина_граммы", 4), ("длина_граммы", 30), ("длина_граммы", 12),
+    ("мин_знаков_хеша", 8), ("мин_знаков_хеша", 64), ("мин_знаков_хеша", 20),
+    ("расширения_настроек", [".yaml"]), ("расширения_настроек", [".md", ".json", ".sh"]),
+    ("признак_секрета_настроек", "password"),
+    ("доля_граммов_процентов", 1), ("доля_граммов_процентов", 18), ("доля_граммов_процентов", 15),
+    ("невидимые_знаки", {"категории": ["Cf"], "диапазоны": ["U+200B"]}),
+    ("невидимые_знаки", {"категории": ["Cf", "Cs"], "диапазоны": ["U+0000-10FFFF"]}),
+    ("невидимые_знаки", {"категории": ["Mn"], "диапазоны": ["U+E0000-E007F", "U+10FFFF"]}),
+    ("допустимые_знаки_слепого", {"категории": ["Lu"], "диапазоны": ["U+0020-007E"], "управляющие": []}),
+    ("допустимые_знаки_слепого", {"категории": ["Lu", "Mn", "Mc"], "диапазоны": ["U+0020", "U+10FFFF"], "управляющие": [9]}),
+    ("допустимые_знаки_слепого", {"категории": ["Lu", "Mn"], "диапазоны": ["U+0020-007E"], "управляющие": [0, 31]}),
+])
+def test_another_valid_round6_package_rule_is_accepted(key, good):
+    module, raw = _package_variant(lambda package, _raw: package.__setitem__(key, good))
+    module.Tables.from_raw(raw).check()
+
+
+def test_the_trace_gram_cannot_exceed_the_trace_window():
+    def both(package, _raw):
+        package["мин_длина_следа"] = 10
+        package["длина_граммы"] = 11
+    module, raw = _package_variant(both)
+    with pytest.raises(module.ContractError, match="до 10"):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("section", ["невидимые_знаки", "допустимые_знаки_слепого"])
+def test_an_invented_key_inside_a_round6_record_is_not_accepted(section):
+    def invent(package, _raw):
+        package[section]["выдуманное"] = 1
+    module, raw = _package_variant(invent)
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+
+
+@pytest.mark.parametrize("section,part", [("невидимые_знаки", "категории"), ("невидимые_знаки", "диапазоны"),
+                                          ("допустимые_знаки_слепого", "категории"),
+                                          ("допустимые_знаки_слепого", "диапазоны"),
+                                          ("допустимые_знаки_слепого", "управляющие")])
+def test_deleting_a_part_of_a_round6_record_is_a_named_error(section, part):
+    module, raw = _package_variant(lambda package, _raw: package[section].pop(part))
+    with pytest.raises(module.ContractError, match=section):
+        module.Tables.from_raw(raw).check()
+
+
+def test_the_yaml_norway_problem_cannot_turn_a_category_into_a_boolean():
+    # `No` (a number category) is `False` in YAML 1.1 if left unquoted: it must be refused, not read.
+    module, raw = _package_variant(
+        lambda package, _raw: package["невидимые_знаки"]["категории"].append(False))
+    with pytest.raises(module.ContractError, match="строка"):
+        module.Tables.from_raw(raw).check()
+    module, raw = _package_variant(
+        lambda package, _raw: package["невидимые_знаки"]["категории"].append("No"))
+    module.Tables.from_raw(raw).check()  # the quoted string is a category; the bare word would be False
+
+
+def test_code_ranges_are_parsed_as_inclusive_pairs():
+    module = import_tables_module()
+    assert module.parse_code_range("U+2800", "x") == (0x2800, 0x2800)
+    assert module.parse_code_range("U+2800-28FF", "x") == (0x2800, 0x28FF)
+    assert module.parse_code_range("U+E0000-E007F", "x") == (0xE0000, 0xE007F)
+    assert module.parse_code_range("U+10FFFF", "x") == (0x10FFFF, 0x10FFFF)
+    for bad in ("U+2800-", "u+2800", "U+28", "U+2800-27FF", "U+110000", 2800, None):
+        with pytest.raises(module.ContractError):
+            module.parse_code_range(bad, "x")
+
+
+def test_the_new_secret_rules_and_names_are_in_the_table_and_the_old_jwt_rule_is_gone():
+    package = _at(VOCAB, "пакет")
+    rules = package["признаки_секрета"]
+    assert r'(?<![\w-])eyJ[\w-]{10,}+\.eyJ[\w-]{10,}+\.' in rules
+    assert r'eyJ[\w-]{10,}\.eyJ[\w-]{10,}\.' not in rules
+    for prefix in ("ntn_", "shp", "gsk_", "pypi-", "ya29", "whsec_", "SG"):
+        assert any(prefix in rule for rule in rules), prefix
+    for name in ("service_account*", "serviceAccountKey*", "key.json", "jwt.json", "storage_state*", "session.json",
+                 "cookies*", "kubeconfig*", "bearer*", "*access-token*", "*bot-token*", "token_cache*",
+                 "compose.yaml", "vault.y*ml", "seed.txt", "mnemonic*", "recovery_codes*", "shadow*",
+                 "authorized_keys*", "*.tfvars.json", ".auth"):
+        assert name in package["запрещённые_пути"], name
+
+
+def test_the_consensus_engine_keeps_its_own_words_while_the_package_folds_more():
+    module = import_tables_module()
+    # the engine reads the base table only: words with l, i and digits stay as they were
+    for word in ("only", "if", "unless", "подтвердить", "0к"):
+        assert module._normal(word) == word.translate(module._HOMOGLYPHS)
+    assert module._normal("ок") == "ок" and module._normal("oк") == "ок"  # Latin o folds, as before
+    extra = module._SKELETON_CONFUSABLES
+    assert set(module._HOMOGLYPHS) < set(extra)
+    for digit, letter in (("0", "о"), ("3", "з"), ("6", "б"), ("4", "ч")):
+        assert extra[ord(digit)] == letter and ord(digit) not in module._HOMOGLYPHS
+    assert {extra[ord(c)] for c in "1lıіӏи"} == {"i"}
+
+
+def test_round7_the_leet_table_and_the_key_names_are_pinned():
+    module = import_tables_module()
+    assert {chr(code): letter for code, letter in module._LEET.items()} == {
+        "4": "a", "3": "e", "5": "s", "7": "t", "8": "b", "9": "g", "2": "z", "1": "l", "0": "o",
+        "@": "a", "$": "s", "|": "l", "!": "i", "+": "t"}
+    rules = "\n".join(_at(VOCAB, "пакет", "признаки_секрета"))
+    for word in ("encryption", "signing", "master", "app[_-]?key", "session", "hmac", "salt", "dsn", "dckr_pat",
+                 "lin_api", "dop_v1", "sntrys", "sbp", "r8", "rk_live", "(?i:authorization)"):
+        assert word in rules, word
+    assert _at(VOCAB, "пакет", "допустимые_знаки_слепого", "диапазоны")[0] == "U+0020-007E"
+
+
+def test_the_settings_secret_rule_is_the_general_rule_with_two_changes():
+    # round 8: the stricter rule for settings files may not drift away from the general one. Two changes:
+    # (1) "more plain words up to the end of the line" -> "anything after the first word but a comment",
+    # (2) one more value branch: a short first word, a gap, something.
+    package = _at(VOCAB, "пакет")
+    general = next(p for p in package["признаки_секрета"] if p.startswith("(?:(?:(?<![A-Za-z])"))
+    plain = r"[ \t]+[A-Za-z][\w'-]*(?:[ \t]+[A-Za-z][\w'-]*)*[ \t]*[.,;!]?[ \t]*(?:\r?\n|\Z)"
+    branch = r"""|[A-Za-z0-9_][^\s"'\\]{0,4}[ \t]+[^\s#](?=[^\r\n]{4})"""
+    assert general.count(plain) == 8
+    assert package["признак_секрета_настроек"] == general.replace(plain, r"[ \t]+[^\s#]")[:-1] + branch + ")"

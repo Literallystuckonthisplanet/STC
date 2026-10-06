@@ -534,6 +534,47 @@ def _string_list(value, where: str) -> None:
             raise ContractError(f"{where}: элемент {item!r} — не непустая строка")
 
 
+SKELETON_SCRIPTS = ("кириллица", "латиница", "цифры")
+
+
+def parse_field_format(text, where: str):
+    """Формат поля записи: `целое:A..B`, `пара_целых:A..B` или регулярное выражение.
+
+    Возвращает ("int", low, high) / ("pair", low, high) / ("regex", compiled).
+    """
+    if not isinstance(text, str) or not text:
+        raise ContractError(f"{where}: формат — непустая строка")
+    for tag, kind in (("целое:", "int"), ("пара_целых:", "pair")):
+        if text.startswith(tag):
+            match = re.fullmatch(r"(-?\d{1,12})\.\.(-?\d{1,12})", text[len(tag):])
+            if not match or int(match.group(1)) > int(match.group(2)):
+                raise ContractError(f"{where}: {text!r} — границы A..B, A не больше B")
+            return kind, int(match.group(1)), int(match.group(2))
+    try:
+        # Круг 6: \w и \d без re.ASCII принимают буквы и цифры любых письменностей
+        # (арабо-индийские цифры в дате, двойники в идентификаторе). Нужная
+        # кириллица в формате названа явно.
+        return "regex", re.compile(text, re.ASCII)
+    except re.error as error:
+        raise ContractError(f"{where}: {text!r} не компилируется — {error}")
+
+
+UNICODE_CATEGORIES = frozenset(
+    "Lu Ll Lt Lm Lo Mn Mc Me Nd Nl No Pc Pd Ps Pe Pi Pf Po Sm Sc Sk So Zs Zl Zp Cc Cf Cs Co Cn".split())
+
+
+def parse_code_range(text, where: str):
+    """`U+XXXX` или `U+XXXX-YYYY` → (первый, последний) кодовые точки."""
+    match = re.fullmatch(r"U\+([0-9A-F]{4,6})(?:-([0-9A-F]{4,6}))?", text) if isinstance(text, str) else None
+    if not match:
+        raise ContractError(f"{where}: {text!r} — ожидалось U+XXXX или U+XXXX-YYYY")
+    low = int(match.group(1), 16)
+    high = int(match.group(2), 16) if match.group(2) else low
+    if low > high or high > 0x10FFFF:
+        raise ContractError(f"{where}: {text!r} — границы вне порядка или за пределом Юникода")
+    return low, high
+
+
 def _nonempty_string(value, where: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ContractError(f"{where}: ожидалась непустая строка")
@@ -603,7 +644,19 @@ SHAPES = {
         "отпечаток": Mapping(LIST),
         "создатели_доказательства": Mapping(LIST, keys="доказательства"),
         "пакет": Record("предел_файла_байт", "предел_пакета_байт", "отвергается",
-                        "не_попадает", "реестры", "виды_решений_в_реестре", "канонизация"),
+                        "не_попадает", "реестры", "виды_решений_в_реестре", "канонизация",
+                        "видимые_слепому_статусы_решений", "видимые_слепому_создатели",
+                        "мин_длина_следа", "мин_длина_основы", "запрещённые_пути",
+                        "письменности_скелета", "скрытые_имена", "запрещённые_предки",
+                        "разрешённые_расширения", "признаки_секрета", "разделы",
+                        "предел_раздела_байт", "предел_числа_файлов",
+                        "длина_граммы", "доля_граммов_процентов", "мин_знаков_хеша",
+                        "расширения_настроек", "признак_секрета_настроек",
+                        форматы_полей=Mapping(TEXT),
+                        невидимые_знаки=Record("категории", "диапазоны"),
+                        допустимые_знаки_слепого=Record("категории", "управляющие", "диапазоны"),
+                        схемы_записей=Record("решения", "области", "журнал_общие",
+                                             "журнал_необязательные")),
         "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
         "коды_условий": Mapping(LIST),
         "повтор_невалидного_ответа": Record(
@@ -1697,9 +1750,191 @@ class Tables:
                         f"{name}: объявлено {declared} {key}, в списке {actual}")
         checked.append("объявленные количества сходятся с длиной списков")
 
+        self._check_package_rules()
+        checked.append("правила пакета: схемы, пределы, пути и разделы согласованы")
+
         self._check_shapes()
         checked.append(f"{len(SHAPES)} таблиц: выдуманных полей нет ни на какой глубине")
         return checked
+
+    def _check_package_rules(self) -> None:
+        """Правила пакета (§6.9): всё, что читает код, названо, типизировано и сверено."""
+        def fetch(table, *path):
+            node = table
+            for key in path:
+                if not isinstance(node, dict) or key not in node:
+                    raise ContractError(f"{'.'.join(path)}: нет правила, которое читает пакет")
+                node = node[key]
+            return node
+
+        where = "vocabulary.пакет"
+        package = fetch(self.vocabulary, "пакет")
+        if not isinstance(package, dict):
+            raise ContractError(f"{where}: ожидалась карта, получено {package!r}")
+
+        def need(key):
+            if key not in package:
+                raise ContractError(f"{where}: нет правила {key}")
+            return package[key]
+
+        def number(key, low=1, high=None):
+            value = need(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < low or (
+                    high is not None and value > high):
+                raise ContractError(
+                    f"{where}.{key}: ожидалось целое от {low}"
+                    f"{'' if high is None else f' до {high}'}, получено {value!r}")
+            return value
+
+        def names(value, label):
+            _string_list(value, label)
+            if not value or len(set(value)) != len(value):
+                raise ContractError(f"{label}: список пуст или с повторами")
+            return value
+
+        for key in ("предел_файла_байт", "предел_пакета_байт", "предел_раздела_байт",
+                    "предел_числа_файлов"):
+            number(key)
+        if package["предел_файла_байт"] > package["предел_пакета_байт"]:
+            raise ContractError(f"{where}: файл не может быть больше всего пакета")
+        if package["предел_раздела_байт"] > package["предел_пакета_байт"]:
+            raise ContractError(f"{where}: раздел не может быть больше всего пакета")
+        trace = number("мин_длина_следа", 8, 200)
+        number("мин_длина_основы", 2, trace)
+        for key in ("отвергается", "не_попадает", "реестры", "виды_решений_в_реестре"):
+            names(need(key), f"{where}.{key}")
+        _nonempty_string(need("канонизация"), f"{where}.канонизация")
+
+        schemas = need("схемы_записей")
+        if not isinstance(schemas, dict):
+            raise ContractError(f"{where}.схемы_записей: ожидалась карта")
+        for key in ("решения", "области", "журнал_общие", "журнал_необязательные"):
+            if key not in schemas:
+                raise ContractError(f"{where}.схемы_записей: нет {key}")
+            if key == "журнал_необязательные":
+                _string_list(schemas[key], f"{where}.схемы_записей.{key}")
+                if len(set(schemas[key])) != len(schemas[key]):
+                    raise ContractError(f"{where}.схемы_записей.{key}: повторы")
+            else:
+                names(schemas[key], f"{where}.схемы_записей.{key}")
+        if not {"decision_id", "kind"} <= set(schemas["решения"]):
+            raise ContractError(f"{where}.схемы_записей.решения: нужны decision_id и kind")
+        if "status" not in schemas["решения"]:
+            raise ContractError(f"{where}.схемы_записей.решения: нужен status — по нему слепой отбирает")
+        if "area_id" not in schemas["области"]:
+            raise ContractError(f"{where}.схемы_записей.области: нужен area_id")
+        if not {"тип", "создатель"} <= set(schemas["журнал_общие"]):
+            raise ContractError(f"{where}.схемы_записей.журнал_общие: нужны тип и создатель")
+        fingerprints = fetch(self.vocabulary, "отпечаток")
+        fingerprint_fields = {f for fields in fingerprints.values() for f in fields}
+        overlap = (set(schemas["журнал_необязательные"]) | set(schemas["журнал_общие"])) & fingerprint_fields
+        if overlap:
+            raise ContractError(f"{where}.схемы_записей.журнал: {sorted(overlap)} — поля отпечатка, не общие")
+        if set(schemas["журнал_необязательные"]) & set(schemas["журнал_общие"]):
+            raise ContractError(f"{where}.схемы_записей.журнал: поле и обязательное, и необязательное")
+
+        names(need("видимые_слепому_статусы_решений"), f"{where}.видимые_слепому_статусы_решений")
+        creators = names(need("видимые_слепому_создатели"), f"{where}.видимые_слепому_создатели")
+        known = {c for allowed in fetch(self.vocabulary, "создатели_доказательства").values()
+                 for c in allowed}
+        if not set(creators) <= known:
+            raise ContractError(f"{where}.видимые_слепому_создатели: {sorted(set(creators) - known)} никто не создаёт")
+
+        for pattern in names(need("запрещённые_пути"), f"{where}.запрещённые_пути"):
+            if "/" in pattern or pattern == "*":
+                raise ContractError(f"{where}.запрещённые_пути: шаблон {pattern!r} — "
+                                    "это путь или «всё», а не имя компонента")
+        for pattern in names(need("запрещённые_предки"), f"{where}.запрещённые_предки"):
+            if "/" in pattern or pattern == "*":
+                raise ContractError(f"{where}.запрещённые_предки: шаблон {pattern!r} — "
+                                    "это путь или «всё», а не имя компонента")
+        for suffix in names(need("разрешённые_расширения"), f"{where}.разрешённые_расширения"):
+            if not suffix.startswith(".") or len(suffix) < 2 or suffix != suffix.lower() \
+                    or "/" in suffix or "." in suffix[1:]:
+                raise ContractError(f"{where}.разрешённые_расширения: {suffix!r} — не расширение")
+        for pattern in names(need("признаки_секрета"), f"{where}.признаки_секрета"):
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                raise ContractError(f"{where}.признаки_секрета: {pattern!r} не компилируется — {error}")
+        settings = names(need("расширения_настроек"), f"{where}.расширения_настроек")
+        if set(settings) - set(need("разрешённые_расширения")):
+            raise ContractError(f"{where}.расширения_настроек: {sorted(set(settings) - set(need('разрешённые_расширения')))} "
+                                "нет среди разрешённых расширений")
+        strict = need("признак_секрета_настроек")
+        if not isinstance(strict, str) or not strict:
+            raise ContractError(f"{where}.признак_секрета_настроек: ожидалась непустая строка-шаблон")
+        try:
+            re.compile(strict)
+        except re.error as error:
+            raise ContractError(f"{where}.признак_секрета_настроек: не компилируется — {error}")
+        formats = need("форматы_полей")
+        if not isinstance(formats, dict) or not formats:
+            raise ContractError(f"{where}.форматы_полей: ожидалась непустая карта")
+        for field, text in formats.items():
+            parse_field_format(text, f"{where}.форматы_полей.{field}")
+        known_fields = (set(schemas["решения"]) | set(schemas["области"])
+                        | set(schemas["журнал_общие"]) | set(schemas["журнал_необязательные"])
+                        | fingerprint_fields)
+        if set(formats) - known_fields:
+            raise ContractError(
+                f"{where}.форматы_полей: форматы для полей, которых нет ни в одной схеме: "
+                f"{sorted(set(formats) - known_fields)}")
+        if known_fields - set(formats):
+            raise ContractError(
+                f"{where}.форматы_полей: у полей нет формата — нет и поля: "
+                f"{sorted(known_fields - set(formats))}")
+
+        number("длина_граммы", 4, trace)
+        number("мин_знаков_хеша", 8, 64)
+        number("доля_граммов_процентов", 1, 18)
+        invisible = need("невидимые_знаки")
+        if not isinstance(invisible, dict) or set(invisible) != {"категории", "диапазоны"}:
+            raise ContractError(f"{where}.невидимые_знаки: нужны категории и диапазоны")
+        for category in names(invisible["категории"], f"{where}.невидимые_знаки.категории"):
+            if category not in UNICODE_CATEGORIES:
+                raise ContractError(f"{where}.невидимые_знаки.категории: {category!r} — не категория Юникода")
+        for span in names(invisible["диапазоны"], f"{where}.невидимые_знаки.диапазоны"):
+            parse_code_range(span, f"{where}.невидимые_знаки.диапазоны")
+        allowed = need("допустимые_знаки_слепого")
+        if not isinstance(allowed, dict) or set(allowed) != {"категории", "управляющие", "диапазоны"}:
+            raise ContractError(f"{where}.допустимые_знаки_слепого: нужны категории, управляющие и диапазоны")
+        for category in names(allowed["категории"], f"{where}.допустимые_знаки_слепого.категории"):
+            if category not in UNICODE_CATEGORIES:
+                raise ContractError(f"{where}.допустимые_знаки_слепого.категории: {category!r} — не категория Юникода")
+            if category[0] not in "LM":
+                raise ContractError(f"{where}.допустимые_знаки_слепого.категории: {category} — "
+                                    "в слепой пакет допустимы только буквы и знаки при них; "
+                                    "остальное — диапазонами, управляющие — отдельным списком")
+        for span in names(allowed["диапазоны"], f"{where}.допустимые_знаки_слепого.диапазоны"):
+            parse_code_range(span, f"{where}.допустимые_знаки_слепого.диапазоны")
+        controls = allowed["управляющие"]
+        if (not isinstance(controls, list) or len(set(controls)) != len(controls)
+                or not all(isinstance(c, int) and not isinstance(c, bool) and 0 <= c < 32 for c in controls)):
+            raise ContractError(f"{where}.допустимые_знаки_слепого.управляющие: список кодов 0..31 без повторов")
+
+        scripts = names(need("письменности_скелета"), f"{where}.письменности_скелета")
+        if set(scripts) - set(SKELETON_SCRIPTS):
+            raise ContractError(f"{where}.письменности_скелета: допустимы {sorted(SKELETON_SCRIPTS)}")
+
+        sections = names(need("разделы"), f"{where}.разделы")
+        blind = fetch(self.stages, "слепой_вопрос")
+        shown = names(fetch(blind, "показываем"), "stages.слепой_вопрос.показываем")
+        hidden = names(fetch(blind, "прячем"), "stages.слепой_вопрос.прячем")
+        hidden_names = names(need("скрытые_имена"), f"{where}.скрытые_имена")
+        if not set(hidden_names) <= set(hidden):
+            raise ContractError(f"{where}.скрытые_имена: {sorted(set(hidden_names) - set(hidden))} "
+                                "не входят в stages.слепой_вопрос.прячем")
+        outside = set(shown) - set(sections)
+        if outside:
+            raise ContractError(f"{where}.разделы: нет разделов слепого вопроса {sorted(outside)}")
+        if set(shown) & set(hidden):
+            raise ContractError(f"stages.слепой_вопрос: {sorted(set(shown) & set(hidden))} и показываются, и прячутся")
+        banned = set(sections) & set(package["не_попадает"])
+        if banned:
+            raise ContractError(f"{where}.разделы: {sorted(banned)} объявлены и допустимыми, и вне пакета")
+        fetch(self.stages, "стадии")
+        fetch(self.precheck, "классы_файлов")
 
     def _shape_domains(self) -> dict:
         """Перечни, из которых берутся ключи справочников."""
@@ -2516,7 +2751,39 @@ NOT_HUMAN_FLAGS = ("isMeta", "isCompactSummary", "isVisibleInTranscriptOnly", "i
 PLAN_APPROVAL = "User has approved your plan"
 # Латинские двойники кириллицы — известный артефакт раскладки; «нe» с
 # латинской e не должно прятать отрицание.
-_HOMOGLYPHS = str.maketrans("aeopcyxkmtbhAEOPCYXKMTBH", "аеорсухкмтвнАЕОРСУХКМТВН")
+# Одна таблица на движок согласий и на пакет (скелет слепого пакета): латиница,
+# греческие и украинские двойники сворачиваются в кириллицу, а у букв без
+# кириллического двойника — в латиницу.
+_HOMOGLYPHS = str.maketrans({
+    **dict(zip("aeopcyxkmtbhAEOPCYXKMTBH", "аеорсухкмтвнАЕОРСУХКМТВН")),
+    # украинские и турецкие двойники латиницы
+    "і": "i", "І": "I", "ј": "j", "Ј": "J", "ѕ": "s", "Ѕ": "S", "ı": "i",
+    # греческие строчные
+    "ο": "о", "α": "а", "ε": "е", "ρ": "р", "τ": "т", "υ": "у", "κ": "к",
+    "ν": "v", "μ": "м", "χ": "х", "ι": "i",
+    # греческие прописные
+    "Ο": "О", "Α": "А", "Ε": "Е", "Ρ": "Р", "Τ": "Т", "Υ": "У", "Κ": "К",
+    "Ν": "N", "Μ": "М", "Χ": "Х", "Ι": "I", "Β": "В", "Η": "Н", "Ζ": "Z",
+})
+
+# Круг 6: скелет пакета сворачивает ещё и цифры-двойники и класс «одна палочка»
+# (1, l, i, I, ı, і, ӏ и кириллическое и). Движок согласий их НЕ сворачивает: у него
+# слова с l и i («only», «if», «подтвердить») проверяются по тексту, и слияние букв
+# сломало бы разбор. Основа — та же таблица `_HOMOGLYPHS`, а не вторая копия.
+_SKELETON_CONFUSABLES = {
+    **_HOMOGLYPHS,
+    ord("0"): "о", ord("3"): "з", ord("6"): "б", ord("4"): "ч",
+    **{ord(ch): "i" for ch in "1lLiIıіІӏӀǀⅼⅰ"},
+    ord("и"): "i", ord("И"): "i",
+}
+
+# Круг 7: второй вариант скелета — «литспик»: цифры и ASCII-знаки, которыми пишут буквы
+# латиницы. Прежде такие знаки выбрасывались (@, $, |, !, +) или становились кириллицей.
+# Скелет в этом варианте строится из показанного текста; скрытое всегда в обычном варианте.
+_LEET = str.maketrans({
+    "4": "a", "3": "e", "5": "s", "7": "t", "8": "b", "9": "g", "2": "z", "1": "l", "0": "o",
+    "@": "a", "$": "s", "|": "l", "!": "i", "+": "t",
+})
 
 
 def _denylist(words: str) -> re.Pattern:

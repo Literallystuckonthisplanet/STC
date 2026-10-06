@@ -578,6 +578,11 @@ def cmd_apply(args):
     for w in C.session_path_warnings(stc):
         print("   ⚠ " + w)
     targets = _resolve_targets(args.target, adapters, stc)
+    if getattr(args, "rules_only", False):
+        if targets != ["codex"]:
+            print("✗ --rules-only supports only an existing Codex installation")
+            return 1
+        return _apply_codex_rules_only(stc, registry, adapters["codex"])
     _regen_snapshot()
     for t in targets:
         adapter = adapters[t]  # _resolve_targets already validated t ∈ adapters
@@ -661,6 +666,48 @@ def cmd_apply(args):
         for w in warns:
             print("   ⚠ " + w)
         print(f"✓ applied {t} → {native_dir} + ~/.stc/")
+    return 0
+
+
+def _apply_codex_rules_only(stc, registry, adapter):
+    """Update an existing Codex rules installation without full deployment."""
+    target = "codex"
+    if adapter.get("harness") != "codex":
+        print("✗ --rules-only supports only an existing Codex installation")
+        return 1
+    native_dir = adapter["native_dir"].replace("${HOME}", os.path.expanduser("~"))
+    provider = R.provider_for(stc, target, REPO)
+    rr = R.render_harness(stc, registry, provider, adapter, CORE, REPO)
+    manifest = C._load_json(MANIFEST) or {}
+    entry = manifest.get(target)
+    if not isinstance(entry, dict) or entry.get("native_dir") != native_dir:
+        print("✗ --rules-only requires an existing matching Codex manifest entry")
+        return 1
+    if entry.get("always_context") != "AGENTS.md" or "AGENTS.stc.md" not in entry.get("files", []):
+        print("✗ --rules-only requires the existing Codex AGENTS ownership")
+        return 1
+    core_rules = os.path.join(STC_HOME, "core", "rules")
+    source_rules = sorted(f for f in os.listdir(os.path.join(CORE, "rules")) if f.endswith(".md"))
+    live_rules = sorted(f for f in os.listdir(core_rules) if f.endswith(".md")) if os.path.isdir(core_rules) else []
+    required = [native_dir, os.path.join(native_dir, "AGENTS.md"),
+                os.path.join(native_dir, "AGENTS.stc.md"), core_rules]
+    if source_rules != live_rules or any(not os.path.exists(p) or os.path.islink(p) for p in required):
+        print("✗ --rules-only requires existing non-symlink roots/files and an identical rules file set")
+        return 1
+    if any(os.path.islink(os.path.join(core_rules, f)) for f in source_rules):
+        print("✗ --rules-only refuses symlinked rule files")
+        return 1
+    rules_backup = C.backup_snapshot(core_rules, source_rules, BACKUPS, "codex-rules")[0]
+    native_backup = C.backup_snapshot(native_dir, ["AGENTS.md", "AGENTS.stc.md"], BACKUPS, "codex-rules-native")[0]
+    _record_backup(rules_backup, "codex-rules", core_rules, source_rules)
+    _record_backup(native_backup, "codex-rules-native", native_dir, ["AGENTS.md", "AGENTS.stc.md"])
+    for name in source_rules:
+        shutil.copy2(os.path.join(CORE, "rules", name), os.path.join(core_rules, name))
+    with open(os.path.join(native_dir, "AGENTS.stc.md"), "w", encoding="utf-8") as fh:
+        fh.write(rr.files["AGENTS.stc.md"])
+    ac_file, marker_line = _marker_for(rr, native_dir)
+    B.inject_block(os.path.join(native_dir, ac_file), marker_line, create=False)
+    print(f"✓ rules-only applied codex (restore {native_backup}, {rules_backup})")
     return 0
 
 
@@ -1129,6 +1176,7 @@ def main(argv=None):
     pa.add_argument("--target", required=False, help=_target_help)
     pa.add_argument("--overwrite", action="store_true", help="back up + let STC take precedence on JSON collisions")
     pa.add_argument("--skip-collisions", action="store_true", help="keep user config; STC capability absent there")
+    pa.add_argument("--rules-only", action="store_true", help="update existing Codex rules and always-context only")
     pa.set_defaults(func=cmd_apply)
 
     pu = sub.add_parser("uninstall", help="remove STC artifacts from one or more harnesses")

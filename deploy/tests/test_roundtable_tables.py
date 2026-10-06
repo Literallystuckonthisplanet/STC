@@ -1747,9 +1747,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3, 50: 8}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 196
+    assert len(findings) == 204
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1795,23 +1795,23 @@ FINDING_PINS = {
     "R13-2": ("0d92d292b923", "42eefe36abaa"),
     "R13-3": ("f8066d738986", "7020e9135d15"),
     "R13-4": ("419f575afe06", "cc6a5fc005ff"),
-    "R13-5": ("9eafa61d5627", "4f88b03248cf"),
+    "R13-5": ("9eafa61d5627", "ab4c63d7152c"),
     "R13-6": ("e6bb12ea053a", "7020e9135d15"),
     "R13-7": ("e1796e50cb6a", "238c8bcb8020"),
     "R13-8": ("9a8fea56b1ce", "ab7d603ae34c"),
-    "R14-1": ("23c0d8967e00", "bc0690af21eb"),
+    "R14-1": ("23c0d8967e00", "61c53c5dca8f"),
     "R14-2": ("1f52fbec5228", "9c55c7378c55"),
     "R14-3": ("32787caa1755", "a92948a682c7"),
     "R14-4": ("ed5e8deb8117", "3cf57480d6e7"),
-    "R14-5": ("ac422876d92e", "4f88b03248cf"),
+    "R14-5": ("ac422876d92e", "ab4c63d7152c"),
     "R14-6": ("cb6dc064ffbd", "59ee143f6595"),
     "R14-7": ("ccb9c39d9248", "130a30a902f7"),
     "R14-8": ("5467b0850b03", "39673398b0d3"),
     "R14-9": ("e1366bbbbbbb", "7020e9135d15"),
     "R14-10": ("f50bb3e9a008", "9512f329eb20"),
     "R14-11": ("8180865842d5", "1c38a9362331"),
-    "R15-1": ("1c104b3fc7e7", "2ee762796553"),
-    "R15-2": ("9d98cc6bd966", "21fcaa3d3373"),
+    "R15-1": ("1c104b3fc7e7", "13d45d8afda2"),
+    "R15-2": ("9d98cc6bd966", "901f6fca8322"),
     "R15-3": ("e01825a51396", "e5b35d0472e6"),
     "R15-4": ("db5173af613a", "9eb37aef1baf"),
     "R15-5": ("0737cccb138c", "616b705cc1de"),
@@ -1820,22 +1820,22 @@ FINDING_PINS = {
     "R15-8": ("47885c40a92b", "cbb5b76f0639"),
     "R15-9": ("2fe280ccf96d", "130a30a902f7"),
     "R15-10": ("38b913648760", "1760c70038c6"),
-    "R16-1": ("a1d424315908", "bc0690af21eb"),
-    "R16-2": ("cea556de1fbc", "9ae5c4dd83a4"),
+    "R16-1": ("a1d424315908", "389b688b4892"),
+    "R16-2": ("cea556de1fbc", "b7b0c6832a45"),
     "R16-3": ("1bd741f174cb", "c3b98cf6afca"),
     "R16-4": ("0b8e109c78c0", "4a92fa7800dc"),
     "R16-5": ("9bf55e10b199", "ffaecc1dd0d3"),
     "R16-6": ("944e866fbb12", "e47ebbc027c1"),
     "R16-7": ("9db50d82952b", "39673398b0d3"),
-    "R16-8": ("7d5aceae7883", "e14e5061d017"),
+    "R16-8": ("7d5aceae7883", "5ea76afa3f9e"),
     "R17-1": ("cb5780caccf1", "4545c8a3af83"),
     "R17-2": ("c0aab0411a78", "042a0b8ab63d"),
-    "R17-3": ("1bba815466bd", "9ae5c4dd83a4"),
+    "R17-3": ("1bba815466bd", "b7b0c6832a45"),
     "R17-4": ("a0f59d2f458d", "b40e3f3db766"),
     "R17-5": ("7ecf5768210f", "639003c64aa8"),
     "R17-6": ("cef11703a077", "942ab7451e81"),
     "R17-7": ("71592858481f", "9a4caf58c3dc"),
-    "R17-8": ("71739bc8db4f", "ef35dadd5758"),
+    "R17-8": ("71739bc8db4f", "f18c632deea4"),
     "R17-9": ("1899aac7bced", "e47ebbc027c1"),
     "R19-1": ("2435387d4f38", "0e91c4863728"),
     "R19-2": ("67e0592b0d42", "f5d66a1c863c"),
@@ -1982,6 +1982,14 @@ FINDING_PINS = {
     "R49-1": ("6da0cea344a8", "55c349e28ad9"),
     "R49-2": ("ae2ede53d80e", "517cdebfd6f3"),
     "R49-3": ("69fa02510e33", "e47597ee3487"),
+    "R50-1": ("7ab7c534acb9", "16fe8a398af1"),
+    "R50-2": ("bdfd38b7bb17", "2420babf39c4"),
+    "R50-3": ("a4342ab95066", "ca1cde82eaef"),
+    "R50-4": ("6f3cb482a2d6", "1760c70038c6"),
+    "R50-5": ("bbb9a24f5316", "1760c70038c6"),
+    "R50-6": ("28ac8da3d68f", "ead26ac7eb7c"),
+    "R50-7": ("b0c0f932f823", "1760c70038c6"),
+    "R50-8": ("6dad73e1d3fb", "1760c70038c6"),
 }
 
 
@@ -2772,6 +2780,7 @@ def test_the_gate_actually_refuses_a_block_started_too_early():
     # weakening exactly this kind of assertion in the same commit as the data.
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
+    _as_open(raw, "БИ")                       # круг 50: БИ закрыт — шлюз ремонта держит, пока блок открыт
     raw["blocks"]["блоки"]["Б15"]["состояние"] = "сделано"
     with pytest.raises(module.ContractError, match="шлюз"):
         module.Tables.from_raw(raw).check()
@@ -2781,8 +2790,8 @@ def test_every_hold_reason_is_reported_not_just_the_first():
     # A block can be unpermitted *and* waiting on a dependency *and* under a
     # gate. Printing one of the three sends the reader to fix the wrong thing.
     tables = import_tables_module().load()
-    # круг 49: Б15 ждал Б2, а Б2 закрыт — три причины сразу теперь у Б4
-    reasons = tables.hold_reasons("Б4")
+    # круг 50: БИ закрыт — три причины сразу теперь у Б3б (зависимость и шлюз изоляции)
+    reasons = tables.hold_reasons("Б3б")
     assert len(reasons) >= 3, reasons
     assert any("нет разрешения" in r for r in reasons)
     assert any("ждёт зависимость" in r for r in reasons)
@@ -2833,6 +2842,7 @@ def test_absorption_cannot_be_circular():
     module = import_tables_module()
     for chain in (["БТ2", "БИ"], ["БТ2", "БИ", "Б9"]):
         raw = _as_open(copy.deepcopy(module.load().raw), "БТ2")
+        _as_open(raw, "БИ")                   # круг 50: БИ закрыт, опыт открывает его на копии
         blocks = raw["blocks"]["блоки"]
         for name, nxt in zip(chain, chain[1:] + chain[:1]):
             blocks[name]["состояние"] = "объединён_с"
@@ -3171,7 +3181,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert BLOCKS["списки"] == {'пункты_плана_PEV': ['результат_границы_и_что_не_меняется', 'затронутые_файлы_и_доказательства', 'критерии_приёмки_и_проверка', 'блоки_и_зависимости', 'делегирование_модель_изоляция', 'неразрешённые_решения_пользователя'], 'таблицы': ['vocabulary', 'run', 'issues', 'framing', 'precheck', 'blocks', 'stages', 'findings'], 'фикстуры_репетиции': ['tune-plan.md', 'tune-gold.json', 'holdout-plan.md', 'holdout-gold.json'], 'исходы_идеи': ['возражение_держит_стадию', 'нет_годного_варианта', 'частичная_негодность', 'оба_предпочли_неавторскую_и_назвали_авторскую_непроходной', 'нет_консенсусно_годного', 'подтверждён', 'оба_предпочли_неавторскую', 'расхождение', 'три_подхода_на_столе']}
     # исполнение меняется при каждом закрытии блока — поэтому слепком, и
     # обновляется той же правкой, что закрывает блок
-    assert _finding_digest(BLOCKS["исполнение"]) == "182c829f6b5b", (
+    assert _finding_digest(BLOCKS["исполнение"]) == "34082d2f6961", (
         "план исполнения изменён — шаг, проверка блока, роль или волна")
     assert BLOCKS["порядок_критики"]["классы_мутаций"] == ['убрать_правило', 'подменить_значение_на_допустимое', 'подменить_текст_сохранив_ID', 'подсунуть_недопустимое', 'соврать_в_ссылке', 'расширить_себе_объём', 'разорвать_доказательство'], (
         "из метода критика убран или подменён класс поломки")
@@ -3664,7 +3674,7 @@ def test_the_execution_plan_survives_a_dry_run():
     assert min(rows["Ш1"]["волна"]) > rows["Ш2"]["волна"]
     assert max(rows["Ш1"]["волна"]) > rows["Б7"]["волна"], (
         "после правки кода запуска подтверждение не восстановлено")
-    assert rows["Б0б"]["волна"] > rows["БИ"]["волна"], "Б0б раньше ремонтного шлюза"
+    assert rows["Б0б"]["волна"] > BLOCKS["исполнение"]["выполнено"]["БИ"], "Б0б раньше ремонтного шлюза"
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "self._dry_run(" in source, "сухой прогон выпал из проверки контракта"
     tables.check()
@@ -3947,7 +3957,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "a84bc069469b037898706828e7023a509f8f9f688491eeab47dac21666e50e1c", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "8cefab94b5fcb38fb640e9108197ec2404eb03c369e1b1b8d95dd1c88d6991c5", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

@@ -1224,7 +1224,7 @@ def _check_root_place(root: Path) -> None:
 
 
 def build_package(root, declared_files, sections, registries, stage,
-                  blind: bool = False, tables=None, withheld=None) -> Package:
+                  blind: bool = False, tables=None, withheld=None, criteria=None) -> Package:
     """Assemble one verifiable package.
 
     `declared_files` is an explicit list of `(path, class)` pairs -- the manifest
@@ -1232,6 +1232,10 @@ def build_package(root, declared_files, sections, registries, stage,
     depend on what happens to be lying around. In the blind mode `withheld` must
     carry the hidden texts (exactly the names of `слепой_вопрос.прячем`): the
     package is refused if anything of them shows up in what the critic would see.
+
+    `criteria` (`{id, text, mandatory}` rows) is the blind mode's `критерии` block -- the same
+    `_criteria_block` / `_criteria_leaves` as the comparison package, judged with the rest.
+    Outside the blind mode it is refused (`некорректный_вход`).
     """
     tables = tables or tables_module.load()
     limits = tables.vocabulary["пакет"]
@@ -1253,24 +1257,31 @@ def build_package(root, declared_files, sections, registries, stage,
     if forbidden:
         raise PackageRefused("раздел_вне_пакета", ", ".join(sorted(forbidden)))
 
+    if criteria is not None and not blind:
+        raise _bad("критерии: блок есть только у слепого пакета")
     hidden_texts = _check_blind(tables, stage, blind, declared_files, sections, withheld)
     _check_sections(sections, limits)
+    criteria_block = None if criteria is None else _criteria_block(criteria, limits)
     entries, files = _read_declared_files(root, declared_files, tables)
     normalised = _build_registries(registries, tables, blind)
 
-    leaves = _shown_leaves(sections, normalised, [entry.path for entry in entries])
+    leaves = (_shown_leaves(sections, normalised, [entry.path for entry in entries])
+              + _criteria_leaves(criteria_block or []))
     _check_secrets(leaves, limits)
 
     manifest_dicts = [entry.as_dict() for entry in entries]
     manifest_hash = digest(canonical_json(manifest_dicts))
-    packed = canonical_json({
+    body = {
         "стадия": stage,
         "манифест": manifest_dicts,
         "хеш_манифеста": manifest_hash,
         "реестры": normalised,
         "разделы": dict(sections),
         "файлы": files,
-    })
+    }
+    if criteria_block is not None:
+        body["критерии"] = criteria_block
+    packed = canonical_json(body)
     # The size is settled before any search: a refusal for size must not wait for
     # an expensive comparison.
     if len(packed) > limits["предел_пакета_байт"]:
@@ -1328,6 +1339,7 @@ def _criteria_block(criteria, limits) -> list:
         _encodable(row["id"], "критерий.id")
         _encodable(row["text"], "критерий.text")
         block.append({"id": row["id"], "text": row["text"], "mandatory": row["mandatory"]})
+    block.sort(key=lambda row: row["id"])        # one set, one bytes: the caller's order does not matter
     if len(canonical_json(block)) > limits["предел_раздела_байт"]:
         raise PackageRefused("превышение_размера", "критерии")
     return block
@@ -1363,7 +1375,11 @@ def _judge(leaves, hidden_texts, limits) -> None:
 
 
 def check_comparison_inputs(sections, registries, stage, tables=None, withheld=None, criteria=None) -> None:
-    """Everything `build_comparison_package` will judge, except the candidates -- before any paid call."""
+    """Everything `build_comparison_package` will judge, except the candidates -- before any paid call.
+
+    The criteria are judged again by the blind package on purpose: a refusal there has another
+    classification (the caller of the stage tells them apart), so the repeat is not a copy to remove.
+    """
     tables = tables or tables_module.load()
     limits, hidden, criteria_block, normalised = _comparison_parts(
         sections, registries, stage, tables, withheld, criteria)

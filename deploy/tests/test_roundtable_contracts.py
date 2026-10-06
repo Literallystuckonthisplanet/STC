@@ -171,7 +171,9 @@ def stage(directory, ask, **kw):
 
 
 def good_blind(tag):
-    return json.dumps(proposal(ONE, tag), ensure_ascii=False)
+    """Слепой ответ строится из пакета запроса (критерии берутся оттуда, не из замыкания теста)."""
+    return lambda request: json.dumps(
+        proposal(json.loads(request["package"])["критерии"], tag), ensure_ascii=False)
 
 
 def cmp_answer(grades_by_id, selected, relations=None):
@@ -929,8 +931,8 @@ def test_comparison_is_built_from_the_request(directory):
     ask = Asker({("claude", "blind"): [good_blind("c")], ("codex", "blind"): [good_blind("x")],
                  ("claude", "compare"): [answer], ("codex", "compare"): [answer]})
     result = stage(directory, ask, criteria=CRITERIA, author_card=proposal(CRITERIA, "а"))
-    # ответы слепых по ONE не подходят к CRITERIA -> неполный; проверяем запрос отдельно на ONE
-    assert result.verdict == "НЕПОЛНЫЙ_ПРОГОН"
+    # слепые отвечают по критериям из пакета, сравнение строится из запроса: все три критерия доходят до критика
+    assert result.outcome.reason == "подтверждён" and ask.count() == 4
 
 
 def test_compare_request_carries_criteria(directory):
@@ -1942,7 +1944,7 @@ def test_r2_the_rejection_reason_goes_into_the_retry_request_and_into_the_result
 
     def bad_then_good(request):
         seen.append(request)
-        return "{не json" if request["attempt"] == 1 else good_blind("x")
+        return "{не json" if request["attempt"] == 1 else good_blind("x")(request)
 
     ask = _happy({("codex", "blind"): [bad_then_good]})
     result = stage(directory, ask)
@@ -2174,3 +2176,219 @@ def test_r2_the_card_limit_is_the_section_limit_exactly_everywhere(tmp_path):
     with pytest.raises(C.AuthorCardRefused):
         stage(started(tmp_path / "over", "run-o"), ask, author_card=over)
     assert ask.count() == 0
+
+
+# -- critic round 1: criteria in the blind package, shape of saved answers, a foreign stage ------------
+
+def _crit(identifier, text="работает"):
+    return [{"id": identifier, "текст": text, "обязательный": True}]
+
+
+def _answering_from_the_package(seen=None):
+    """`ask` that knows only its request: the cards and comparisons are built from the package's criteria."""
+    def blind(tag):
+        def build(request):
+            package = json.loads(request["package"])
+            if seen is not None:
+                seen.append(package)
+            return json.dumps(proposal(package["критерии"], tag), ensure_ascii=False)
+        return build
+    compare = _from_request(ALL_PASS, "cand_a")
+    return Asker({("claude", "blind"): [blind("c")], ("codex", "blind"): [blind("x")],
+                  ("claude", "compare"): [compare], ("codex", "compare"): [compare]})
+
+
+def test_critic1_the_first_package_carries_the_criteria_and_the_critic_answers_by_it(tmp_path):
+    firsts = {}
+    for name in ("BASE_A", "BASE_B"):
+        seen = []
+        directory = started(tmp_path / name, "run-" + name)
+        ask = _answering_from_the_package(seen)
+        result = stage(directory, ask, criteria=_crit(name), author_card=proposal(_crit(name), "автор"))
+        assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ask.count() == 4
+        assert seen[0]["критерии"] == [{"id": name, "text": "работает", "mandatory": True}]
+        firsts[name] = json.dumps(seen[0], sort_keys=True)
+    assert firsts["BASE_A"] != firsts["BASE_B"]                           # same text, different IDs: different package
+
+
+_QUOTED = "построить всё на очереди сообщений и воркерах"
+
+
+@pytest.mark.parametrize("text", ["вес ≥ 3 ✓", "нуль\u200bширина", "про Бибигона рассказ",
+                                  "ключ " + "AKIA" + "IOSFODNN7EXAMPLE", "пароль " + "pass" + "word = 'hunter2hunter2'"])
+def test_critic1_a_bad_criterion_is_refused_before_any_call_and_any_write(directory, text):
+    # these are caught already by `check_comparison_inputs`; the blind package repeats the judgement
+    before, ask = _journal(directory), _answering_from_the_package()
+    with pytest.raises(C.AuthorCardRefused):
+        stage(directory, ask, criteria=_crit("К1", text))
+    assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_critic1_the_blind_package_refuses_a_criterion_quoting_the_authors_card(directory):
+    """Only the blind package sees the author's card among the hidden: this refusal is its own."""
+    before, ask = _journal(directory), _answering_from_the_package()
+    card = {**proposal(ONE, "автор"), "variant": _QUOTED}
+    with pytest.raises(C.AuthorCardRefused, match="слепой пакет не принят"):
+        stage(directory, ask, criteria=_crit("К1", _QUOTED), author_card=card)
+    assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_critic1_a_criterion_id_changed_on_resume_is_caught_by_the_pin(directory):
+    class Boom(Exception):
+        pass
+
+    def boom(_request):
+        raise Boom
+
+    with pytest.raises(Boom):
+        stage(directory, _happy({("claude", "blind"): [boom]}), criteria=_crit("BASE_A"),
+              author_card=proposal(_crit("BASE_A"), "автор"))
+    ask = _answering_from_the_package()
+    with pytest.raises(C.ContractError, match="вход стадии"):          # the criteria are in the input print
+        stage(directory, ask, criteria=_crit("BASE_B"), author_card=proposal(_crit("BASE_B"), "автор"))
+    assert ask.count() == 0
+
+
+def _journal(directory):
+    return (Path(directory) / S.JOURNAL).read_bytes()
+
+
+@pytest.mark.parametrize("name,kw", [
+    ("список вместо словаря", {"saved_proposals": [("claude", "x")]}),
+    ("список сравнений", {"saved_comparisons": ["x"]}),
+    ("строка", {"saved_proposals": "claude"}),
+    ("чужой ключ", {"saved_proposals": {"третий": json.dumps(proposal(ONE, "с"))}}),
+    ("чужой ключ сравнений", {"saved_comparisons": {"третий": "{}"}}),
+    ("ключ не строка", {"saved_proposals": {1: "{}"}}),
+    ("значение число", {"saved_proposals": {"claude": 42}}),
+    ("значение None", {"saved_comparisons": {"codex": None}}),
+])
+def test_critic1_saved_answers_of_a_wrong_shape_are_a_contract_error_before_any_write(directory, name, kw):
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError):
+        stage(directory, ask, **kw)
+    assert _journal(directory) == before and ask.count() == 0
+
+
+def test_critic1_saved_answers_positive_control(directory):
+    ask = _happy()
+    result = stage(directory, ask, saved_proposals={"claude": json.dumps(proposal(ONE, "с"))}, saved_comparisons=None)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ("claude", "blind", 1) not in ask.calls
+
+
+@pytest.mark.parametrize("foreign", ["план", "ревью"])
+def test_critic1_a_run_of_another_stage_is_refused_before_any_write(tmp_path, foreign):
+    directory = started_of(tmp_path / "run", "run-f", foreign)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="другой стадии"):
+        stage(directory, ask)
+    assert _journal(directory) == before and ask.count() == 0
+    assert stage(started(tmp_path / "idea", "run-i"), _happy()).verdict == "РЕШЕНИЕ_АНТОНА"   # positive control
+
+
+def started_of(path, run_id, stage_name):
+    S.RunStore(path, TABLES).create(run_id, stage_name)
+    with locked(path) as store:
+        store.submit("start")
+    return path
+
+
+# -- critic round 1, review: content of the saved answers, the window, the order, the states ------------
+
+def _refused_with_no_trace(directory, kw):
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError):
+        stage(directory, ask, **kw)
+    assert _journal(directory) == before and ask.count() == 0
+
+
+@pytest.mark.parametrize("name,raw", [
+    ("не json", "{не json"),
+    ("чужие критерии", proposal(_crit("К9"), "с")),
+    ("след скрытого", {**proposal(ONE, "с"), "variant": "про Лунтика рассказ"}),
+])
+def test_critic1_saved_proposals_of_a_broken_content_are_refused_before_the_first_write(directory, name, raw):
+    _refused_with_no_trace(directory, {"saved_proposals": {"claude": raw}})
+    ask = _happy()                                                       # positive control: the good one is used
+    assert stage(directory, ask, saved_proposals={"claude": proposal(ONE, "с")}).verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+def test_critic1_saved_comparisons_on_a_fresh_run_are_a_contract_error_with_no_write(directory):
+    _refused_with_no_trace(directory, {"saved_comparisons": {"claude": comparison(IDS, ALL_PASS, "cand_a")}})
+
+
+def test_critic1_broken_saved_comparisons_on_a_resumed_run_are_refused_with_no_write(tmp_path):
+    directory = _crash_in_compare(tmp_path)
+    for raw in ("{не json", {"assessments": []}):
+        before, ask = _journal(directory), _Ask({})
+        with pytest.raises(C.ContractError):
+            _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"],
+                 saved_comparisons={"claude": raw})
+        assert _journal(directory) == before and ask.count() == 0
+    ask, result = _resume(directory)                                     # positive control
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+def test_critic1_the_input_print_is_written_before_the_event_so_a_crash_between_them_admits_no_other_input(directory):
+    class Window(Exception):
+        pass
+
+    with S.RunLock(directory) as lock:
+        real = S.RunStore(directory, TABLES, _lock=lock)
+
+        class Failing:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def record_event(self, *a, **k):
+                raise Window
+
+        with pytest.raises(Window):
+            C.run_idea_stage(Failing(), ask=_happy(), criteria=_crit("BASE_A"),
+                             author_card=proposal(_crit("BASE_A"), "автор"), sections=SECTIONS, withheld=WITHHELD,
+                             new_id=fixed_ids(), shuffle=lambda o: None, tables=TABLES)
+    assert any(f.startswith(C.INPUT_FLAG) for f in S.RunStore(directory, TABLES).load().flags)
+    ask = _answering_from_the_package()
+    with pytest.raises(C.ContractError, match="вход стадии"):
+        stage(directory, ask, criteria=_crit("BASE_B"), author_card=proposal(_crit("BASE_B"), "автор"))
+    assert ask.count() == 0
+    result = stage(directory, _answering_from_the_package(), criteria=_crit("BASE_A"),
+                   author_card=proposal(_crit("BASE_A"), "автор"))
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+def test_critic1_the_order_of_criteria_does_not_change_the_packages(tmp_path):
+    rows = [{"id": i, "текст": "т " + i, "обязательный": True} for i in ("К1", "К2", "К3")]
+    hashes, empty = [], {"решения": [], "области": [], "журнал_доказательств": []}
+    for order in (rows, rows[::-1]):
+        view = [{"id": r["id"], "text": r["текст"], "mandatory": r["обязательный"]} for r in order]
+        blind = X.build_package(tmp_path, [], SECTIONS, empty, "идея", blind=True, tables=TABLES,
+                                withheld={**WITHHELD, "предложенное_решение": "решение которое скрыто от критика"},
+                                criteria=view)
+        second = X.build_comparison_package(SECTIONS, empty, "идея", [S.IdeaCandidate("a", "автор", b"{}")], (0,),
+                                            tables=TABLES, withheld=WITHHELD, criteria=view)
+        hashes.append((blind.hash, second.hash))
+    assert hashes[0] == hashes[1]
+
+
+def test_critic1_the_stage_is_judged_before_the_criteria(tmp_path):
+    directory = started_of(tmp_path / "run", "run-f", "план")
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="другой стадии") as info:
+        stage(directory, ask, criteria=_crit("К1", "ключ " + "AKIA" + "IOSFODNN7EXAMPLE"))
+    assert not isinstance(info.value, C.AuthorCardRefused)
+    assert _journal(directory) == before and ask.count() == 0
+
+
+def test_critic1_not_started_incomplete_and_finished_runs_are_refused_with_the_journal_unchanged(tmp_path):
+    created = tmp_path / "created"
+    S.RunStore(created, TABLES).create("run-c", "идея")
+    incomplete = started(tmp_path / "inc", "run-inc")
+    stage(incomplete, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
+    finished = started(tmp_path / "fin", "run-fin")
+    stage(finished, _happy())
+    for directory, text in ((created, "не запущен"), (incomplete, "неполный прогон"), (finished, "стадия завершена")):
+        before, ask = _journal(directory), _happy()
+        with pytest.raises(C.ContractError, match=text):
+            stage(directory, ask)
+        assert _journal(directory) == before and ask.count() == 0

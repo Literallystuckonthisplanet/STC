@@ -34,6 +34,7 @@ import re
 import secrets
 import tempfile
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -912,6 +913,77 @@ def _check_shape(sections, registries, withheld, tables) -> None:
     _withheld_checked(tables, withheld, True)
 
 
+def _check_saved(saved, owner: str, critics) -> dict | None:
+    """The caller's saved answers: a mapping (or None) of critic name -> what `parse_answer` reads.
+
+    Checked before any write; returns ONE copy (a `dict`) that the rest of the stage works with,
+    so a caller's mapping that changes after the check changes nothing.
+    """
+    if saved is None:
+        return None
+    if not isinstance(saved, Mapping):
+        raise ContractError(f"сохранённые {owner}: нужно отображение критик -> ответ или None")
+    foreign = [k for k in saved if not isinstance(k, str) or k not in critics]
+    if foreign:
+        raise ContractError(f"сохранённые {owner}: чужие критики {_listed(sorted(map(str, foreign)))}")
+    bad = [k for k, v in saved.items() if not isinstance(v, (str, bytes, bytearray, dict, list))]
+    if bad:
+        raise ContractError(f"сохранённые {owner}: ответ не текст, не байты и не JSON-значение у {_listed(sorted(bad))}")
+    return dict(saved)
+
+
+def _blind_checker(criteria, tables, withheld):
+    """The check of a blind card: the answer's own validation and what the second package will judge."""
+    def blind_card(raw, critic=None):
+        card = validate_proposal(raw, criteria, tables)
+        fits_package(card, tables, withheld)    # what the package will judge, before the set exists
+        return card
+    return blind_card
+
+
+def _compare_checker(ids, criteria, tables):
+    def compare(raw, critic):
+        return validate_comparison(raw, candidate_ids=ids, criteria=criteria, critic=critic, tables=tables)
+    return compare
+
+
+def _check_saved_content(state, saved_proposals, saved_comparisons, criteria, tables, withheld) -> None:
+    """Phase 0: the CONTENT of the saved answers, by the same checks the phases apply, before any write.
+
+    Saved proposals are read only while the set of cards does not exist yet, so only then are they
+    judged. Saved comparisons need a set to compare: on a fresh run there is none -- `ContractError`;
+    on a resumed one they are judged against the journal's candidates in the recorded order.
+    """
+    if not state.idea_candidates:
+        if saved_comparisons:
+            raise ContractError("сохранённые сравнения: набора кандидатов в журнале нет, сравнивать нечего")
+        check = _blind_checker(criteria, tables, withheld)
+        for critic, raw in (saved_proposals or {}).items():
+            _trusted(check, raw, critic)
+        return
+    permutation = state.idea_candidates_permutation
+    if not _permutation_ok(permutation, len(state.idea_candidates)):
+        raise ContractError("журнал: перестановка не соответствует записанному набору")
+    ids = [state.idea_candidates[i].candidate_id for i in permutation]
+    compare = _compare_checker(ids, criteria, tables)
+    for critic, raw in (saved_comparisons or {}).items():
+        _trusted(lambda r, c=critic: compare(r, c), raw, critic)
+
+
+def _check_state(store, tables):
+    """The journal is a run of THIS stage, started and still open for it; returns the loaded state."""
+    state = store.load()
+    if state.stage != STAGE:
+        raise ContractError(f"прогон другой стадии: {state.stage!r}, нужна {STAGE!r}")
+    if state.state is None:
+        raise ContractError("прогон не запущен: сначала операция start")
+    if state.state == tables.decide("идёт_круг", "вердикт", {"verdict": incomplete_verdict(tables)}).to:
+        raise ContractError("неполный прогон; возобновление — операция блока уточнений")
+    if state.state not in ("создан", "идёт_круг"):
+        raise ContractError(f"стадия завершена: прогон в состоянии {state.state!r}")
+    return state
+
+
 def _input_print(run_inputs: dict) -> str:
     return INPUT_FLAG + digest(canonical_json(run_inputs))
 
@@ -934,15 +1006,17 @@ def _blind_package(run_inputs: tuple, author: dict, tables):
     """The real blind package the first-phase critic gets: the task, with the author's card hidden.
 
     `предложенное_решение` is the author's card text; the author and the second critic come
-    from `withheld`. A refusal by the trace of the card in the task is about the card; one
-    about the build root is ours.
+    from `withheld`. The criteria go in as the package's own `критерии` block (the critic answers by
+    their IDs). A refusal by the content (the card's trace, a criterion) is `AuthorCardRefused`; one
+    about the build root or a shape is ours.
     """
-    sections, registries, withheld = run_inputs
+    sections, registries, withheld, criteria_view = run_inputs
     hidden = {**withheld, "предложенное_решение": card_bytes(author).decode("utf-8")}
     try:
         with tempfile.TemporaryDirectory() as root:
             return build_package(root, [], sections, registries, STAGE, blind=True, tables=tables,
-                                 withheld=hidden)
+                                 withheld=hidden,
+                                 criteria=criteria_view)
     except PackageRefused as refused:
         if refused.reason in ("путь_запрещён", "файл_нечитаем", "некорректный_вход"):
             raise ContractError(f"слепой пакет не собирается: {refused.reason}: {_clip(refused.detail)}") from None
@@ -964,11 +1038,7 @@ def _author_id(candidates) -> str:
 
 def _phase_blind(run: _Run, blind_package, saved_proposals) -> tuple:
     """Phase A: each critic proposes blind; a card the second package would refuse is a bad answer."""
-    def blind_card(raw, critic=None):
-        card = validate_proposal(raw, run.criteria, run.tables)
-        fits_package(card, run.tables, run.withheld)    # what the package will judge, before the set exists
-        return card
-
+    blind_card = _blind_checker(run.criteria, run.tables, run.withheld)
     return _collect(
         run, stage=BLIND_STAGE, phase="blind", package=blind_package.material(), check=blind_card,
         saved={c: _trusted(blind_card, raw, c) for c, raw in (saved_proposals or {}).items()})
@@ -1022,9 +1092,7 @@ def _phase_compare(run: _Run, state, expected, saved_comparisons, proposals, rej
         raise ContractError("второй пакет, собранный из журнала, не равен собранному до записи набора")
     _pin_package(run.store, package, run.withheld)
 
-    def compare(raw, critic):
-        return validate_comparison(raw, candidate_ids=ids, criteria=run.criteria, critic=critic, tables=run.tables)
-
+    compare = _compare_checker(ids, run.criteria, run.tables)
     comparisons, compare_rejections = _collect(
         run, stage=COMPARE_STAGE, phase="compare", package=package.material(), check=compare,
         saved={c: _trusted(lambda r, c=c: compare(r, c), raw, c) for c, raw in (saved_comparisons or {}).items()})
@@ -1063,11 +1131,26 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
     -- `AuthorCardRefused`. An incomplete run (`НЕПОЛНЫЙ_ПРОГОН`) is a result, not an error; entering
     it again is `ContractError`: resuming it is an operation of the clarification block (БУ),
     which also decides whether a new round or a reset budget follows.
+
+    Phase 0 refuses in this order: the shape of the inputs (the saved answers included), the run's
+    stage, its state, then the cards and criteria. Remaining boundary: the caller's `saved_proposals`
+    can be swapped before the inputs are pinned -- the journal holds no answer bytes until the
+    clarification block (БУ).
+
+    The saved answers are judged by content in phase 0 too (the same checks as the phases), before
+    the first write. Not judged there: saved proposals when the set of cards already exists (they
+    are not read then). Writing the input print before the `пакет_собран` event closes the window in
+    which a crash would leave the run started but not pinned. If the `fit` of the author's card
+    repeats a criterion's text word for word, the author is refused by the trace of the hidden:
+    retell it in your own words (the check is not loosened).
     """
     tables = _tables(tables)
     critics = _check_critics(critics)
     _check_engine(tables)                                                  # phase 0
     _check_shape(sections, {} if registries is None else registries, withheld, tables)
+    saved_proposals = _check_saved(saved_proposals, "предложения", critics)
+    saved_comparisons = _check_saved(saved_comparisons, "сравнения", critics)
+    state = _check_state(store, tables)                                    # the stage, then the state
     registries = {"решения": [], "области": [], "журнал_доказательств": []} if registries is None else registries
     parsed_criteria = validate_criteria(criteria)
     criteria_view = [{"id": c.id, "text": c.text, "mandatory": c.mandatory} for c in parsed_criteria]
@@ -1085,22 +1168,13 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
         if refused.reason == "некорректный_вход":              # a shape the package cannot read: the caller's
             raise ContractError(f"вход пакета: {refused.reason}: {_clip(refused.detail)}") from None
         raise AuthorCardRefused(f"вход пакета не принят: {refused.reason}") from None
-    author =check_author_card(author_card, criteria, tables, withheld)
-    blind_package = _blind_package((sections, registries, withheld), author, tables)
+    author = check_author_card(author_card, criteria, tables, withheld)
+    blind_package = _blind_package((sections, registries, withheld, criteria_view), author, tables)
 
-    state = store.load()
-    if state.state is None:
-        raise ContractError("прогон не запущен: сначала операция start")
-    if state.state == tables.decide("идёт_круг", "вердикт", {"verdict": incomplete_verdict(tables)}).to:
-        raise ContractError("неполный прогон; возобновление — операция блока уточнений")
-    if state.state not in ("создан", "идёт_круг"):
-        raise ContractError(f"стадия завершена: прогон в состоянии {state.state!r}")
+    _check_saved_content(state, saved_proposals, saved_comparisons, parsed_criteria, tables, withheld)
+    _pin_inputs(store, fingerprint, write=True)         # the print first: a crash after it cannot admit other inputs
     if state.state == "создан":
         state = store.record_event("пакет_собран")
-    _pin_inputs(store, fingerprint, write=True)
-    for owner, saved in (("предложения", saved_proposals), ("сравнения", saved_comparisons)):
-        if set(saved or {}) - set(critics):
-            raise ContractError(f"сохранённые {owner}: чужие критики {_listed(sorted(set(saved) - set(critics)))}")
     run = _Run(store, ask, tables, critics, parsed_criteria, criteria_view, sections, registries, withheld,
                max(state.round_number, 1))
 

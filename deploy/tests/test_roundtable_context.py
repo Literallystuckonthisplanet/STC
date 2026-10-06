@@ -3633,3 +3633,36 @@ def _blind_with_ok():
 def test_guard_stages_idea_execution_row():
     assert TABLES.stages["исполнение_идеи"] == {"предел_прерванных_попыток": 2}
     assert K.abort_limit(TABLES) == 2
+
+
+# -- the blind package carries the success criteria (critic round 1) -----------------------------------
+
+CRITERIA_VIEW = [{"id": "BASE_A", "text": "работает", "mandatory": True}]
+
+
+def _blind_crit(root, criteria):
+    return C.build_package(root, [], sections={n: "текст раздела" for n in SHOWN}, registries=BLIND_REGISTRIES,
+                           stage="идея", blind=True, tables=TABLES, withheld=WITHHELD, criteria=criteria)
+
+
+def test_the_blind_package_carries_the_criteria_block_and_their_ids_change_its_hash(root):
+    first = _blind_crit(root, CRITERIA_VIEW)
+    other = _blind_crit(root, [{**CRITERIA_VIEW[0], "id": "BASE_B"}])
+    assert first.criteria == CRITERIA_VIEW and first.hash != other.hash
+    assert _blind_crit(root, None).criteria == []                        # positive control: no block without criteria
+
+
+@pytest.mark.parametrize("text", ["вес ≥ 3", "нуль​ширина", "про Бибигона рассказ",
+                                  "ключ " + "AKIA" + "IOSFODNN7EXAMPLE", "построить всё на очереди сообщений и воркерах"])
+def test_the_blind_packages_criteria_go_through_the_same_checks(root, text):
+    with pytest.raises(C.PackageRefused):
+        _blind_crit(root, [{"id": "К1", "text": text, "mandatory": True}])
+
+
+def test_criteria_outside_the_blind_mode_or_of_a_wrong_shape_are_refused(root):
+    with pytest.raises(C.PackageRefused) as refused:
+        _build(root, criteria=CRITERIA_VIEW)
+    assert refused.value.reason == "некорректный_вход"
+    with pytest.raises(C.PackageRefused) as refused:
+        _blind_crit(root, [{"id": "К1"}])
+    assert refused.value.reason == "некорректный_вход"

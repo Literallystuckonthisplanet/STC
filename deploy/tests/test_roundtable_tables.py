@@ -1221,6 +1221,7 @@ def test_a_missing_scope_hash_is_not_a_wildcard():
     # permission back into a permission by name.
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
+    _as_open(raw, "Б2")                       # круг 49: Б2 закрыт, опыт открывает его на копии
     # разрешение, покрывающее открытый Б2
     at = next(i for i, g in enumerate(raw["blocks"]["разрешения_исполнения"])
               if "Б2" in g["блоки"])
@@ -1652,8 +1653,8 @@ def test_a_reopened_block_keeps_the_permission_it_was_first_started_under():
         "«делай дальше» — та самая реплика, которую я однажды объявил выдуманной")
     module = import_tables_module()
     tables = module.load()
-    # Б1 с тех пор закрыт (круг 47) — история всё равно хранит начало
-    assert tables.blocks["Б2"].state == "переоткрыт"
+    # Б1 закрыт (круг 47), Б2 — круг 49; история всё равно хранит начало
+    assert tables.blocks["Б2"].state in ("переоткрыт", "сделано")
     assert tables.blocks["Б1"].state in ("переоткрыт", "сделано")
 
 
@@ -1746,9 +1747,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 188
+    assert len(findings) == 196
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1785,10 +1786,10 @@ def test_a_finding_may_only_be_assigned_to_a_block_still_open():
 # текста, и от честного добавления находки — опыт «подменить текст» засчитывался
 # по чужой причине. Пофамильный замок называет ИМЕННО подменённую запись.
 FINDING_PINS = {
-    "R12-1": ("d42435e985cb", "47f0fb0e39bc"),
+    "R12-1": ("d42435e985cb", "2d6c9f4e91d2"),
     "R12-2": ("0564a10f5873", "9de06c2ce087"),
     "R12-3": ("dcf654104cbe", "e173a2874f02"),
-    "R12-4": ("4d5e8e6c7b4f", "8203d1780a9c"),
+    "R12-4": ("4d5e8e6c7b4f", "da9ff660c5ca"),
     "R12-5": ("88870441b246", "538f2142283b"),
     "R13-1": ("f4a1639d8eb9", "ed1f59c2795a"),
     "R13-2": ("0d92d292b923", "42eefe36abaa"),
@@ -1973,6 +1974,14 @@ FINDING_PINS = {
     "R47-1": ("e5ab1204231b", "aba5bb686500"),
     "R47-2": ("f844c8aea88e", "b4c488e4ccec"),
     "R47-3": ("cd4199c264ad", "6bc304a42d44"),
+    "R48-1": ("2464ffdd48c2", "db974a4194fe"),
+    "R48-2": ("0bd1de2c879d", "a065cfcc50d7"),
+    "R48-3": ("7511ca9efa30", "20c12f286dae"),
+    "R48-4": ("185b04edad26", "4e439eead339"),
+    "R48-5": ("a615bc3ffbe1", "323dd89ab839"),
+    "R49-1": ("6da0cea344a8", "55c349e28ad9"),
+    "R49-2": ("ae2ede53d80e", "517cdebfd6f3"),
+    "R49-3": ("69fa02510e33", "e47597ee3487"),
 }
 
 
@@ -2739,6 +2748,7 @@ def test_nothing_is_worked_on_without_a_live_permission():
 def test_a_block_cannot_be_worked_on_under_a_stale_permission():
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
+    _as_open(raw, "Б2")
     raw["blocks"]["блоки"]["Б2"]["приёмка"].append(
         {"id": "Б2-99", "условие": "дописал себе работы после разрешения"})
     with pytest.raises(module.ContractError, match="Б2: в работе"):
@@ -2771,7 +2781,8 @@ def test_every_hold_reason_is_reported_not_just_the_first():
     # A block can be unpermitted *and* waiting on a dependency *and* under a
     # gate. Printing one of the three sends the reader to fix the wrong thing.
     tables = import_tables_module().load()
-    reasons = tables.hold_reasons("Б15")
+    # круг 49: Б15 ждал Б2, а Б2 закрыт — три причины сразу теперь у Б4
+    reasons = tables.hold_reasons("Б4")
     assert len(reasons) >= 3, reasons
     assert any("нет разрешения" in r for r in reasons)
     assert any("ждёт зависимость" in r for r in reasons)
@@ -3160,7 +3171,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert BLOCKS["списки"] == {'пункты_плана_PEV': ['результат_границы_и_что_не_меняется', 'затронутые_файлы_и_доказательства', 'критерии_приёмки_и_проверка', 'блоки_и_зависимости', 'делегирование_модель_изоляция', 'неразрешённые_решения_пользователя'], 'таблицы': ['vocabulary', 'run', 'issues', 'framing', 'precheck', 'blocks', 'stages', 'findings'], 'фикстуры_репетиции': ['tune-plan.md', 'tune-gold.json', 'holdout-plan.md', 'holdout-gold.json'], 'исходы_идеи': ['возражение_держит_стадию', 'нет_годного_варианта', 'частичная_негодность', 'оба_предпочли_неавторскую_и_назвали_авторскую_непроходной', 'нет_консенсусно_годного', 'подтверждён', 'оба_предпочли_неавторскую', 'расхождение', 'три_подхода_на_столе']}
     # исполнение меняется при каждом закрытии блока — поэтому слепком, и
     # обновляется той же правкой, что закрывает блок
-    assert _finding_digest(BLOCKS["исполнение"]) == "5471e66962d7", (
+    assert _finding_digest(BLOCKS["исполнение"]) == "182c829f6b5b", (
         "план исполнения изменён — шаг, проверка блока, роль или волна")
     assert BLOCKS["порядок_критики"]["классы_мутаций"] == ['убрать_правило', 'подменить_значение_на_допустимое', 'подменить_текст_сохранив_ID', 'подсунуть_недопустимое', 'соврать_в_ссылке', 'расширить_себе_объём', 'разорвать_доказательство'], (
         "из метода критика убран или подменён класс поломки")
@@ -3936,7 +3947,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "87090eb59704a962d4776fc6e833efcf68f693ae22550a48e03d2b193f3ff7f0", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "a84bc069469b037898706828e7023a509f8f9f688491eeab47dac21666e50e1c", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 

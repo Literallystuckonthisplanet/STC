@@ -793,6 +793,19 @@ def _skeleton(text: str, leet: bool = False) -> str:
     return _skeleton_checked(text, leet=leet)[0]
 
 
+_ID_SEPARATORS = re.compile(r"[^._\-]+")
+
+
+def fold_identifier(text: str) -> str:
+    """An identifier as a human sees it: the skeleton of every part between `.`, `-`, `_`.
+
+    The same fold as the trace search (look-alikes of Cyrillic, digit twins, the "one stick"
+    class `I l 1`, `O 0`), so two ids a reader cannot tell apart fold to one string. The
+    separators stay as they are: `A-B` and `A_B` are different ids, both legible.
+    """
+    return _ID_SEPARATORS.sub(lambda part: _skeleton(part.group()), text)
+
+
 def _leaves(node, channel: str):
     """Every string/number leaf and every key below `node`, with its channel."""
     if isinstance(node, dict):
@@ -1048,6 +1061,15 @@ def _check_blind(tables, stage, blind, declared_files, sections, withheld, secon
     return _hidden_texts(tables, withheld, second)
 
 
+def check_withheld(tables, withheld, second: bool = False) -> None:
+    """The hidden names (and, for the blind package, the proposed solution) as the build reads them.
+
+    A wrong shape is `PackageRefused("некорректный_вход")` -- the caller's input, checked
+    here so that it is told apart from a card that merely fails the package.
+    """
+    _hidden_texts(tables, withheld, second)
+
+
 def _hidden_texts(tables, withheld, second=False) -> dict:
     """The hidden texts, validated: exactly the names of `слепой_вопрос.прячем` (minus the shown one)."""
     wanted = set(tables.stages["слепой_вопрос"]["прячем"])
@@ -1282,8 +1304,8 @@ def _comparison_block(candidates, permutation, limits) -> list:
         data = candidate.canonical_bytes
         if not isinstance(data, bytes) or not data:
             raise _bad("кандидат: байты пусты или не байты")
-        if len(data) > limits["предел_файла_байт"]:
-            raise PackageRefused("превышение_размера", f"кандидат {len(block)}: {len(data)} > {limits['предел_файла_байт']}")
+        if len(data) > limits["предел_раздела_байт"]:
+            raise PackageRefused("превышение_размера", f"кандидат {len(block)}: {len(data)} > {limits['предел_раздела_байт']}")
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:

@@ -126,6 +126,16 @@ def fixed_ids():
     return iter(IDS).__next__
 
 
+def request_candidates(request):
+    """Кандидаты — только внутри пакета запроса: `[{candidate_id, text}]` в показанном порядке."""
+    return [{"candidate_id": row["candidate_id"], "text": row["текст"]}
+            for row in json.loads(request["package"])["кандидаты"]]
+
+
+def request_criteria(request):
+    return json.loads(request["package"])["критерии"]
+
+
 class Asker:
     """Подставной `ask`: сценарий по критику; считает вызовы."""
 
@@ -166,7 +176,7 @@ def good_blind(tag):
 
 def cmp_answer(grades_by_id, selected, relations=None):
     return lambda request: json.dumps(comparison(
-        [c["candidate_id"] for c in request["candidates"]], grades_by_id, selected, relations))
+        [c["candidate_id"] for c in request_candidates(request)], grades_by_id, selected, relations))
 
 
 ALL_PASS = {"cand_a": "pass", "cand_b": "pass", "cand_c": "pass"}
@@ -270,12 +280,12 @@ def test_proposal_must_cover_every_criterion_exactly():
     assert C.validate_proposal(proposal(), PARSED, TABLES)
 
 
-def test_card_limit_is_package_file_limit():
+def test_card_limit_is_package_section_limit():
     big = proposal()
-    big["variant"] = "я" * 300000
+    big["variant"] = "я" * (REAL.vocabulary["пакет"]["предел_раздела_байт"] // 2 + 1)
     with pytest.raises(C.AnswerRejected):
         C.validate_proposal(big, PARSED, TABLES)
-    small = tables_with(пакет={**REAL.vocabulary["пакет"], "предел_файла_байт": 50})
+    small = tables_with(пакет={**REAL.vocabulary["пакет"], "предел_раздела_байт": 50})
     with pytest.raises(C.AnswerRejected):
         C.validate_proposal(proposal(), PARSED, small)
 
@@ -361,7 +371,8 @@ def test_engine_finds_author_pair_itself_and_never_sends_source(directory):
     for request in seen_requests:
         text = json.dumps(request, ensure_ascii=False)
         assert "source" not in text and "источник" not in text
-        assert set(request["candidates"][0]) == {"candidate_id", "text"}
+        if request["phase"] == "compare":
+            assert set(request_candidates(request)[0]) == {"candidate_id", "text"}
     state = S.RunStore(directory, TABLES).load()
     assert {c.source for c in state.idea_candidates} == {C.AUTHOR_SOURCE, "claude", "codex"}
 
@@ -640,11 +651,12 @@ def test_approved_verdict_is_impossible_on_idea_stage(monkeypatch):
 
 def test_rules_come_only_through_outcome_rules():
     changed = copy.deepcopy(RULES)
-    changed["рисунки"][0]["причина"] = "другая_причина"
+    changed["рисунки"][0]["причина"] = "расхождение"       # причина из списка плана (одна строгость с таблицей)
+    changed["рисунки"][2]["причина"] = "подтверждён"
     changed["рисунки"][0]["приоритет"] = 7
     first = vc(IDS, ALL_PASS, "cand_a")
     outcome = C.decide_outcome(first, first, author_id="cand_a", framing_open=False, tables=tables_with(changed))
-    assert (outcome.reason, outcome.priority) == ("другая_причина", 7)
+    assert (outcome.reason, outcome.priority) == ("расхождение", 7)
 
 
 def test_real_rules_section_exists_and_matches_the_plan():
@@ -653,7 +665,8 @@ def test_real_rules_section_exists_and_matches_the_plan():
     assert section == REAL.raw["stages"]["исходы_идеи"]
     reasons = [r["причина"] for r in section["строки"][:-1]] + [r["причина"] for r in section["рисунки"]]
     assert sorted(reasons) == sorted(REAL.raw["blocks"]["списки"]["исходы_идеи"])
-    assert C._CHECKS == T.OUTCOME_CHECKS and C._PATTERNS == T.OUTCOME_PATTERNS
+    assert [r["проверка"] for r in section["строки"]] == list(T.OUTCOME_CHECKS)     # один источник порядка — таблица кодов
+    assert [r["рисунок"] for r in section["рисунки"]] == list(T.OUTCOME_PATTERNS)
 
 
 def test_missing_or_malformed_rules_section_is_contract_error():
@@ -839,8 +852,8 @@ def _blind_ask(compare_steps):
 def _from_request(grades, selected, relations=None):
     """Сравнение строится из запроса (id и критерии), а не из замыкания теста."""
     def build(request):
-        ids = [c["candidate_id"] for c in request["candidates"]]
-        mandatory = [c["id"] for c in request["criteria"] if c["mandatory"]]
+        ids = [c["candidate_id"] for c in request_candidates(request)]
+        mandatory = [c["id"] for c in request_criteria(request) if c["mandatory"]]
         rows = [{"candidate_id": i, "criteria": [
             {"criterion_id": m, "grade": grades[i], "reason": "р"} for m in mandatory]} for i in ids]
         pairs = [{"pair": list(p), "relation": (relations or {}).get(frozenset(p), "unknown")}
@@ -931,7 +944,8 @@ def test_compare_request_carries_criteria(directory):
                  ("claude", "compare"): [spy], ("codex", "compare"): [spy]})
     result = stage(directory, ask)
     assert result.outcome.reason == "подтверждён"
-    assert seen[0]["criteria"] == [{"id": "К1", "text": "работает", "mandatory": True}]
+    assert request_criteria(seen[0]) == [{"id": "К1", "text": "работает", "mandatory": True}]
+    assert "criteria" not in seen[0] and "candidates" not in seen[0]       # только внутри пакета
 
 
 # 4 — выход со стадии
@@ -994,8 +1008,8 @@ def test_ok_does_not_survive_a_new_round_and_revoked_ok_closes_gate(directory):
         with pytest.raises(C.AntonOkRequired):
             C.leave_idea_stage(store)
         store.set_flag(C.ANTON_OK_FLAG)              # ОК уже после нового круга, но вердикта нового нет
-    # состояние прогона не менялось, вердикт прежний -> порядок событий: ОК после круга и после вердикта
-    assert _leave(directory) is True
+        with pytest.raises(C.AntonOkRequired, match="прошлого круга"):      # вердикт прошлого круга выхода не открывает
+            C.leave_idea_stage(store)
     with locked(directory) as store:
         store.set_flag(C.ANTON_OK_FLAG, False)
         with pytest.raises(C.AntonOkRequired):
@@ -1023,7 +1037,7 @@ def test_shown_order_is_recorded_permutation_for_both_critics(directory):
     assert state.idea_candidates_permutation == (2, 1, 0) and expected == ["cand_c", "cand_b", "cand_a"]
     assert len(requests) == 2
     for request in requests:
-        assert [c["candidate_id"] for c in request["candidates"]] == expected
+        assert [c["candidate_id"] for c in request_candidates(request)] == expected
 
 
 def test_outcome_depends_on_author_pair_found_by_engine(directory, tmp_path):
@@ -1165,8 +1179,9 @@ def test_reentry_on_finished_stage_is_contract_error_with_zero_calls(directory, 
     other = started(tmp_path / "inc", "run-inc")
     stage(other, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
     again = Asker({})
-    with pytest.raises(C.ContractError, match="стадия завершена"):
+    with pytest.raises(C.ContractError, match="возобновление — операция блока уточнений") as info:
         stage(other, again)
+    assert "стадия завершена" not in str(info.value)          # неполный прогон не «завершён»
     assert again.count() == 0
 
 
@@ -1237,7 +1252,8 @@ def test_check_schema_types_numeric_keywords_and_required_subset(schema):
         C.check_schema(schema)
 
 
-@pytest.mark.parametrize("first,second", [("К1", "K1"), ("К1", "k1"), ("К1", "к1"), ("Е3", "E3"), ("КА", "KA"), ("ａ", "a")])
+@pytest.mark.parametrize("first,second", [("К1", "K1"), ("К1", "k1"), ("К1", "к1"), ("Е3", "E3"), ("КА", "KA"),
+                                          ("I1", "l1"), ("O1", "01"), ("К.1", "K.1")])
 def test_criterion_ids_equal_after_homoglyph_folding_refused(first, second):
     rows = [{"id": first, "текст": "т", "обязательный": True}, {"id": second, "текст": "т", "обязательный": False}]
     with pytest.raises(C.AuthorCardRefused, match="свёртки"):
@@ -1250,3 +1266,911 @@ def test_criterion_ids_that_differ_stay_distinct():
     assert len(C.validate_criteria(rows)) == 3
     assert len(C.validate_criteria([{"id": "Е3", "текст": "т", "обязательный": True},
                                     {"id": "Е8", "текст": "т", "обязательный": True}])) == 2
+
+
+# ==========================================================================
+# Стадия «идея» целиком через публичный API (`run_idea_stage` с подставным `ask`):
+# сценарные фикстуры и сценарии аудита. Перенесено из test_roundtable_context.py:
+# замер подмен гоняет тот файл на каждом мутанте, тяжёлые прогоны стадии — здесь.
+# ==========================================================================
+
+import contextlib  # noqa: E402
+
+from roundtable import context as X  # noqa: E402
+
+IDEA_DIR = FIXTURES
+IDEA_SECTIONS = {"задача": "перевезти поток заказов на новую очередь", "ограничения": "бюджет до ста долларов",
+                 "критерий_успеха": "работает при пике нагрузки", "уже_закрытые_решения": "язык проекта не меняем"}
+IDEA_WITHHELD = {"автор": "Лунтик", "второй_критик": "Бибигон"}
+
+# -- the stage run through the public API (`contracts.run_idea_stage`, `ask` is a stand-in) --
+
+@contextlib.contextmanager
+def _locked(directory):
+    with S.RunLock(directory) as lock:
+        yield S.RunStore(directory, TABLES, _lock=lock)
+
+
+def _new_run(path, run_id="run-1"):
+    S.RunStore(path, TABLES).create(run_id, "идея")
+    with _locked(path) as store:
+        store.submit("start")
+    return path
+
+
+def _fixture(name):
+    return json.loads((IDEA_DIR / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def _proposal_of(card):
+    """The oracle's card (Russian keys) in the real idea_proposal form."""
+    out = {"variant": card["вариант"], "premises": [card["предпосылки"]], "mechanism": card["механизм"],
+           "criteria_fit": [{"criterion_id": k, "fit": v} for k, v in card["соответствие_критериям"].items()],
+           "cost": card["стоимость"], "reversibility": card["обратимость"], "risks": [card["риски"]]}
+    return out
+
+
+def _comparison_of(answer):
+    return {"assessments": [{"candidate_id": cid, "criteria": [
+                {"criterion_id": k, "grade": g, "reason": "потому"} for k, g in grades.items()]}
+                for cid, grades in answer["оценки"].items()],
+            "selected_candidate_id": answer["selected_candidate_id"],
+            "mechanism_relations": answer["mechanism_relations"],
+            "reasons": ["потому"], "unknowns": [], "blockers": []}
+
+
+class _Ask:
+    """Подставной `ask`: по критику и фазе — очередь ответов; помнит каждый вызов."""
+
+    def __init__(self, script):
+        self.script = {key: list(value) for key, value in script.items()}
+        self.calls, self.requests = [], []
+
+    def __call__(self, critic, request):
+        self.calls.append((critic, request["phase"], request["attempt"]))
+        self.requests.append(request)
+        steps = self.script[(critic, request["phase"])]
+        step = steps.pop(0) if len(steps) > 1 else steps[0]
+        return json.dumps(step, ensure_ascii=False, separators=(",", ":")) if isinstance(step, dict) else step
+
+    def count(self, phase=None):
+        return len([c for c in self.calls if phase in (None, c[1])])
+
+
+def _run(directory, ask, given, **kwargs):
+    ids = iter([c["candidate_id"] for c in given["карточки"]]).__next__ if "карточки" in given else None
+    options = {"criteria": given["критерий_успеха"], "ask": ask, "sections": IDEA_SECTIONS,
+               "withheld": IDEA_WITHHELD, "new_id": ids, "shuffle": lambda order: None, "tables": TABLES}
+    options.update(kwargs)
+    with _locked(directory) as store:
+        return C.run_idea_stage(store, **options)
+
+
+def _blind_script(given):
+    cards = {c["источник"]: _proposal_of(c) for c in given["карточки"]}
+    return {("claude", "blind"): [cards["claude"]], ("codex", "blind"): [cards["codex"]]}
+
+
+def test_scenario_both_comparisons_invalid(tmp_path):
+    data = _fixture("both-comparisons-invalid")
+    given, want = data["вход"], data["ожидается"]
+    attempts = given["сравнения_по_попыткам"]
+    script = {**_blind_script(given),
+              ("claude", "compare"): [_comparison_of(a["ответ"]) for a in attempts["критик_1"]],
+              ("codex", "compare"): [_comparison_of(a["ответ"]) for a in attempts["критик_2"]]}
+    assert not any(a["валиден"] for who in attempts.values() for a in who)
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask(script)
+    result = _run(directory, ask, given, author_card=_proposal_of(given["карточки"][0]))
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный") == \
+        (want["вердикт"], want["состояние_прогона"])
+    assert result.outcome is None
+    assert ask.count("compare") == want["вызовов_сравнения_всего"] == 4
+    assert ask.count("blind") == want["вызовов_слепых_всего"] == 2 and ask.count() == want["вызовов_всего"] == 6
+    for critic in ("claude", "codex"):
+        assert [c[2] for c in ask.calls if c[:2] == (critic, "compare")] == [1, 2]
+    state = S.RunStore(directory, TABLES).load()
+    assert {critic: C.calls_made(state, C.COMPARE_STAGE, 1, critic) - 1 for critic in ("claude", "codex")} \
+        == {"claude": 1, "codex": 1} == dict(zip(("claude", "codex"), want["счётчик_повторов_в_журнале_попыток"].values()))
+    assert C.calls_made(state, C.BLIND_STAGE, 1, "claude") == C.calls_made(state, C.BLIND_STAGE, 1, "codex") == 1
+    # the retry round goes in the order the table's rule gives (sha256(run_id) % 2), the first round in the given one
+    compare_calls = [c[0] for c in ask.calls if c[1] == "compare"]
+    assert compare_calls[:2] == ["claude", "codex"]
+    assert compare_calls[2:] == C.retry_order(state.run_id, ["claude", "codex"])
+
+
+def test_scenario_invalid_author_card_is_refused_before_any_call(tmp_path):
+    data = _fixture("invalid-author-card")
+    given, want = data["вход"], data["ожидается"]
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask({})
+    with pytest.raises(C.AuthorCardRefused):
+        _run(directory, ask, given, author_card=_proposal_of({**{"предпосылки": "", "вариант": "", "механизм": "",
+                                                                  "стоимость": "", "обратимость": "", "риски": ""},
+                                                               **given["авторская_карточка"]}) )
+    assert ask.count() == want["вызовов_моделей"] == 0
+    state = S.RunStore(directory, TABLES).load()
+    assert not state.attempts and not state.idea_candidates and state.state == "создан"
+    assert (want["набор_создан"], want["слепые_запущены"], want["сравнения_запущены"]) == (False, False, False)
+    assert (want["вердикт"], want["состояние_прогона"]) == (None, None)
+
+
+def test_scenario_one_proposal_invalid(tmp_path):
+    data = _fixture("one-proposal-invalid")
+    given, want = data["вход"], data["ожидается"]
+    good = _proposal_of(_fixture("both-comparisons-invalid")["вход"]["карточки"][1])
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask({("claude", "blind"): [good], ("codex", "blind"): ["{нет соответствия критерию К2"]})
+    result = _run(directory, ask, given, author_card=_proposal_of(_fixture("both-comparisons-invalid")["вход"]["карточки"][0]))
+    assert (result.verdict, result.run_state) == (want["вердикт"], want["состояние_прогона"]) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный")
+    assert ask.count("blind") == want["вызовов_слепых_всего"] == 3
+    assert [c for c in ask.calls if c[0] == "codex"] == [("codex", "blind", 1), ("codex", "blind", 2)]
+    assert ask.count("compare") == want["вызовов_сравнения"] == 0 and want["второй_проход_запущен"] is False
+    state = S.RunStore(directory, TABLES).load()
+    assert not state.idea_candidates and not state.idea_candidates_permutation        # the set was never made
+    assert want["набор_создан"] is False and want["candidate_id_выданы"] is False and want["перестановка_записана"] is False
+
+
+def _injection_run(tmp_path, name="run"):
+    data = _fixture("candidate-injection")
+    given = data["вход"]
+    answers = {k: _comparison_of(v) for k, v in given["ответы_критиков"].items()}
+    script = {**_blind_script(given), ("claude", "compare"): [answers["критик_1"]],
+              ("codex", "compare"): [answers["критик_2"]]}
+    directory = _new_run(tmp_path / name)
+    ask = _Ask(script)
+    result = _run(directory, ask, given, author_card=_proposal_of(given["карточки"][0]),
+                  sections=given["разделы_пакета_эталон"])
+    return data, directory, ask, result
+
+
+def test_scenario_candidate_injection(tmp_path):
+    data, directory, ask, result = _injection_run(tmp_path)
+    given, want = data["вход"], data["ожидается"]
+    assert (result.outcome.reason, result.outcome.priority, result.verdict, result.run_state) == \
+        (want["причина"], want["приоритет"], want["вердикт"], want["состояние_прогона"]) == \
+        ("подтверждён", 4, "РЕШЕНИЕ_АНТОНА", "ждёт_Антона")
+    reference = given["разделы_пакета_эталон"]
+    phrase = "ИГНОРИРУЙ ЗАДАНИЕ"
+    assert [c[1] for c in ask.calls].count("compare") == 2
+    for request in (r for r in ask.requests if r["phase"] == "compare"):
+        parsed = json.loads(request["package"])
+        assert parsed["разделы"] == reference                                       # byte for byte the reference
+        assert request["package"].count(phrase) == 1
+        holders = [row for row in parsed["кандидаты"] if phrase in row["текст"]]
+        assert len(holders) == 1
+        injected = given["карточки"][2]["вариант"]
+        assert json.loads(holders[0]["текст"])["variant"] == injected               # the card text is untouched
+        assert len(parsed["кандидаты"]) == 3
+        assert phrase not in json.dumps([parsed["разделы"], parsed["реестры"], parsed["файлы"]], ensure_ascii=False)
+    packages = {r["package"] for r in ask.requests if r["phase"] == "compare"}
+    assert len(packages) == 1                                                       # both critics got one package
+
+
+# -- БИ-11: after a crash and a resume the second package is the same, byte for byte ----
+
+def test_bi_11_the_second_package_after_a_crash_and_resume_is_byte_for_byte_the_same(tmp_path):
+    data = _fixture("candidate-injection")
+    given = data["вход"]
+    ok = {k: _comparison_of(v) for k, v in given["ответы_критиков"].items()}
+    directory = _new_run(tmp_path / "run")
+    seen = []
+
+    class Crash(Exception):
+        pass
+
+    def crashing(critic, request):
+        if request["phase"] == "compare":
+            seen.append(request["package"])
+            raise Crash()
+        return json.dumps(_blind_script(given)[(critic, "blind")][0])
+
+    author = _proposal_of(given["карточки"][0])
+    with pytest.raises(Crash):
+        _run(directory, crashing, given, author_card=author, shuffle=lambda order: order.reverse(),
+             sections=given["разделы_пакета_эталон"])
+    first_bytes = seen[0]
+    before = S.RunStore(directory, TABLES).load()
+    assert before.idea_candidates_permutation == (2, 1, 0)
+
+    def forbidden(*_):
+        raise AssertionError("ID и перестановка при повторной сборке не вызываются")
+
+    again = _Ask({("claude", "compare"): [ok["критик_1"]], ("codex", "compare"): [ok["критик_2"]]})
+    result = _run(directory, again, given, author_card=author, new_id=forbidden, shuffle=forbidden,
+                  sections=given["разделы_пакета_эталон"])     # cold load
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [r["package"] for r in again.requests] == [first_bytes, first_bytes]
+    assert S.RunStore(directory, TABLES).load().idea_candidates == before.idea_candidates
+    order = [row["candidate_id"] for row in json.loads(first_bytes)["кандидаты"]]
+    assert order == [c.candidate_id for c in (before.idea_candidates[i] for i in (2, 1, 0))]
+    # and the package is exactly what the builder gives for the journal's cards and permutation
+    rebuilt = X.build_comparison_package(given["разделы_пакета_эталон"], {"решения": [], "области": [], "журнал_доказательств": []},
+                                         "идея", list(before.idea_candidates), before.idea_candidates_permutation,
+                                         tables=TABLES, withheld=IDEA_WITHHELD,
+                                         criteria=[{"id": c["id"], "text": c["текст"], "mandatory": c["обязательный"]}
+                                                   for c in given["критерий_успеха"]])
+    assert rebuilt.material() == first_bytes
+
+
+def test_bi_3_no_source_in_what_a_critic_receives(tmp_path):
+    data, directory, ask, result = _injection_run(tmp_path)
+    for request in ask.requests:
+        text = json.dumps(request, ensure_ascii=False)
+        assert "source" not in text and "источник" not in text
+        if request["phase"] == "compare":
+            assert set(request) == {"phase", "critic", "attempt", "package", "previous_rejection"}   # только пакет
+            assert all(set(row) == {"candidate_id", "текст"} for row in json.loads(request["package"])["кандидаты"])
+    state = S.RunStore(directory, TABLES).load()
+    assert {c.source for c in state.idea_candidates} == {C.AUTHOR_SOURCE, "claude", "codex"}      # it lives in the journal only
+
+
+
+# ==========================================================================
+# БИ, аудит безопасности стадии: карточка не должна пройти валидатор и упасть в пакете,
+# падение процесса не меняет исход, второй пакет закреплён, критерии идут через проверки пакета
+# ==========================================================================
+
+_INJ = _fixture("candidate-injection")["вход"]
+_CARD_C = _proposal_of(_INJ["карточки"][1])
+_CARD_X = _proposal_of(_INJ["карточки"][2])
+_AUTHOR = _proposal_of(_INJ["карточки"][0])
+_ANSWERS = {k: _comparison_of(v) for k, v in _INJ["ответы_критиков"].items()}
+_KEY = "AKIA" + "IOSFODNN7EXAMPLE"                      # подставной ключ, собран из частей
+_SECRET = "pass" + "word = 'hunter2hunter2'"
+
+
+def _audit(tmp_path, claude=None, codex=None, author=None, name="run", tables=TABLES, **kwargs):
+    """Весь проход с готовыми фикстурными сравнениями; ответы слепого прохода можно подменить."""
+    script = {("claude", "blind"): claude or [_CARD_C], ("codex", "blind"): codex or [_CARD_X],
+              ("claude", "compare"): [_ANSWERS["критик_1"]], ("codex", "compare"): [_ANSWERS["критик_2"]]}
+    directory = _new_run(tmp_path / name)
+    ask = _Ask(script)
+    options = {"author_card": author or _AUTHOR, "sections": _INJ["разделы_пакета_эталон"], "tables": tables}
+    options.update(kwargs)
+    return directory, ask, _run(directory, ask, _INJ, **options)
+
+
+def _edit(card, **changes):
+    return {**card, **changes}
+
+
+BAD_CARD_TEXTS = ["значение ≥ 5", "поток → очередь", "готово ✓", "ракета \U0001f680", "нуль\u200bширина",
+                  "про Лунтика рассказ", "про Бибигон рассказ", _SECRET, "ключ " + _KEY]
+
+
+def test_audit_positive_control_the_clean_run_reaches_the_verdict(tmp_path):
+    directory, ask, result = _audit(tmp_path)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ask.count() == 4
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS)
+def test_audit_h1_a_blind_card_the_package_would_refuse_is_an_ordinary_bad_answer(tmp_path, text):
+    directory, ask, result = _audit(tmp_path, claude=[_edit(_CARD_C, variant=text), _CARD_C])
+    assert [c for c in ask.calls if c[:2] == ("claude", "blind")] == [("claude", "blind", 1), ("claude", "blind", 2)]
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and result.run_state == "ждёт_Антона"
+    state = S.RunStore(directory, TABLES).load()
+    assert len(state.idea_candidates) == 3
+    assert all(text not in c.canonical_bytes.decode("utf-8") for c in state.idea_candidates)
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS)
+def test_audit_h1_both_attempts_bad_is_an_incomplete_run_not_a_stuck_one(tmp_path, text):
+    bad = _edit(_CARD_C, mechanism=text)
+    directory, ask, result = _audit(tmp_path, claude=[bad, bad])
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный")
+    state = S.RunStore(directory, TABLES).load()
+    assert not state.idea_candidates and ask.count("compare") == 0
+
+
+@pytest.mark.parametrize("field", ["variant", "mechanism", "cost", "reversibility"])
+def test_audit_h1_the_check_reads_every_text_field_of_the_card(tmp_path, field):
+    directory, ask, result = _audit(tmp_path, claude=[_edit(_CARD_C, **{field: "готово ✓"}), _CARD_C])
+    assert ask.count("blind") == 3 and result.verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+def test_audit_h1_a_card_that_grows_over_the_limit_after_normalisation_is_refused_before_the_set(tmp_path):
+    def raw(card):
+        return json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+
+    padded = _edit(_CARD_C, variant="я" * 300)
+    narrow = copy.deepcopy(TABLES.raw)
+    narrow["vocabulary"]["пакет"]["предел_раздела_байт"] = len(raw(padded).encode("utf-8")) + 5
+    tables = T.Tables.from_raw(narrow)
+    assert len(raw(padded).encode("utf-8")) <= narrow["vocabulary"]["пакет"]["предел_раздела_байт"]   # the answer fits
+    assert len(X.canonical_json(C.normalize_card(padded))) > narrow["vocabulary"]["пакет"]["предел_раздела_байт"]
+    directory, ask, result = _audit(tmp_path, claude=[raw(padded), _CARD_C], tables=tables)
+    assert ask.count("blind") == 3 and result.verdict == "РЕШЕНИЕ_АНТОНА"
+    control = _edit(_CARD_C, variant="я" * 10)                                     # same limit, smaller card
+    _, ask2, result2 = _audit(tmp_path, claude=[raw(control)], tables=tables, name="control")
+    assert ask2.count("blind") == 2 and result2.verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS)
+def test_audit_h1_the_author_card_is_judged_before_any_paid_call(tmp_path, text):
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask({})
+    with pytest.raises(C.AuthorCardRefused):
+        _run(directory, ask, _INJ, author_card=_edit(_AUTHOR, variant=text), sections=_INJ["разделы_пакета_эталон"])
+    assert ask.count() == 0 and not S.RunStore(directory, TABLES).load().attempts
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS[:5] + ["про Лунтика", _SECRET, _KEY])
+def test_audit_l5_the_criteria_go_through_the_checks_of_the_package(tmp_path, text):
+    criteria = copy.deepcopy(_INJ["критерий_успеха"])
+    criteria[2]["текст"] = text
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask({})
+    cards = {**_INJ, "критерий_успеха": criteria}
+    with pytest.raises(C.AuthorCardRefused):
+        _run(directory, ask, cards, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert ask.count() == 0
+    with pytest.raises(C.AuthorCardRefused):                           # and the same for a section of the task
+        _run(directory, ask, _INJ, author_card=_AUTHOR, sections={**_INJ["разделы_пакета_эталон"], "ограничения": text})
+    assert ask.count() == 0
+
+
+def test_audit_l5_criteria_are_bounded_and_reach_the_critic_only_inside_the_package(tmp_path):
+    big = copy.deepcopy(_INJ["критерий_успеха"]) + [
+        {"id": f"Д{n}", "текст": "я" * 900, "обязательный": False} for n in range(100)]
+    directory = _new_run(tmp_path / "big")
+    with pytest.raises(C.AuthorCardRefused):
+        _run(directory, _Ask({}), {**_INJ, "критерий_успеха": big}, author_card=_AUTHOR,
+             sections=_INJ["разделы_пакета_эталон"])
+    _, ask, result = _audit(tmp_path, name="ok")
+    compare = [r for r in ask.requests if r["phase"] == "compare"]
+    assert len(compare) == 2
+    for request in compare:
+        block = json.loads(request["package"])["критерии"]
+        assert "criteria" not in request and [c["id"] for c in block] == ["К1", "К2", "К3"]
+
+
+# -- H2: a crash changes neither the budget nor the outcome ---------------------------
+
+class _Crash(Exception):
+    pass
+
+
+def _crashing(counter):
+    def ask(critic, request):
+        counter.append((critic, request["phase"], request["attempt"]))
+        raise _Crash()
+    return ask
+
+
+def _resume(directory, **kwargs):
+    ask = _Ask({("claude", "compare"): [_ANSWERS["критик_1"]], ("codex", "compare"): [_ANSWERS["критик_2"]],
+                ("claude", "blind"): [_CARD_C], ("codex", "blind"): [_CARD_X]})
+    options = {"author_card": _AUTHOR, "sections": _INJ["разделы_пакета_эталон"]}
+    options.update(kwargs)
+    return ask, _run(directory, ask, _INJ, **options)
+
+
+def test_audit_h2_a_crash_before_the_answer_does_not_spend_the_retry_budget(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    calls = []
+    with pytest.raises(_Crash):
+        _run(directory, _crashing(calls), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    state = S.RunStore(directory, TABLES).load()
+    assert len(calls) == 1 and all(a.status == "запущена" for a in state.attempts.values())
+    ask, result = _resume(directory)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+    state = S.RunStore(directory, TABLES).load()
+    key = (state.run_id, C.BLIND_STAGE, 1, "claude", 1)
+    assert state.attempts[key].possible_duplicate and "возможен_дубль" in state.flags
+    # the answer after the crash still has its full budget: a bad one gets its retry
+    other = _new_run(tmp_path / "again", "run-2")
+    with pytest.raises(_Crash):
+        _run(other, _crashing([]), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    ask2 = _Ask({("claude", "blind"): ["мусор", _CARD_C], ("codex", "blind"): [_CARD_X],
+                 ("claude", "compare"): [_ANSWERS["критик_1"]], ("codex", "compare"): [_ANSWERS["критик_2"]]})
+    result2 = _run(other, ask2, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert result2.verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [c[2] for c in ask2.calls if c[:2] == ("claude", "blind")] == [2, 3]
+
+
+def test_audit_h2_repeated_crashes_before_any_answer_are_bounded_by_their_own_limit(tmp_path):
+    limit = TABLES.stages["исполнение_идеи"]["предел_прерванных_попыток"]
+    assert limit == C.abort_limit(TABLES) == 2
+    directory = _new_run(tmp_path / "run")
+    for _ in range(limit):
+        calls = []
+        with pytest.raises(_Crash):
+            _run(directory, _crashing(calls), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+        assert len(calls) == 1
+    ask, result = _resume(directory)
+    assert ask.count("blind") == 1                                  # claude is cut off; codex answers once
+    assert [c for c in ask.calls if c[0] == "claude"] == []
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный")
+
+
+def test_audit_h2_the_abort_limit_is_read_from_the_table(tmp_path):
+    raw = copy.deepcopy(TABLES.raw)
+    raw["stages"]["исполнение_идеи"]["предел_прерванных_попыток"] = 1
+    one = T.Tables.from_raw(raw)
+    directory = _new_run(tmp_path / "run")
+    with pytest.raises(_Crash):
+        _run(directory, _crashing([]), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"], tables=one)
+    ask, result = _resume(directory, tables=one)
+    assert [c for c in ask.calls if c[0] == "claude"] == [] and result.verdict == "НЕПОЛНЫЙ_ПРОГОН"
+    for bad in (0, -1, "2", True, None, 1.5):
+        broken = copy.deepcopy(TABLES.raw)
+        broken["stages"]["исполнение_идеи"]["предел_прерванных_попыток"] = bad
+        with pytest.raises(T.ContractError):
+            C.abort_limit(T.Tables.from_raw(broken))
+
+
+def test_audit_h2_a_valid_answer_without_its_bytes_is_an_explicit_contract_error(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask({("claude", "blind"): [_CARD_C], ("codex", "blind"): [_CARD_X],
+                ("claude", "compare"): [_ANSWERS["критик_1"]]})
+
+    def dying(critic, request):
+        if critic == "codex":
+            raise _Crash()
+        return ask(critic, request)
+
+    with pytest.raises(_Crash):
+        _run(directory, dying, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    again = _Ask({("codex", "blind"): [_CARD_X]})
+    with pytest.raises(C.ContractError, match="байтов нет"):
+        _run(directory, again, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert again.count() == 0
+    saved = _Ask({("codex", "blind"): [_CARD_X], ("claude", "compare"): [_ANSWERS["критик_1"]],
+                  ("codex", "compare"): [_ANSWERS["критик_2"]]})
+    result = _run(directory, saved, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"],
+                  saved_proposals={"claude": _CARD_C})                      # the caller's own copy is trusted and used
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ("claude", "blind", 2) not in saved.calls
+
+
+# -- M4: the second package is pinned in the journal -----------------------------------
+
+def _crash_in_compare(tmp_path, name="run"):
+    directory = _new_run(tmp_path / name)
+
+    def ask(critic, request):
+        if request["phase"] == "compare":
+            raise _Crash()
+        return json.dumps(_CARD_C if critic == "claude" else _CARD_X)
+
+    with pytest.raises(_Crash):
+        _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    return directory
+
+
+def test_audit_m4_the_hash_of_the_second_package_is_pinned_and_checked_on_resume(tmp_path):
+    directory = _crash_in_compare(tmp_path)
+    pinned = [f for f in S.RunStore(directory, TABLES).load().flags if f.startswith(C.PACKAGE_FLAG)]
+    assert len(pinned) == 1 and len(pinned[0]) == len(C.PACKAGE_FLAG) + 64
+    ask, result = _resume(directory)                                    # positive control: the same inputs
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [f for f in S.RunStore(directory, TABLES).load().flags if f.startswith(C.PACKAGE_FLAG)] == pinned
+
+
+@pytest.mark.parametrize("change", ["section", "criteria", "registries", "withheld"])
+def test_audit_m4_a_changed_input_on_resume_is_a_contract_error_with_no_call(tmp_path, change):
+    directory = _crash_in_compare(tmp_path)
+    given, options = copy.deepcopy(_INJ), {"author_card": _AUTHOR, "sections": dict(_INJ["разделы_пакета_эталон"])}
+    if change == "section":
+        options["sections"]["задача"] = "совсем другая задача"
+    elif change == "criteria":
+        given["критерий_успеха"][0]["текст"] = "другой критерий"
+    elif change == "registries":
+        options["registries"] = {"решения": [{"decision_id": "D-2", "kind": "closed_decision",
+                                              "text_hash": "b" * 64, "status": "закрыто"}],
+                                 "области": [], "журнал_доказательств": []}
+    if change == "withheld":
+        options["withheld"] = {"автор": "Колобок", "второй_критик": "Бибигон"}
+    ask = _Ask({})
+    with pytest.raises(C.ContractError, match="вход стадии"):
+        _run(directory, ask, given, **options)
+    assert ask.count() == 0
+    state = S.RunStore(directory, TABLES).load()
+    assert state.state == "идёт_круг"                    # прогон не закрыт: исправленный вход его продолжит
+    ask, result = _resume(directory)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+def test_audit_m4_a_stale_package_pin_is_a_contract_error_before_any_call(tmp_path):
+    directory = _crash_in_compare(tmp_path)
+    with _locked(directory) as store:
+        for flag in [f for f in store.load().flags if f.startswith(C.PACKAGE_FLAG)]:
+            store.set_flag(flag, False)
+        store.set_flag(C.PACKAGE_FLAG + "0" * 64)
+    ask = _Ask({})
+    with pytest.raises(C.ContractError, match="второй пакет"):
+        _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert ask.count() == 0
+
+
+def test_audit_h1_a_set_the_package_refuses_in_phase_c_is_an_incomplete_run_not_an_exception(tmp_path):
+    """The last net is reachable without a stub: a set written by somebody else (no card check before it)."""
+    directory = _new_run(tmp_path / "run")
+    texts = [X.canonical_json(C.normalize_card(_edit(_AUTHOR, variant="значение ≥ 5"))),
+             X.canonical_json(C.normalize_card(_CARD_C)), X.canonical_json(C.normalize_card(_CARD_X))]
+    with _locked(directory) as store:
+        store.assign_idea_candidates([S.IdeaCandidate(f"cand_{i}", src, text)
+                                      for i, (src, text) in enumerate(zip(("автор", "claude", "codex"), texts))])
+    ask = _Ask({})
+    result = _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный") and ask.count() == 0
+    assert "не собирается" in result.incomplete_reason
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS)
+def test_audit_the_card_check_and_the_package_give_the_same_verdict(text):
+    card = X.canonical_json(C.normalize_card(_edit(_CARD_C, variant=text)))
+    try:
+        X.check_candidate_card(card, "идея", TABLES, IDEA_WITHHELD)
+        single = None
+    except X.PackageRefused as refused:
+        single = refused.reason
+    assert single is not None                                            # every sample really is refused
+    clean_card = X.canonical_json(C.normalize_card(_CARD_X))
+    cands = [S.IdeaCandidate(f"cand_{i}", src, text)
+             for i, (src, text) in enumerate(zip(("автор", "claude", "codex"), [clean_card, card, clean_card + b" "]))]
+    with pytest.raises(X.PackageRefused) as refused:
+        X.build_comparison_package(IDEA_SECTIONS, {"решения": [], "области": [], "журнал_доказательств": []},
+                                   "идея", cands, [0, 1, 2], tables=TABLES, withheld=IDEA_WITHHELD)
+    assert refused.value.reason == single
+    clean = X.canonical_json(C.normalize_card(_CARD_C))
+    X.check_candidate_card(clean, "идея", TABLES, IDEA_WITHHELD)         # positive control
+
+
+
+
+# ==========================================================================
+# Раунд r2: точка невозврата, готовность движка, слепой пакет, причины отказа, форма входа
+# ==========================================================================
+
+def _table_patch(path, value):
+    raw = copy.deepcopy(REAL.raw)
+    node = raw
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+    return T.Tables.from_raw(raw)
+
+
+def _happy(over=None):
+    script = {("claude", "blind"): [good_blind("c")], ("codex", "blind"): [good_blind("x")],
+              ("claude", "compare"): [_from_request(ALL_PASS, "cand_a")],
+              ("codex", "compare"): [_from_request(ALL_PASS, "cand_a")]}
+    script.update(over or {})
+    return Asker(script)
+
+
+def _journal_clean(directory):
+    state = S.RunStore(directory, TABLES).load()
+    return not state.idea_candidates and not [f for f in state.flags if f.startswith(C.PACKAGE_FLAG)]
+
+
+# -- 1: the point of no return needs the whole second package -------------------------------
+
+def test_r2_total_size_over_the_package_limit_is_refused_before_the_set_with_a_named_reason(tmp_path):
+    small = dict(REAL.vocabulary["пакет"], предел_пакета_байт=2400)
+    tables = _table_patch(("vocabulary", "пакет"), small)
+    pad = "п" * 120
+    directory = started(tmp_path / "big", "run-big")
+    ask = Asker({("claude", "blind"): [good_blind_with(pad)], ("codex", "blind"): [good_blind_with(pad)]})
+    result = stage(directory, ask, tables=tables, author_card={**proposal(ONE, "а"), "variant": pad})
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный")
+    assert "превышение_размера" in result.incomplete_reason
+    assert ask.count("compare") == 0 and _journal_clean(directory)
+
+
+def good_blind_with(pad):
+    return json.dumps({**proposal(ONE, "c"), "variant": pad}, ensure_ascii=False)
+
+
+# -- 2: the engine is ready before the first paid call ----------------------------------------
+
+@pytest.mark.parametrize("path,value", [
+    (("vocabulary", "выбор_кандидата_sentinel"), ""),
+    (("vocabulary", "повтор_невалидного_ответа", "максимум_на_ответ"), -1),
+    (("vocabulary", "повтор_невалидного_ответа", "тратит_бюджет"), False),
+    (("vocabulary", "повтор_невалидного_ответа", "порядок"), "случайный"),
+    (("vocabulary", "повтор_невалидного_ответа", "после_исчерпания"), "ВЫДУМКА"),
+    (("stages", "исполнение_идеи"), {"предел_прерванных_попыток": 0}),
+    (("stages", "исходы_идеи"), {"строки": [], "рисунки": []}),
+    (("vocabulary", "попытка", "состояния"), ["подготовлена"]),
+])
+def test_r2_a_corrupt_table_is_refused_before_any_paid_call(directory, path, value):
+    ask = _happy()
+    with pytest.raises(C.ContractError):
+        stage(directory, ask, tables=_table_patch(path, value))
+    assert ask.count() == 0 and not S.RunStore(directory, TABLES).load().attempts
+
+
+def test_r2_a_corrupt_schema_is_refused_before_any_paid_call(directory, monkeypatch):
+    def broken(name, directory=None):
+        raise C.ContractError(f"схема {name}: не читается")
+
+    monkeypatch.setattr(C, "load_schema", broken)
+    ask = _happy()
+    with pytest.raises(C.ContractError, match="схема"):
+        stage(directory, ask)
+    assert ask.count() == 0
+
+
+def test_r2_the_retry_policy_row_after_exhaustion_is_what_the_run_ends_with(directory):
+    assert C.incomplete_verdict(REAL) == C.INCOMPLETE_VERDICT == "НЕПОЛНЫЙ_ПРОГОН"
+    assert C.retry_order("run-1", ["claude", "codex"]) == ["claude", "codex"]      # sha256("run-1") чётный
+    assert C.retry_order("run-2", ["claude", "codex"]) == ["codex", "claude"]      # и нечётный: конкретный порядок
+    assert C.retry_order("run-3", ["claude", "codex"]) == ["codex", "claude"]
+
+
+# -- 3: a request carries the package and nothing beside it ---------------------------------------
+
+def test_r2_the_blind_request_is_the_real_blind_package_and_only_the_package(directory):
+    ask = _happy()
+    seen = []
+    original = ask.__call__
+
+    class Spy(Asker):
+        def __call__(self, critic, request):
+            seen.append(request)
+            return original(critic, request)
+
+    spy = Spy({})
+    spy.script, spy.calls = ask.script, ask.calls
+    result = stage(directory, spy)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+    blind = [r for r in seen if r["phase"] == "blind"]
+    assert len(blind) == 2 and blind[0]["package"] == blind[1]["package"]
+    for request in seen:
+        assert set(request) == {"phase", "critic", "attempt", "package", "previous_rejection"}
+        assert request["previous_rejection"] is None
+    package = json.loads(blind[0]["package"])
+    assert package["разделы"] == SECTIONS and "кандидаты" not in package and package["файлы"] == {}
+    text = blind[0]["package"]
+    assert "Лунтик" not in text and "Бибигон" not in text and "вариант автор" not in text   # скрытого в пакете нет
+
+
+def test_r2_the_author_card_that_echoes_the_task_is_refused_by_the_blind_package(directory):
+    sections = {**SECTIONS, "задача": json.dumps(proposal(ONE, "автор"), ensure_ascii=False)}
+    ask = _happy()
+    with pytest.raises(C.AuthorCardRefused):
+        stage(directory, ask, sections=sections)
+    assert ask.count() == 0
+
+
+# -- 4, 5: the rejection reason travels and the comparisons arrive --------------------------------
+
+def test_r2_the_rejection_reason_goes_into_the_retry_request_and_into_the_result(directory):
+    seen = []
+
+    def bad_then_good(request):
+        seen.append(request)
+        return "{не json" if request["attempt"] == 1 else good_blind("x")
+
+    ask = _happy({("codex", "blind"): [bad_then_good]})
+    result = stage(directory, ask)
+    assert [r["previous_rejection"] for r in seen][0] is None
+    retry = seen[1]["previous_rejection"]
+    assert retry and len(retry) <= C.REASON_CLIP + 1
+    assert result.rejections["blind"]["codex"] == [retry] and result.rejections["blind"]["claude"] == []
+    assert result.rejections["compare"] == {"claude": [], "codex": []}
+
+
+def test_r2_a_long_participant_reason_is_clipped(directory):
+    long_key = "ключ" * 500
+    ask = _happy({("codex", "blind"): [json.dumps({**proposal(ONE, "x"), long_key: 1}), good_blind("x")]})
+    result = stage(directory, ask)
+    assert all(len(r) <= C.REASON_CLIP + 1 for r in result.rejections["blind"]["codex"])
+    assert result.rejections["blind"]["codex"]
+
+
+def test_r2_the_result_carries_both_validated_comparisons(directory):
+    ask = _happy()
+    result = stage(directory, ask)
+    assert set(result.comparisons) == {"claude", "codex"}
+    assert all(isinstance(v, C.ValidatedComparison) and v.raw["reasons"] == ["р"]
+               for v in result.comparisons.values())
+
+
+def test_r2_an_incomplete_result_keeps_the_valid_comparison_and_names_the_reason(directory):
+    ask = _happy({("codex", "compare"): ["мусор"]})
+    result = stage(directory, ask)
+    assert result.verdict == "НЕПОЛНЫЙ_ПРОГОН" and set(result.comparisons) == {"claude"}
+    assert "codex" in result.incomplete_reason
+    assert len(result.rejections["compare"]["codex"]) == 2
+
+
+# -- 6: re-entering an incomplete run ---------------------------------------------------------------
+
+def test_r2_reentry_on_an_incomplete_run_does_not_say_finished(directory):
+    stage(directory, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
+    with pytest.raises(C.ContractError) as info:
+        stage(directory, Asker({}))
+    assert "возобновление" in str(info.value) and "завершена" not in str(info.value)
+    assert "clarification block" in (C.run_idea_stage.__doc__ or "")
+
+
+# -- 7: the shape of the caller's inputs is OUR error, the content is the author's -------------------
+
+@pytest.mark.parametrize("name,kw", [
+    ("withheld None", {"withheld": None}),
+    ("withheld без второго", {"withheld": {"автор": "Лунтик"}}),
+    ("withheld лишний ключ", {"withheld": {**WITHHELD, "предложенное_решение": "решение которое показано"}}),
+    ("withheld не строка", {"withheld": {**WITHHELD, "автор": 5}}),
+    ("withheld слишком короткое", {"withheld": {**WITHHELD, "автор": "ab"}}),
+    ("sections лишний ключ", {"sections": {**SECTIONS, "что_угодно": "текст"}}),
+    ("sections нет ключа", {"sections": {k: v for k, v in SECTIONS.items() if k != "задача"}}),
+    ("sections не строка", {"sections": {**SECTIONS, "задача": 5}}),
+    ("sections не словарь", {"sections": [("задача", "x")]}),
+    ("registries не словарь", {"registries": []}),
+])
+def test_r2_a_wrong_shape_of_the_callers_input_is_a_contract_error(directory, name, kw):
+    ask = _happy()
+    with pytest.raises(C.ContractError):
+        stage(directory, ask, **kw)
+    assert ask.count() == 0 and not isinstance(C.ContractError("x"), C.AuthorCardRefused)
+
+
+def test_r2_check_author_card_with_a_wrong_withheld_is_not_the_authors_fault():
+    with pytest.raises(C.ContractError):
+        C.check_author_card(proposal(ONE, "автор"), ONE, TABLES, {"автор": "Лунтик"})
+    with pytest.raises(C.AuthorCardRefused):
+        C.check_author_card(proposal(ONE, "автор") | {"variant": "про Лунтика рассказ"}, ONE, TABLES, WITHHELD)
+
+
+@pytest.mark.parametrize("text", ["вес ≥ 3 ✓", "про Бибигона рассказ", "ключ " + "AKIA" + "IOSFODNN7EXAMPLE"])
+def test_r2_the_content_of_criteria_stays_the_authors_refusal(directory, text):
+    ask = _happy()
+    with pytest.raises(C.AuthorCardRefused):
+        stage(directory, ask, criteria=[{"id": "К1", "текст": text, "обязательный": True}])
+    assert ask.count() == 0
+
+
+# -- 8: a changed input on resume does not close the run ------------------------------------------------
+
+def test_r2_a_changed_withheld_on_resume_is_refused_and_the_run_stays_fit_for_the_original_input(directory):
+    class Boom(Exception):
+        pass
+
+    def boom(_request):
+        raise Boom
+
+    with pytest.raises(Boom):
+        stage(directory, _happy({("codex", "compare"): [boom]}))
+    ask = _happy()
+    saved = {"claude": comparison(IDS, ALL_PASS, "cand_a")}
+    with pytest.raises(C.ContractError, match="вход стадии"):
+        stage(directory, ask, withheld={"автор": "Колобок", "второй_критик": "Бибигон"},
+              saved_comparisons=saved)
+    assert ask.count() == 0 and S.RunStore(directory, TABLES).load().state == "идёт_круг"
+    result = stage(directory, _happy(), saved_comparisons=saved)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+# -- 9: criterion ids ------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad", ["İ", "ԁ1", "ɡ1", "Ѵ", "Κ1", "ａ", "К 1", "К1\n", "К1​", "ß"])
+def test_r2_ids_outside_the_closed_alphabet_are_refused(bad):
+    with pytest.raises(C.AuthorCardRefused, match="алфавита"):
+        C.validate_criteria([{"id": bad, "текст": "т", "обязательный": True}])
+
+
+@pytest.mark.parametrize("first,second", [("I1", "l1"), ("O1", "01"), ("К.1", "K.1"), ("a-I", "a-1")])
+def test_r2_look_alike_ids_fold_by_the_one_skeleton_function(first, second):
+    rows = [{"id": first, "текст": "т", "обязательный": True}, {"id": second, "текст": "т", "обязательный": False}]
+    with pytest.raises(C.AuthorCardRefused, match="свёртки"):
+        C.validate_criteria(rows)
+    assert C.fold_identifier(first) == C.fold_identifier(second) == X.fold_identifier(first)
+
+
+def test_r2_separators_stay_distinct_ids_rn_m_is_a_known_residual():
+    rows = [{"id": i, "текст": "т", "обязательный": n == 0} for n, i in enumerate(["A-B", "A_B", "A.B", "AB"])]
+    assert len(C.validate_criteria(rows)) == 4
+    rows = [{"id": i, "текст": "т", "обязательный": n == 0} for n, i in enumerate(["rn", "m"])]
+    assert len(C.validate_criteria(rows)) == 2          # DECIDED: не ловится, ID не граница безопасности
+
+
+# -- 10, 11: one source of strictness, and the retry policy is read ---------------------------------------
+
+def test_r2_outcome_rules_and_abort_limit_delegate_to_the_tables_checks(monkeypatch):
+    calls = []
+    for name in ("_check_idea_outcomes", "_check_idea_execution"):
+        original = getattr(T.Tables, name)
+        monkeypatch.setattr(T.Tables, name, lambda self, o=original, n=name: (calls.append(n), o(self))[1])
+    C.outcome_rules(REAL)
+    C.abort_limit(REAL)
+    assert calls == ["_check_idea_outcomes", "_check_idea_execution"]
+
+
+def test_r2_a_row_the_code_reads_changes_the_behaviour(directory):
+    spend = _table_patch(("vocabulary", "повтор_невалидного_ответа", "тратит_бюджет"), False)
+    with pytest.raises(C.ContractError, match="тратит_бюджет"):
+        C.retry_budget(spend)
+    order = _table_patch(("vocabulary", "повтор_невалидного_ответа", "порядок"), "по_алфавиту")
+    with pytest.raises(C.ContractError, match="порядок"):
+        C.retry_budget(order)
+    after = _table_patch(("vocabulary", "повтор_невалидного_ответа", "после_исчерпания"), "РЕШЕНИЕ_АНТОНА")
+    result = stage(directory, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}), tables=after)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"          # итог исчерпания — из строки таблицы, а не из константы
+
+
+# -- 12: one function of card bytes -------------------------------------------------------------------------
+
+def test_r2_card_bytes_is_what_is_checked_and_what_is_stored(directory):
+    card = proposal(ONE, "z")
+    assert C.card_bytes(card) == X.canonical_json(C.normalize_card(card))
+    stage(directory, _happy())
+    for candidate in S.RunStore(directory, TABLES).load().idea_candidates:
+        assert candidate.canonical_bytes == C.card_bytes(json.loads(candidate.canonical_bytes))
+        X.check_candidate_card(candidate.canonical_bytes, "идея", TABLES, WITHHELD)
+
+
+# -- 13: the OK of the previous round does not open the exit -------------------------------------------------
+
+def test_r2_an_ok_after_a_new_round_start_does_not_open_the_exit_without_a_new_verdict(directory):
+    _done(directory)
+    with locked(directory) as store:
+        store.start_round(2)
+        store.set_flag(C.ANTON_OK_FLAG)
+        with pytest.raises(C.AntonOkRequired, match="прошлого круга"):
+            C.leave_idea_stage(store)
+
+
+# -- 14: a corrupt journal is ContractError --------------------------------------------------------------------
+
+def test_r2_an_unknown_attempt_status_is_a_contract_error():
+    state = S.RunState(run_id="r", stage="идея")
+    state.attempts[("r", C.BLIND_STAGE, 1, "claude", 1)] = S.Attempt(("r", C.BLIND_STAGE, 1, "claude", 1), "выдумка", "t")
+    with pytest.raises(C.ContractError, match="журнал попыток"):
+        C._split_attempts(state, TABLES, C.BLIND_STAGE, 1, "claude")
+
+
+def test_r2_a_set_without_the_author_is_a_contract_error(directory):
+    with locked(directory) as store:
+        store.assign_idea_candidates([S.IdeaCandidate(f"cand_{i}", s, C.card_bytes(proposal(ONE, str(i))))
+                                      for i, s in enumerate(("claude", "codex", "x"))])
+    with pytest.raises(C.ContractError, match="авторских"):
+        stage(directory, _happy())
+
+
+def test_r2_ids_in_exception_texts_are_clipped():
+    many = [f"id{i}" + "я" * 200 for i in range(50)]
+    assert len(C._listed(many)) < 600
+    with pytest.raises(C.ContractError) as info:
+        C.validate_comparison({}, candidate_ids=many, criteria=PARSED_ONE, tables=TABLES)
+    assert len(str(info.value)) < 700
+
+
+def test_r2_a_new_id_equal_to_the_sentinel_is_our_breakage(directory):
+    ids = iter([SENTINEL, "cand_b", "cand_c"])
+    with pytest.raises(C.ContractError, match="равный"):
+        stage(directory, _happy(), new_id=ids.__next__)
+
+
+def test_r2_the_card_limit_is_the_section_limit_exactly_everywhere(tmp_path):
+    limit = REAL.vocabulary["пакет"]["предел_раздела_байт"]
+    assert limit < REAL.vocabulary["пакет"]["предел_файла_байт"]            # the number the code reads is the smaller one
+
+    def sized(size):
+        card = proposal(ONE, "z")
+        base = len(X.canonical_json(C.normalize_card(card)))
+        card["variant"] += "я" * ((size - base) // 2) + ("x" if (size - base) % 2 else "")
+        assert len(X.canonical_json(C.normalize_card(card))) == size
+        return card
+
+    at, over = sized(limit), sized(limit + 1)
+
+    def raw_sized(size):                                                    # the validator counts the answer as sent
+        card = proposal(ONE, "z")
+        card["variant"] += "я" * ((size - len(X.canonical_json(card))) // 2)
+        card["variant"] += "x" * (size - len(X.canonical_json(card)))
+        assert len(X.canonical_json(card)) == size
+        return card
+
+    assert C.validate_proposal(raw_sized(limit), PARSED_ONE, REAL)          # the answer validator
+    with pytest.raises(C.AnswerRejected):
+        C.validate_proposal(raw_sized(limit + 1), PARSED_ONE, REAL)
+    C.fits_package(at, REAL, WITHHELD)                                      # the second package, one card
+    with pytest.raises(C.AnswerRejected):
+        C.fits_package(over, REAL, WITHHELD)
+    ask = Asker({})                                                         # the author's card: refused before any call
+    with pytest.raises(C.AuthorCardRefused):
+        stage(started(tmp_path / "over", "run-o"), ask, author_card=over)
+    assert ask.count() == 0

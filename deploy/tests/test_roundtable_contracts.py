@@ -53,7 +53,9 @@ def tables_with(rules=RULES, **vocabulary_patch):
     return T.Tables.from_raw(raw)
 
 
-TABLES = tables_with()
+# Настоящая таблица: правила исходов читаются из stages.исходы_идеи. Подставная
+# `tables_with(...)` нужна только для опытов «переставили строки → другой исход».
+TABLES = REAL
 
 CRITERIA = [
     {"id": "К1", "текст": "работает", "обязательный": True},
@@ -638,9 +640,20 @@ def test_rules_come_only_through_outcome_rules():
     assert (outcome.reason, outcome.priority) == ("другая_причина", 7)
 
 
+def test_real_rules_section_exists_and_matches_the_plan():
+    section = C.outcome_rules(REAL)
+    assert section == RULES                        # буквально §4.5 плана
+    assert section == REAL.raw["stages"]["исходы_идеи"]
+    reasons = [r["причина"] for r in section["строки"][:-1]] + [r["причина"] for r in section["рисунки"]]
+    assert sorted(reasons) == sorted(REAL.raw["blocks"]["списки"]["исходы_идеи"])
+    assert C._CHECKS == T.OUTCOME_CHECKS and C._PATTERNS == T.OUTCOME_PATTERNS
+
+
 def test_missing_or_malformed_rules_section_is_contract_error():
+    raw = copy.deepcopy(REAL.raw)
+    del raw["stages"]["исходы_идеи"]
     with pytest.raises(C.ContractError):
-        C.outcome_rules(REAL)                      # раздела в настоящей таблице пока нет
+        C.outcome_rules(T.Tables.from_raw(raw))
     bad = copy.deepcopy(RULES)
     bad["строки"].reverse()
     with pytest.raises(C.ContractError):

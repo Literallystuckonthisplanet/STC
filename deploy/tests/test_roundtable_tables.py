@@ -4369,3 +4369,177 @@ def test_the_settings_secret_rule_is_the_general_rule_with_two_changes():
     branch = r"""|[A-Za-z0-9_][^\s"'\\]{0,4}[ \t]+[^\s#](?=[^\r\n]{4})"""
     assert general.count(plain) == 8
     assert package["признак_секрета_настроек"] == general.replace(plain, r"[ \t]+[^\s#]")[:-1] + branch + ")"
+
+
+# --------------------------------------------------------------------------
+# БИ, часть 0 — правила исходов стадии «идея» (stages.исходы_идеи, §4.5 плана)
+# --------------------------------------------------------------------------
+# Счётчик подмен гоняет только этот файл, decide и context. Поэтому стражи
+# раздела живут здесь: закрепление целиком, удаление и порча по классам и
+# эталон поведения — девять фикстур через настоящую таблицу.
+
+IDEA_OUTCOME_ROWS = [
+    {"проверка": "открытое_возражение", "причина": "возражение_держит_стадию", "приоритет": None},
+    {"проверка": "оба_нет_проходящего", "причина": "нет_годного_варианта", "приоритет": 1},
+    {"проверка": "один_нет_проходящего", "причина": "частичная_негодность", "приоритет": 2},
+    {"проверка": "усиленный_случай",
+     "причина": "оба_предпочли_неавторскую_и_назвали_авторскую_непроходной", "приоритет": 1},
+    {"проверка": "нет_совокупно_годного", "причина": "нет_консенсусно_годного", "приоритет": 1},
+    {"проверка": "рисунок_выбора", "причина": "рисунок", "приоритет": None},
+]
+IDEA_OUTCOME_PATTERNS = [
+    {"рисунок": "обе_одну_авторскую", "причина": "подтверждён", "приоритет": 4},
+    {"рисунок": "обе_одну_неавторскую", "причина": "оба_предпочли_неавторскую", "приоритет": 2},
+    {"рисунок": "авторская_и_неавторская", "причина": "расхождение", "приоритет": 3},
+    {"рисунок": "разные_неавторские", "причина": "три_подхода_на_столе", "приоритет": 3},
+]
+
+
+def _idea_variant(mutate):
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    mutate(raw["stages"]["исходы_идеи"], raw)
+    return module, raw
+
+
+def _refused_idea(mutate):
+    module, raw = _idea_variant(mutate)
+    with pytest.raises(module.ContractError):
+        module.Tables.from_raw(raw).check()
+
+
+def test_idea_outcome_rules_are_pinned_whole_with_order_and_priorities():
+    """Порядок строк — порядок проверки; приоритет и причина — буквально по §4.5."""
+    assert STAGES["исходы_идеи"] == {"строки": IDEA_OUTCOME_ROWS, "рисунки": IDEA_OUTCOME_PATTERNS}
+    module = import_tables_module()
+    assert module.OUTCOME_CHECKS == tuple(r["проверка"] for r in IDEA_OUTCOME_ROWS)
+    assert module.OUTCOME_PATTERNS == tuple(r["рисунок"] for r in IDEA_OUTCOME_PATTERNS)
+    assert module.OUTCOME_UNPRIORITISED == ("открытое_возражение", "рисунок_выбора")
+    assert (module.OUTCOME_PATTERN_ROW, module.OUTCOME_PATTERN_ROW_REASON) == ("рисунок_выбора", "рисунок")
+
+
+def test_idea_outcome_reasons_are_exactly_the_declared_nine():
+    reasons = [r["причина"] for r in STAGES["исходы_идеи"]["строки"][:-1]] + [
+        r["причина"] for r in STAGES["исходы_идеи"]["рисунки"]]
+    assert len(reasons) == 9 and len(set(reasons)) == 9
+    assert sorted(reasons) == sorted(BLOCKS["списки"]["исходы_идеи"])
+    assert BLOCKS["блоки"]["БИ"]["объявленное_количество"] == {"исходы_идеи": 9}
+
+
+def test_idea_outcome_section_is_registered_and_closed_in_shape():
+    module = import_tables_module()
+    assert "исходы_идеи" in module.TOP_LEVEL["stages"]
+    assert set(module.SHAPES["stages"]["исходы_идеи"].fields) == {"строки", "рисунки"}
+
+
+@pytest.mark.parametrize("part", ["строки", "рисунки"])
+def test_deleting_an_idea_outcome_part_is_a_named_error(part):
+    _refused_idea(lambda section, _raw: section.pop(part))
+
+
+def test_deleting_the_idea_outcome_section_is_a_named_error():
+    _refused_idea(lambda _section, raw: raw["stages"].pop("исходы_идеи"))
+
+
+@pytest.mark.parametrize("part,index,field", [
+    (part, i, field)
+    for part, key, n in (("строки", "проверка", 6), ("рисунки", "рисунок", 4))
+    for i in range(n) for field in (key, "причина", "приоритет")])
+def test_deleting_any_idea_outcome_field_is_a_named_error(part, index, field):
+    _refused_idea(lambda section, _raw: section[part][index].pop(field))
+
+
+@pytest.mark.parametrize("part,index", [("строки", i) for i in range(6)] + [("рисунки", i) for i in range(4)])
+def test_deleting_any_idea_outcome_row_is_a_named_error(part, index):
+    _refused_idea(lambda section, _raw: section[part].pop(index))
+
+
+def test_an_extra_idea_outcome_row_or_field_is_refused():
+    _refused_idea(lambda section, _raw: section["строки"].append(
+        {"проверка": "неполный_прогон", "причина": "неполный", "приоритет": 1}))
+    _refused_idea(lambda section, _raw: section["рисунки"].append(
+        {"рисунок": "четвёртый", "причина": "десятый", "приоритет": 1}))
+    _refused_idea(lambda section, _raw: section["строки"][1].update({"почему": "x"}))
+    _refused_idea(lambda section, _raw: section.update({"прочее": []}))
+
+
+@pytest.mark.parametrize("part,index,field,value", [
+    ("строки", 1, "приоритет", "1"), ("строки", 1, "приоритет", True), ("строки", 1, "приоритет", 0),
+    ("строки", 1, "приоритет", -1), ("строки", 1, "приоритет", 1.5), ("строки", 1, "приоритет", None),
+    ("строки", 0, "приоритет", 1), ("строки", 5, "приоритет", 1),
+    ("рисунки", 0, "приоритет", None), ("рисунки", 0, "приоритет", "4"), ("рисунки", 0, "приоритет", False),
+    ("строки", 1, "причина", ""), ("строки", 1, "причина", None), ("строки", 1, "причина", 3),
+    ("рисунки", 2, "причина", ["расхождение"]),
+    ("строки", 5, "причина", "ниже"), ("строки", 5, "причина", None),
+    ("строки", 2, "проверка", "выдумка"), ("рисунки", 3, "рисунок", "выдумка"),
+    ("строки", 2, "проверка", None), ("рисунки", 3, "рисунок", 7)])
+def test_invalid_idea_outcome_values_are_refused(part, index, field, value):
+    _refused_idea(lambda section, _raw: section[part][index].__setitem__(field, value))
+
+
+@pytest.mark.parametrize("part,left,right", [
+    ("строки", 1, 2), ("строки", 0, 5), ("строки", 3, 4), ("рисунки", 0, 1), ("рисунки", 2, 3)])
+def test_reordering_idea_outcome_rows_is_refused(part, left, right):
+    """Переставить две строки — допустимые значения, другой исход; таблица должна отказать."""
+    def swap(section, _raw):
+        rows = section[part]
+        rows[left], rows[right] = rows[right], rows[left]
+    _refused_idea(swap)
+
+
+def test_idea_outcome_reasons_must_match_the_declared_list_both_ways():
+    # другая допустимая причина вместо настоящей / повтор причины / переименование в списке
+    _refused_idea(lambda section, _raw: section["строки"][2].__setitem__("причина", "нет_годного_варианта"))
+    _refused_idea(lambda section, _raw: section["рисунки"][0].__setitem__("причина", "расхождение"))
+    _refused_idea(lambda section, _raw: section["рисунки"][0].__setitem__("причина", "новая_причина"))
+    _refused_idea(lambda _s, raw: raw["blocks"]["списки"]["исходы_идеи"].append("новая_причина"))
+    _refused_idea(lambda _s, raw: raw["blocks"]["списки"]["исходы_идеи"].pop())
+    _refused_idea(lambda _s, raw: raw["blocks"]["списки"]["исходы_идеи"].__setitem__(0, "возражение"))
+
+
+def _idea_oracle_outcome(path, tables):
+    from roundtable import contracts
+    data = json.loads(path.read_text(encoding="utf-8"))
+    given = data["вход"]
+    criteria = given["критерий_успеха"]
+    parsed = contracts.validate_criteria(criteria)
+    ids = [card["candidate_id"] for card in given["карточки"]]
+    views = []
+    for critic, answer in given["ответы_критиков"].items():
+        mandatory = [c["id"] for c in criteria if c["обязательный"]]
+        raw = json.dumps({
+            "assessments": [{"candidate_id": i, "criteria": [
+                {"criterion_id": m, "grade": answer["оценки"][i][m], "reason": "р"} for m in mandatory]}
+                for i in ids],
+            "selected_candidate_id": answer["selected_candidate_id"],
+            "mechanism_relations": answer["mechanism_relations"],
+            "reasons": ["р"], "unknowns": [], "blockers": []}, ensure_ascii=False)
+        views.append(contracts.validate_comparison(raw, candidate_ids=ids, criteria=parsed,
+                                                   critic=critic, tables=tables))
+    return contracts.decide_outcome(
+        *views, author_id=given["автор_candidate_id"],
+        framing_open=bool(given.get("есть_открытые_возражения_к_постановке")), tables=tables)
+
+
+IDEA_ORACLE = {
+    "возражение_держит_стадию": None, "нет_годного_варианта": 1, "частичная_негодность": 2,
+    "оба_предпочли_неавторскую_и_назвали_авторскую_непроходной": 1, "нет_консенсусно_годного": 1,
+    "подтверждён": 4, "оба_предпочли_неавторскую": 2, "расхождение": 3, "три_подхода_на_столе": 3,
+}
+
+
+def test_idea_outcome_oracle_fixtures_run_through_the_real_table():
+    """Эталон поведения: подмену приоритета или причины в настоящей таблице ловит только он."""
+    fixtures = sorted((_CANON.parents[3] / "deploy" / "tests" / "fixtures" / "roundtable" / "idea")
+                      .glob("outcome-*.json"))
+    assert len(fixtures) == 9
+    tables = import_tables_module().load()
+    seen = {}
+    for path in fixtures:
+        want = json.loads(path.read_text(encoding="utf-8"))["ожидается"]
+        outcome = _idea_oracle_outcome(path, tables)
+        assert (outcome.reason, outcome.priority) == (want["причина"], want["приоритет"]), path.name
+        assert (outcome.verdict, outcome.run_state) == ("РЕШЕНИЕ_АНТОНА", "ждёт_Антона") == (
+            want["вердикт"], want["состояние_прогона"]), path.name
+        seen[outcome.reason] = outcome.priority
+    assert seen == IDEA_ORACLE, "приоритеты и причины в таблице разошлись с §4.5"

@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import tables as tables_module
-from .context import canonical_json
+from .context import PackageRefused, canonical_json
 from .state import IdeaCandidate
 from .tables import ContractError
 
@@ -247,7 +247,8 @@ def _no_constant(name):
     raise ValueError(f"недопустимая константа {name}")
 
 
-_HOSTILE = (RecursionError, ValueError, TypeError, UnicodeError, OverflowError, MemoryError)
+_HOSTILE = (RecursionError, ValueError, TypeError, UnicodeError, OverflowError, MemoryError,
+            PackageRefused)
 
 
 def parse_answer(raw, limit: int | None = None) -> object:
@@ -516,12 +517,8 @@ class IdeaOutcome:
     row: int
 
 
-_CHECKS = (
-    "открытое_возражение", "оба_нет_проходящего", "один_нет_проходящего",
-    "усиленный_случай", "нет_совокупно_годного", "рисунок_выбора",
-)
-_PATTERNS = ("обе_одну_авторскую", "обе_одну_неавторскую",
-             "авторская_и_неавторская", "разные_неавторские")
+_CHECKS = tables_module.OUTCOME_CHECKS
+_PATTERNS = tables_module.OUTCOME_PATTERNS
 
 
 def outcome_rules(tables=None) -> dict:

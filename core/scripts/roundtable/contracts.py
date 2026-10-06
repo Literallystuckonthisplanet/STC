@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import tables as tables_module
-from .context import PackageRefused, canonical_json
+from .context import PackageRefused, build_comparison_package, canonical_json
 from .state import IdeaCandidate
 from .tables import ContractError
 
@@ -706,14 +706,19 @@ def _permutation_ok(order, size: int) -> bool:
             and sorted(order) == list(range(size)))
 
 
-def run_idea_stage(store, *, criteria, author_card, ask, critics=("claude", "codex"),
-                   saved_proposals=None, saved_comparisons=None, new_id=None, shuffle=None,
-                   tables=None) -> StageResult:
+def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, registries=None,
+                   critics=("claude", "codex"), saved_proposals=None, saved_comparisons=None,
+                   new_id=None, shuffle=None, tables=None) -> StageResult:
     """Run the «идея» stage end to end against a locked `RunStore`.
 
     `ask(critic, request)` is the only paid call. Phase 0 runs before it can be
     reached. `new_id` / `shuffle` are injection points for tests; by default
     IDs and the permutation come from `secrets` (identity permutation allowed).
+
+    `sections` (the shown task sections), `registries` (default: empty) and
+    `withheld` (the author and the second critic) feed the second package, which
+    is built by `context.build_comparison_package` from the journal's cards and
+    permutation only -- so a resumed run builds the same bytes.
     """
     tables = _tables(tables)
     critics = list(critics)
@@ -772,7 +777,11 @@ def run_idea_stage(store, *, criteria, author_card, ask, critics=("claude", "cod
     author_id = next(c.candidate_id for c in candidates if c.source == AUTHOR_SOURCE)
     ordered = [candidates[i] for i in state.idea_candidates_permutation]
     ids = [c.candidate_id for c in ordered]
-    shown = [{"candidate_id": c.candidate_id, "text": c.canonical_bytes.decode("utf-8")} for c in ordered]
+    empty = {"решения": [], "области": [], "журнал_доказательств": []}
+    package = build_comparison_package(
+        sections, empty if registries is None else registries, "идея", candidates,
+        state.idea_candidates_permutation, tables=tables, withheld=withheld)
+    shown = [{"candidate_id": row["candidate_id"], "text": row["текст"]} for row in package.candidates]
 
     def compare(raw, critic):
         return validate_comparison(raw, candidate_ids=ids, criteria=parsed_criteria,
@@ -781,7 +790,8 @@ def run_idea_stage(store, *, criteria, author_card, ask, critics=("claude", "cod
     comparisons = _collect(
         store, ask, critics, stage=COMPARE_STAGE, round_number=round_number,
         request=lambda critic, n: {"phase": "compare", "critic": critic, "attempt": n,
-                                   "criteria": criteria_view, "candidates": shown},
+                                   "criteria": criteria_view, "candidates": shown,
+                                   "package": package.material()},
         check=compare,
         saved={c: _trusted(lambda r: compare(r, c), raw, c) for c, raw in (saved_comparisons or {}).items()},
         tables=tables)

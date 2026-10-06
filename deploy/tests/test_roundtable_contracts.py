@@ -143,7 +143,14 @@ class Asker:
         return len([c for c in self.calls if phase in (None, c[1])])
 
 
+SECTIONS = {"задача": "перевезти поток заказов", "ограничения": "бюджет ограничен",
+            "критерий_успеха": "работает при пике", "уже_закрытые_решения": "язык не меняем"}
+WITHHELD = {"автор": "Лунтик", "второй_критик": "Бибигон"}
+
+
 def stage(directory, ask, **kw):
+    kw.setdefault("sections", SECTIONS)
+    kw.setdefault("withheld", WITHHELD)
     kw.setdefault("criteria", ONE)
     kw.setdefault("author_card", proposal(ONE, "автор"))
     kw.setdefault("new_id", fixed_ids())

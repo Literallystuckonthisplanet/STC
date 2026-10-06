@@ -790,6 +790,21 @@ def _render_skills(core_dir, adapter, varmap, result, native_skills_dir):
         result.manifest.append({"path": rel, "kind": "skill", "source": f"core/skills/{name}/SKILL.md"})
 
 
+def _extract_codex_direct_reminder(pev):
+    """Extract the required single direct reminder from the source rule."""
+    start = "<!-- codex-direct-reminder:start -->"
+    end = "<!-- codex-direct-reminder:end -->"
+    if pev.count(start) != 1 or pev.count(end) != 1:
+        raise ValueError("pev.md must contain exactly one Codex reminder pair")
+    start_at, end_at = pev.index(start), pev.index(end)
+    if start_at >= end_at:
+        raise ValueError("Codex reminder markers are out of order")
+    reminder = pev[start_at + len(start):end_at].strip()
+    if not reminder:
+        raise ValueError("Codex direct reminder must not be empty")
+    return reminder
+
+
 def _render_always_context(core_dir, adapter, result, native_dir, harness):
     """Generate the always-context .stc.md bundle with INLINE rule content.
 
@@ -845,6 +860,11 @@ def _render_always_context(core_dir, adapter, result, native_dir, harness):
             "a fallback before acting.",
             "",
         ])
+        if harness == "codex":
+            # Source of truth remains the compact block in pev.md.
+            pev = _read(os.path.join(core_dir, "rules", "pev.md"))
+            reminder = _extract_codex_direct_reminder(pev)
+            lines.extend(["## Direct execution reminder", "", reminder, ""])
     else:
         # Inline the 3 firing rules (behavior/pev/session). project_docs
         # stays lazy (read by anchor [[project-docs]] when writing ADRs/specs).

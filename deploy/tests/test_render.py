@@ -819,6 +819,35 @@ def test_claude_bundle_is_pointer_not_inline():
             f"twice (bundle + H06)")
 
 
+def test_codex_hook_bundle_carries_direct_delegation_reminder():
+    """Codex gets execution ownership even before SessionStart hook delivery."""
+    stc, registry, adapters, _ = D._gather()
+    provider = R.provider_for(stc, "codex", REPO)
+    rr = R.render_harness(stc, registry, provider, adapters["codex"], D.CORE, REPO)
+    body = rr.files["AGENTS.stc.md"]
+    for required in ("## Direct execution reminder", "cheapest capable executor",
+                     "# in-main", "never ownership"):
+        assert required in body
+
+
+def test_codex_direct_reminder_rejects_malformed_source_markers():
+    """Missing, duplicate, reversed, and empty markers fail closed."""
+    start = "<!-- codex-direct-reminder:start -->"
+    end = "<!-- codex-direct-reminder:end -->"
+    cases = (
+        "text",
+        f"{start}x{end}{start}y{end}",
+        f"{end}x{start}",
+        f"{start}  {end}",
+    )
+    for source in cases:
+        try:
+            R._extract_codex_direct_reminder(source)
+        except ValueError:
+            continue
+        raise AssertionError(f"malformed reminder accepted: {source!r}")
+
+
 def test_commands_and_skills_substitute_render_vars():
     """REGRESSION (the unresolved ${DOCS_ROOT} bug): commands and skills use
     deploy-owned ${VAR} tokens inline (no hook-style declaration block) —

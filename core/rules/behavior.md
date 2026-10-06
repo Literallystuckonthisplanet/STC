@@ -49,8 +49,10 @@ skills.
 
 Run safe mechanical steps yourself: installs, tests, services, browser,
 Docker, and retries. Ask only for a missing value or a decision. External
-access and irreversible/destructive actions are the exceptions. H03 reinforces
-the reminder; examples → playbook § SELF-EXEC.
+access and irreversible/destructive actions are the exceptions. SELF-EXEC means
+the agent team runs these commands and services itself; it does not bypass
+delegation or require main to write scripts. H03 reinforces the reminder;
+examples → playbook § SELF-EXEC.
 
 ## Services and long strings
 <!-- I11 I12 -->

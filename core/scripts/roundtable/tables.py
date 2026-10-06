@@ -118,6 +118,7 @@ TOP_LEVEL = {
     "stages": {
         "стадии", "слепой_вопрос", "сигнал_нежизнеспособности",
         "метрика_цены_понимания", "приоритет_расхода", "исходы_идеи",
+        "исполнение_идеи",
     },
     "findings": {"находки"},
 }
@@ -769,6 +770,7 @@ SHAPES = {
         "исходы_идеи": Record(
             строки=Sequence(Record("проверка", "причина", "приоритет")),
             рисунки=Sequence(Record("рисунок", "причина", "приоритет"))),
+        "исполнение_идеи": Record("предел_прерванных_попыток"),
     },
     "findings": {
         "находки": Sequence(Record("id", "круг", "что", "статус", "тест", "поломка",
@@ -1773,11 +1775,21 @@ class Tables:
         checked.append("правила пакета: схемы, пределы, пути и разделы согласованы")
 
         self._check_idea_outcomes()
+        self._check_idea_execution()
         checked.append("исходы идеи: коды, порядок и приоритеты закрыты, причины сходятся со списком")
 
         self._check_shapes()
         checked.append(f"{len(SHAPES)} таблиц: выдуманных полей нет ни на какой глубине")
         return checked
+
+    def _check_idea_execution(self) -> None:
+        """stages.исполнение_идеи: предел вызовов критика, прерванных до ответа (БИ, аудит безопасности)."""
+        section = self.stages.get("исполнение_идеи")
+        if not isinstance(section, dict) or set(section) != {"предел_прерванных_попыток"}:
+            raise ContractError("stages.исполнение_идеи: нужно ровно поле предел_прерванных_попыток")
+        limit = section["предел_прерванных_попыток"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ContractError(f"stages.исполнение_идеи.предел_прерванных_попыток: целое от 1, получено {limit!r}")
 
     def _check_idea_outcomes(self) -> None:
         """stages.исходы_идеи (§4.5): закрытые коды, приоритеты и причины == blocks.списки.исходы_идеи."""

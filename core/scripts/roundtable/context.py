@@ -538,6 +538,11 @@ class Package:
         return self.as_dict()["файлы"]
 
     @property
+    def criteria(self) -> list:
+        """The criteria block of a comparison package ([] when it carries none)."""
+        return self.as_dict().get("критерии", [])
+
+    @property
     def candidates(self) -> list:
         """The candidate block of a comparison package, in the recorded order ([] elsewhere)."""
         return self.as_dict().get("кандидаты", [])
@@ -1040,6 +1045,11 @@ def _check_blind(tables, stage, blind, declared_files, sections, withheld, secon
     missing = allowed - present
     if missing:
         raise PackageRefused("слепой_пакет_неполон", ", ".join(sorted(missing)))
+    return _hidden_texts(tables, withheld, second)
+
+
+def _hidden_texts(tables, withheld, second=False) -> dict:
+    """The hidden texts, validated: exactly the names of `слепой_вопрос.прячем` (minus the shown one)."""
     wanted = set(tables.stages["слепой_вопрос"]["прячем"])
     if second:
         if SHOWN_AS_CANDIDATE not in wanted:
@@ -1283,18 +1293,34 @@ def _comparison_block(candidates, permutation, limits) -> list:
     return block
 
 
-def build_comparison_package(sections, registries, stage, candidates, permutation,
-                             tables=None, withheld=None) -> Package:
-    """The second package of a stage with `второй_вопрос: сравни_с_предложенным`.
+def _criteria_block(criteria, limits) -> list:
+    """The success criteria as the critic receives them: `{id, text, mandatory}`, bounded."""
+    if not isinstance(criteria, (list, tuple)) or not criteria:
+        raise _bad("критерии: нужен непустой список")
+    block = []
+    for row in criteria:
+        if (not isinstance(row, dict) or set(row) != {"id", "text", "mandatory"}
+                or not isinstance(row["id"], str) or not isinstance(row["text"], str)
+                or not isinstance(row["mandatory"], bool)):
+            raise _bad("критерии: запись не вида {id, text, mandatory}")
+        _encodable(row["id"], "критерий.id")
+        _encodable(row["text"], "критерий.text")
+        block.append({"id": row["id"], "text": row["text"], "mandatory": row["mandatory"]})
+    if len(canonical_json(block)) > limits["предел_раздела_байт"]:
+        raise PackageRefused("превышение_размера", "критерии")
+    return block
 
-    The same build as the blind one -- the same section list, no files, the same
-    registry rules, secret signatures, character whitelist and trace search --
-    plus the `кандидаты` block. The block is the only place untrusted candidate
-    text lives: it is a JSON value of its own, so quotes, brackets and "ignore
-    the task" in a card cannot reach a section. `withheld` carries the author and
-    the second critic; the proposed solution is shown here and is not hidden.
-    """
-    tables = tables or tables_module.load()
+
+def _criteria_leaves(block) -> list:
+    leaves = []
+    for index, row in enumerate(block):
+        leaves.append((f"критерий[{index}].id", row["id"], False))
+        leaves.append((f"критерий[{index}].text", row["text"], False))
+    return leaves
+
+
+def _comparison_parts(sections, registries, stage, tables, withheld, criteria):
+    """What the second package shares with the check of its inputs: everything but the candidates."""
     limits = tables.vocabulary["пакет"]
     _validate_body([], sections, registries, stage)
     if stage not in tables.stages["стадии"]:
@@ -1304,20 +1330,70 @@ def build_comparison_package(sections, registries, stage, candidates, permutatio
         raise PackageRefused("раздел_вне_пакета", ", ".join(sorted(forbidden)))
     hidden_texts = _check_blind(tables, stage, True, [], sections, withheld, second=True)
     _check_sections(sections, limits)
-    block = _comparison_block(candidates, permutation, limits)
+    criteria_block = None if criteria is None else _criteria_block(criteria, limits)
     normalised = _build_registries(registries, tables, True)
-    leaves = _shown_leaves(sections, normalised, [], block)
+    return limits, hidden_texts, criteria_block, normalised
+
+
+def _judge(leaves, hidden_texts, limits) -> None:
     _check_secrets(leaves, limits)
-    manifest_hash = digest(canonical_json([]))
-    packed = canonical_json({
+    _check_traces(hidden_texts, leaves, limits)
+
+
+def check_comparison_inputs(sections, registries, stage, tables=None, withheld=None, criteria=None) -> None:
+    """Everything `build_comparison_package` will judge, except the candidates -- before any paid call."""
+    tables = tables or tables_module.load()
+    limits, hidden, criteria_block, normalised = _comparison_parts(
+        sections, registries, stage, tables, withheld, criteria)
+    _judge(_shown_leaves(sections, normalised, []) + _criteria_leaves(criteria_block or []), hidden, limits)
+
+
+def check_candidate_card(data: bytes, stage, tables=None, withheld=None) -> None:
+    """The checks the second package applies to ONE card, over the card's final (normalised) bytes.
+
+    The same code as the build: size, encoding, the character whitelist, the secret
+    signatures and the trace of the hidden. A card that fails here would fail the package
+    later, when the set is already written -- so the caller asks first.
+    """
+    tables = tables or tables_module.load()
+    limits = tables.vocabulary["пакет"]
+    comparison_sections(tables, stage)
+    hidden = _hidden_texts(tables, withheld, second=True)
+    block = _comparison_block([state_module.IdeaCandidate("cand_check", "check", data)], (0,), limits)
+    _judge(_shown_leaves({}, {}, [], block), hidden, limits)
+
+
+def build_comparison_package(sections, registries, stage, candidates, permutation,
+                             tables=None, withheld=None, criteria=None) -> Package:
+    """The second package of a stage with `второй_вопрос: сравни_с_предложенным`.
+
+    The same build as the blind one -- the same section list, no files, the same
+    registry rules, secret signatures, character whitelist and trace search --
+    plus the `кандидаты` block (and, when given, the `критерии` block: the criteria reach
+    the critic only inside the package, so they are judged like the rest). The candidate
+    block is the only place untrusted card text lives: it is a JSON value of its own, so
+    quotes, brackets and "ignore the task" in a card cannot reach a section. `withheld`
+    carries the author and the second critic; the proposed solution is shown here and is
+    not hidden.
+    """
+    tables = tables or tables_module.load()
+    limits, hidden_texts, criteria_block, normalised = _comparison_parts(
+        sections, registries, stage, tables, withheld, criteria)
+    block = _comparison_block(candidates, permutation, limits)
+    leaves = _shown_leaves(sections, normalised, [], block) + _criteria_leaves(criteria_block or [])
+    _check_secrets(leaves, limits)
+    body = {
         "стадия": stage,
         "манифест": [],
-        "хеш_манифеста": manifest_hash,
+        "хеш_манифеста": digest(canonical_json([])),
         "реестры": normalised,
         "разделы": dict(sections),
         "файлы": {},
         "кандидаты": block,
-    })
+    }
+    if criteria_block is not None:
+        body["критерии"] = criteria_block
+    packed = canonical_json(body)
     if len(packed) > limits["предел_пакета_байт"]:
         raise PackageRefused("превышение_размера", f"пакет {len(packed)} > {limits['предел_пакета_байт']}")
     _check_traces(hidden_texts, leaves, limits)

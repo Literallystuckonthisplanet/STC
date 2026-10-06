@@ -3613,7 +3613,7 @@ class _Ask:
         self.requests.append(request)
         steps = self.script[(critic, request["phase"])]
         step = steps.pop(0) if len(steps) > 1 else steps[0]
-        return json.dumps(step) if isinstance(step, dict) else step
+        return json.dumps(step, ensure_ascii=False, separators=(",", ":")) if isinstance(step, dict) else step
 
     def count(self, phase=None):
         return len([c for c in self.calls if phase in (None, c[1])])
@@ -3769,7 +3769,9 @@ def test_bi_11_the_second_package_after_a_crash_and_resume_is_byte_for_byte_the_
     # and the package is exactly what the builder gives for the journal's cards and permutation
     rebuilt = C.build_comparison_package(given["разделы_пакета_эталон"], {"решения": [], "области": [], "журнал_доказательств": []},
                                          "идея", list(before.idea_candidates), before.idea_candidates_permutation,
-                                         tables=TABLES, withheld=IDEA_WITHHELD)
+                                         tables=TABLES, withheld=IDEA_WITHHELD,
+                                         criteria=[{"id": c["id"], "text": c["текст"], "mandatory": c["обязательный"]}
+                                                   for c in given["критерий_успеха"]])
     assert rebuilt.material() == first_bytes
 
 
@@ -3843,3 +3845,292 @@ def test_guard_stages_idea_questions_drive_both_packages():
 
 def _blind_with_ok():
     return C.visible_sections(TABLES, "идея", True) == set(SHOWN)
+
+
+# ==========================================================================
+# БИ, аудит безопасности стадии: карточка не должна пройти валидатор и упасть в пакете,
+# падение процесса не меняет исход, второй пакет закреплён, критерии идут через проверки пакета
+# ==========================================================================
+
+_INJ = _fixture("candidate-injection")["вход"]
+_CARD_C = _proposal_of(_INJ["карточки"][1])
+_CARD_X = _proposal_of(_INJ["карточки"][2])
+_AUTHOR = _proposal_of(_INJ["карточки"][0])
+_ANSWERS = {k: _comparison_of(v) for k, v in _INJ["ответы_критиков"].items()}
+_KEY = "AKIA" + "IOSFODNN7EXAMPLE"                      # подставной ключ, собран из частей
+_SECRET = "pass" + "word = 'hunter2hunter2'"
+
+
+def _audit(tmp_path, claude=None, codex=None, author=None, name="run", tables=TABLES, **kwargs):
+    """Весь проход с готовыми фикстурными сравнениями; ответы слепого прохода можно подменить."""
+    script = {("claude", "blind"): claude or [_CARD_C], ("codex", "blind"): codex or [_CARD_X],
+              ("claude", "compare"): [_ANSWERS["критик_1"]], ("codex", "compare"): [_ANSWERS["критик_2"]]}
+    directory = _new_run(tmp_path / name)
+    ask = _Ask(script)
+    options = {"author_card": author or _AUTHOR, "sections": _INJ["разделы_пакета_эталон"], "tables": tables}
+    options.update(kwargs)
+    return directory, ask, _run(directory, ask, _INJ, **options)
+
+
+def _edit(card, **changes):
+    return {**card, **changes}
+
+
+BAD_CARD_TEXTS = ["значение ≥ 5", "поток → очередь", "готово ✓", "ракета \U0001f680", "нуль\u200bширина",
+                  "про Лунтика рассказ", "про Бибигон рассказ", _SECRET, "ключ " + _KEY]
+
+
+def test_audit_positive_control_the_clean_run_reaches_the_verdict(tmp_path):
+    directory, ask, result = _audit(tmp_path)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ask.count() == 4
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS)
+def test_audit_h1_a_blind_card_the_package_would_refuse_is_an_ordinary_bad_answer(tmp_path, text):
+    directory, ask, result = _audit(tmp_path, claude=[_edit(_CARD_C, variant=text), _CARD_C])
+    assert [c for c in ask.calls if c[:2] == ("claude", "blind")] == [("claude", "blind", 1), ("claude", "blind", 2)]
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and result.run_state == "ждёт_Антона"
+    state = S.RunStore(directory, TABLES).load()
+    assert len(state.idea_candidates) == 3
+    assert all(text not in c.canonical_bytes.decode("utf-8") for c in state.idea_candidates)
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS)
+def test_audit_h1_both_attempts_bad_is_an_incomplete_run_not_a_stuck_one(tmp_path, text):
+    bad = _edit(_CARD_C, mechanism=text)
+    directory, ask, result = _audit(tmp_path, claude=[bad, bad])
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный")
+    state = S.RunStore(directory, TABLES).load()
+    assert not state.idea_candidates and ask.count("compare") == 0
+
+
+@pytest.mark.parametrize("field", ["variant", "mechanism", "cost", "reversibility"])
+def test_audit_h1_the_check_reads_every_text_field_of_the_card(tmp_path, field):
+    directory, ask, result = _audit(tmp_path, claude=[_edit(_CARD_C, **{field: "готово ✓"}), _CARD_C])
+    assert ask.count("blind") == 3 and result.verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+def test_audit_h1_a_card_that_grows_over_the_limit_after_normalisation_is_refused_before_the_set(tmp_path):
+    def raw(card):
+        return json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+
+    padded = _edit(_CARD_C, variant="я" * 300)
+    narrow = copy.deepcopy(TABLES.raw)
+    narrow["vocabulary"]["пакет"]["предел_файла_байт"] = len(raw(padded).encode("utf-8")) + 5
+    tables = T.Tables.from_raw(narrow)
+    assert len(raw(padded).encode("utf-8")) <= narrow["vocabulary"]["пакет"]["предел_файла_байт"]   # the answer fits
+    assert len(C.canonical_json(K.normalize_card(padded))) > narrow["vocabulary"]["пакет"]["предел_файла_байт"]
+    directory, ask, result = _audit(tmp_path, claude=[raw(padded), _CARD_C], tables=tables)
+    assert ask.count("blind") == 3 and result.verdict == "РЕШЕНИЕ_АНТОНА"
+    control = _edit(_CARD_C, variant="я" * 10)                                     # same limit, smaller card
+    _, ask2, result2 = _audit(tmp_path, claude=[raw(control)], tables=tables, name="control")
+    assert ask2.count("blind") == 2 and result2.verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS)
+def test_audit_h1_the_author_card_is_judged_before_any_paid_call(tmp_path, text):
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask({})
+    with pytest.raises(K.AuthorCardRefused):
+        _run(directory, ask, _INJ, author_card=_edit(_AUTHOR, variant=text), sections=_INJ["разделы_пакета_эталон"])
+    assert ask.count() == 0 and not S.RunStore(directory, TABLES).load().attempts
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS[:5] + ["про Лунтика", _SECRET, _KEY])
+def test_audit_l5_the_criteria_go_through_the_checks_of_the_package(tmp_path, text):
+    criteria = copy.deepcopy(_INJ["критерий_успеха"])
+    criteria[2]["текст"] = text
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask({})
+    cards = {**_INJ, "критерий_успеха": criteria}
+    with pytest.raises(K.AuthorCardRefused):
+        _run(directory, ask, cards, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert ask.count() == 0
+    with pytest.raises(K.AuthorCardRefused):                           # and the same for a section of the task
+        _run(directory, ask, _INJ, author_card=_AUTHOR, sections={**_INJ["разделы_пакета_эталон"], "ограничения": text})
+    assert ask.count() == 0
+
+
+def test_audit_l5_criteria_are_bounded_and_reach_the_critic_only_inside_the_package(tmp_path):
+    big = copy.deepcopy(_INJ["критерий_успеха"]) + [
+        {"id": f"Д{n}", "текст": "я" * 900, "обязательный": False} for n in range(100)]
+    directory = _new_run(tmp_path / "big")
+    with pytest.raises(K.AuthorCardRefused):
+        _run(directory, _Ask({}), {**_INJ, "критерий_успеха": big}, author_card=_AUTHOR,
+             sections=_INJ["разделы_пакета_эталон"])
+    _, ask, result = _audit(tmp_path, name="ok")
+    compare = [r for r in ask.requests if r["phase"] == "compare"]
+    assert len(compare) == 2
+    for request in compare:
+        block = json.loads(request["package"])["критерии"]
+        assert request["criteria"] == block and [c["id"] for c in block] == ["К1", "К2", "К3"]
+
+
+# -- H2: a crash changes neither the budget nor the outcome ---------------------------
+
+class _Crash(Exception):
+    pass
+
+
+def _crashing(counter):
+    def ask(critic, request):
+        counter.append((critic, request["phase"], request["attempt"]))
+        raise _Crash()
+    return ask
+
+
+def _resume(directory, **kwargs):
+    ask = _Ask({("claude", "compare"): [_ANSWERS["критик_1"]], ("codex", "compare"): [_ANSWERS["критик_2"]],
+                ("claude", "blind"): [_CARD_C], ("codex", "blind"): [_CARD_X]})
+    options = {"author_card": _AUTHOR, "sections": _INJ["разделы_пакета_эталон"]}
+    options.update(kwargs)
+    return ask, _run(directory, ask, _INJ, **options)
+
+
+def test_audit_h2_a_crash_before_the_answer_does_not_spend_the_retry_budget(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    calls = []
+    with pytest.raises(_Crash):
+        _run(directory, _crashing(calls), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    state = S.RunStore(directory, TABLES).load()
+    assert len(calls) == 1 and all(a.status == "запущена" for a in state.attempts.values())
+    ask, result = _resume(directory)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+    state = S.RunStore(directory, TABLES).load()
+    key = (state.run_id, K.BLIND_STAGE, 1, "claude", 1)
+    assert state.attempts[key].possible_duplicate and "возможен_дубль" in state.flags
+    # the answer after the crash still has its full budget: a bad one gets its retry
+    other = _new_run(tmp_path / "again", "run-2")
+    with pytest.raises(_Crash):
+        _run(other, _crashing([]), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    ask2 = _Ask({("claude", "blind"): ["мусор", _CARD_C], ("codex", "blind"): [_CARD_X],
+                 ("claude", "compare"): [_ANSWERS["критик_1"]], ("codex", "compare"): [_ANSWERS["критик_2"]]})
+    result2 = _run(other, ask2, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert result2.verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [c[2] for c in ask2.calls if c[:2] == ("claude", "blind")] == [2, 3]
+
+
+def test_audit_h2_repeated_crashes_before_any_answer_are_bounded_by_their_own_limit(tmp_path):
+    limit = TABLES.stages["исполнение_идеи"]["предел_прерванных_попыток"]
+    assert limit == K.abort_limit(TABLES) == 2
+    directory = _new_run(tmp_path / "run")
+    for _ in range(limit):
+        calls = []
+        with pytest.raises(_Crash):
+            _run(directory, _crashing(calls), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+        assert len(calls) == 1
+    ask, result = _resume(directory)
+    assert ask.count("blind") == 1                                  # claude is cut off; codex answers once
+    assert [c for c in ask.calls if c[0] == "claude"] == []
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный")
+
+
+def test_audit_h2_the_abort_limit_is_read_from_the_table(tmp_path):
+    raw = copy.deepcopy(TABLES.raw)
+    raw["stages"]["исполнение_идеи"]["предел_прерванных_попыток"] = 1
+    one = T.Tables.from_raw(raw)
+    directory = _new_run(tmp_path / "run")
+    with pytest.raises(_Crash):
+        _run(directory, _crashing([]), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"], tables=one)
+    ask, result = _resume(directory, tables=one)
+    assert [c for c in ask.calls if c[0] == "claude"] == [] and result.verdict == "НЕПОЛНЫЙ_ПРОГОН"
+    for bad in (0, -1, "2", True, None, 1.5):
+        broken = copy.deepcopy(TABLES.raw)
+        broken["stages"]["исполнение_идеи"]["предел_прерванных_попыток"] = bad
+        with pytest.raises(T.ContractError):
+            K.abort_limit(T.Tables.from_raw(broken))
+
+
+def test_audit_h2_a_valid_answer_without_its_bytes_is_an_explicit_contract_error(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    ask = _Ask({("claude", "blind"): [_CARD_C], ("codex", "blind"): [_CARD_X],
+                ("claude", "compare"): [_ANSWERS["критик_1"]]})
+
+    def dying(critic, request):
+        if critic == "codex":
+            raise _Crash()
+        return ask(critic, request)
+
+    with pytest.raises(_Crash):
+        _run(directory, dying, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    again = _Ask({("codex", "blind"): [_CARD_X]})
+    with pytest.raises(K.ContractError, match="байтов нет"):
+        _run(directory, again, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert again.count() == 0
+    saved = _Ask({("codex", "blind"): [_CARD_X], ("claude", "compare"): [_ANSWERS["критик_1"]],
+                  ("codex", "compare"): [_ANSWERS["критик_2"]]})
+    result = _run(directory, saved, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"],
+                  saved_proposals={"claude": _CARD_C})                      # the caller's own copy is trusted and used
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ("claude", "blind", 2) not in saved.calls
+
+
+# -- M4: the second package is pinned in the journal -----------------------------------
+
+def _crash_in_compare(tmp_path, name="run"):
+    directory = _new_run(tmp_path / name)
+
+    def ask(critic, request):
+        if request["phase"] == "compare":
+            raise _Crash()
+        return json.dumps(_CARD_C if critic == "claude" else _CARD_X)
+
+    with pytest.raises(_Crash):
+        _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    return directory
+
+
+def test_audit_m4_the_hash_of_the_second_package_is_pinned_and_checked_on_resume(tmp_path):
+    directory = _crash_in_compare(tmp_path)
+    pinned = [f for f in S.RunStore(directory, TABLES).load().flags if f.startswith(K.PACKAGE_FLAG)]
+    assert len(pinned) == 1 and len(pinned[0]) == len(K.PACKAGE_FLAG) + 64
+    ask, result = _resume(directory)                                    # positive control: the same inputs
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [f for f in S.RunStore(directory, TABLES).load().flags if f.startswith(K.PACKAGE_FLAG)] == pinned
+
+
+@pytest.mark.parametrize("change", ["section", "criteria", "registries", "withheld"])
+def test_audit_m4_a_changed_input_on_resume_is_a_contract_error_with_no_call(tmp_path, change):
+    directory = _crash_in_compare(tmp_path)
+    given, options = copy.deepcopy(_INJ), {"author_card": _AUTHOR, "sections": dict(_INJ["разделы_пакета_эталон"])}
+    if change == "section":
+        options["sections"]["задача"] = "совсем другая задача"
+    elif change == "criteria":
+        given["критерий_успеха"][0]["текст"] = "другой критерий"
+    elif change == "registries":
+        options["registries"] = {"решения": [{"decision_id": "D-2", "kind": "closed_decision",
+                                              "text_hash": "b" * 64, "status": "закрыто"}],
+                                 "области": [], "журнал_доказательств": []}
+    if change == "withheld":
+        options["withheld"] = {"автор": "Колобок", "второй_критик": "Бибигон"}
+    ask = _Ask({})
+    with pytest.raises(K.ContractError, match="второй пакет"):
+        _run(directory, ask, given, **options)
+    assert ask.count() == 0
+
+
+def test_audit_h1_a_package_refused_in_phase_c_is_an_incomplete_run_not_an_exception(tmp_path, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise C.PackageRefused("похоже_на_секрет", "кандидат[0].текст")
+
+    monkeypatch.setattr(K, "build_comparison_package", refuse)
+    directory, ask, result = _audit(tmp_path)
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный") and ask.count("compare") == 0
+
+
+@pytest.mark.parametrize("text", BAD_CARD_TEXTS)
+def test_audit_the_card_check_and_the_package_give_the_same_verdict(text):
+    card = C.canonical_json(K.normalize_card(_edit(_CARD_C, variant=text)))
+    try:
+        C.check_candidate_card(card, "идея", TABLES, IDEA_WITHHELD)
+        single = None
+    except C.PackageRefused as refused:
+        single = refused.reason
+    assert single is not None                                            # every sample really is refused
+    assert _second_reason(candidates=_cands(texts=[_card("альфа"), card, _card("гамма")])) == single
+    clean = C.canonical_json(K.normalize_card(_CARD_C))
+    C.check_candidate_card(clean, "идея", TABLES, IDEA_WITHHELD)         # positive control
+
+
+def test_guard_stages_idea_execution_row():
+    assert TABLES.stages["исполнение_идеи"] == {"предел_прерванных_попыток": 2}
+    assert K.abort_limit(TABLES) == 2

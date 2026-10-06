@@ -33,7 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import tables as tables_module
-from .context import PackageRefused, build_comparison_package, canonical_json
+from .context import (PackageRefused, build_comparison_package, canonical_json, check_candidate_card, digest,
+                      check_comparison_inputs)
 from .state import IdeaCandidate
 from .tables import ContractError
 
@@ -50,6 +51,8 @@ SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
 AUTHOR_SOURCE = "автор"
 BLIND_STAGE = "идея:слепой"
 COMPARE_STAGE = "идея:сравнение"
+STAGE = "идея"
+PACKAGE_FLAG = "пакет_сравнения:"       # + sha256 of the second package: it is pinned once, in the journal
 OBJECTION_FLAG = "есть_открытые_возражения_к_постановке"
 # БИ-13: evidence of Anton's explicit OK. The real operation belongs to БУ;
 # until it exists the evidence is a run flag, and the guard reads only that.
@@ -414,11 +417,29 @@ def normalize_card(card: dict) -> dict:
     return form
 
 
-def check_author_card(card, criteria_raw, tables=None) -> dict:
-    """Phase 0 (БИ-6): pure checking, no store and no `ask` — nothing paid can precede it."""
+def fits_package(card: dict, tables, withheld) -> None:
+    """The card, in its final (normalised) bytes, passes what the second package will judge.
+
+    One function of `context.py`, not a copy: a card that would be refused by the package
+    after the set is written must be refused here, before it.
+    """
+    try:
+        check_candidate_card(canonical_json(normalize_card(card)), STAGE, tables, withheld)
+    except PackageRefused as refused:
+        raise AnswerRejected(f"карточка не пройдёт пакет: {refused.reason}") from None
+
+
+def check_author_card(card, criteria_raw, tables=None, withheld=None) -> dict:
+    """Phase 0 (БИ-6): pure checking, no store and no `ask` — nothing paid can precede it.
+
+    With `withheld` the card must also pass the package checks of its normalised bytes.
+    """
     criteria = validate_criteria(criteria_raw)
     try:
-        return validate_proposal(card, criteria, tables)
+        value = validate_proposal(card, criteria, tables)
+        if withheld is not None:
+            fits_package(value, _tables(tables), withheld)
+        return value
     except AnswerRejected as error:
         raise AuthorCardRefused(f"авторская карточка негодна: {error.reason}") from None
     except _HOSTILE as error:                       # pragma: no cover - parse_answer already converts
@@ -621,15 +642,44 @@ def decide_outcome(first: ValidatedComparison, second: ValidatedComparison, *, a
 # --------------------------------------------------------------------------
 
 def calls_made(state, stage: str, round_number: int, critic: str) -> int:
-    """Calls already spent for this critic in this phase — read from the attempt journal."""
+    """Calls already made for this critic in this phase (all of them) — read from the attempt journal."""
     return len({k[4] for k in state.attempts
                 if k[1] == stage and k[2] == round_number and k[3] == critic})
 
 
-def _valid_recorded(state, tables, stage: str, round_number: int, critic: str) -> bool:
+def _attempt_states(tables) -> list:
     order = tables.vocabulary.get("попытка", {}).get("состояния")
-    if not isinstance(order, list) or "провалидирована" not in order:
-        raise ContractError("vocabulary.попытка.состояния: нет состояния провалидирована")
+    if not isinstance(order, list) or "получена" not in order or "провалидирована" not in order:
+        raise ContractError("vocabulary.попытка.состояния: нет состояний получена и провалидирована")
+    return order
+
+
+def _split_attempts(state, tables, stage: str, round_number: int, critic: str) -> tuple:
+    """`(answered, aborted)` attempts of one critic in one phase.
+
+    Answered: the status is not below `получена` — the vendor's answer exists, the budget
+    is spent. Aborted: cut off before the answer (the process died) — no answer, no spend.
+    """
+    order = _attempt_states(tables)
+    floor = order.index("получена")
+    answered, aborted = [], []
+    for key, attempt in state.attempts.items():
+        if key[1] == stage and key[2] == round_number and key[3] == critic:
+            (answered if order.index(attempt.status) >= floor else aborted).append(attempt)
+    return answered, aborted
+
+
+def abort_limit(tables=None) -> int:
+    """Aborted calls allowed per critic per phase — from `stages.исполнение_идеи`."""
+    section = _tables(tables).stages.get("исполнение_идеи")
+    limit = section.get("предел_прерванных_попыток") if isinstance(section, dict) else None
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ContractError(f"stages.исполнение_идеи.предел_прерванных_попыток: {limit!r}")
+    return limit
+
+
+def _valid_recorded(state, tables, stage: str, round_number: int, critic: str) -> bool:
+    order = _attempt_states(tables)
     floor = order.index("провалидирована")
     return any(order.index(a.status) >= floor for k, a in state.attempts.items()
                if k[1] == stage and k[2] == round_number and k[3] == critic)
@@ -640,21 +690,28 @@ def _collect(store, ask, critics, *, stage: str, round_number: int, request, che
 
     A valid answer is never re-requested: it comes from `saved` (the caller's
     own durable copy — the journal records that an answer was valid, not its
-    bytes). Returns critic -> validated value or None (budget exhausted).
+    bytes). Only an ANSWER spends the retry budget; a call cut off before its answer
+    is marked a possible duplicate and bounded by its own limit. Returns critic ->
+    validated value or None (budget exhausted).
     """
     limit = 1 + retry_budget(tables)
+    cutoff = abort_limit(tables)
     results = {c: saved[c] for c in critics if c in saved}
     state = store.load()
     for critic in critics:
         if critic not in results and _valid_recorded(state, tables, stage, round_number, critic):
             raise ContractError(f"{critic}: в журнале валидный ответ, а его байтов нет")
+        for attempt in _split_attempts(state, tables, stage, round_number, critic)[1]:
+            if not attempt.possible_duplicate:
+                store.mark_possible_duplicate(stage, round_number, critic, attempt.key[4])
     iteration = 0
     while True:
         order = list(critics) if iteration == 0 else retry_order(state.run_id, critics)
         progressed = False
         for critic in order:
             state = store.load()
-            if critic in results or calls_made(state, stage, round_number, critic) >= limit:
+            answered, aborted = _split_attempts(state, tables, stage, round_number, critic)
+            if critic in results or len(answered) >= limit or len(aborted) >= cutoff:
                 continue
             number = calls_made(state, stage, round_number, critic) + 1
             store.record_attempt(stage, round_number, critic, number, "подготовлена")
@@ -700,6 +757,22 @@ def _trusted(check, raw, who: str):
         raise ContractError(f"сохранённый ответ {who} не проходит проверку: {error.reason}") from None
 
 
+def _pin_package(store, package, withheld) -> None:
+    """The second package is pinned in the journal once; a resumed run must rebuild the same print.
+
+    The print is sha256 over the package hash and the sha256 of the canonical `withheld`
+    (the hash only, never the text): a changed hidden name is not passed over silently.
+    """
+    print_ = digest(canonical_json({"пакет": package.hash, "withheld": digest(canonical_json(withheld))}))
+    state = store.load()
+    pinned = sorted(f for f in state.flags if f.startswith(PACKAGE_FLAG))
+    if not pinned:
+        store.set_flag(PACKAGE_FLAG + print_)
+    elif pinned != [PACKAGE_FLAG + print_]:
+        raise ContractError("второй пакет при возобновлении не совпал с записанным в журнале "
+                            "(изменились разделы, критерии, имена скрытого или карточки)")
+
+
 def _permutation_ok(order, size: int) -> bool:
     return (isinstance(order, list) and len(order) == size
             and all(isinstance(i, int) and not isinstance(i, bool) for i in order)
@@ -726,7 +799,14 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
             isinstance(c, str) and c.strip() for c in critics):
         raise ContractError(f"нужны ровно два разных критика: {_clip(critics)}")
     parsed_criteria = validate_criteria(criteria)                      # phase 0
-    author = check_author_card(author_card, criteria, tables)
+    criteria_view = [{"id": c.id, "text": c.text, "mandatory": c.mandatory} for c in parsed_criteria]
+    empty = {"решения": [], "области": [], "журнал_доказательств": []}
+    registries = empty if registries is None else registries
+    try:                       # the task, criteria and hidden names go through the package's own checks first
+        check_comparison_inputs(sections, registries, STAGE, tables, withheld, criteria_view)
+    except PackageRefused as refused:
+        raise AuthorCardRefused(f"вход пакета не принят: {refused.reason}") from None
+    author = check_author_card(author_card, criteria, tables, withheld)
     state = store.load()
     if state.state is None:
         raise ContractError("прогон не запущен: сначала операция start")
@@ -735,21 +815,25 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
     if state.state == "создан":
         state = store.record_event("пакет_собран")
     round_number = max(state.round_number, 1)
-    criteria_view = [{"id": c.id, "text": c.text, "mandatory": c.mandatory} for c in parsed_criteria]
     for owner, saved in (("предложения", saved_proposals), ("сравнения", saved_comparisons)):
         if set(saved or {}) - set(critics):
             raise ContractError(f"сохранённые {owner}: чужие критики {sorted(set(saved) - set(critics))}")
 
     # -- phase A: blind proposals --------------------------------------------
     proposals: dict = {}
+
+    def blind_card(raw, critic=None):
+        card = validate_proposal(raw, parsed_criteria, tables)
+        fits_package(card, tables, withheld)          # what the package will judge, before the set exists
+        return card
+
     if not state.idea_candidates:
         proposals = _collect(
             store, ask, critics, stage=BLIND_STAGE, round_number=round_number,
             request=lambda critic, n: {"phase": "blind", "critic": critic, "attempt": n,
                                        "criteria": criteria_view},
-            check=lambda raw, critic: validate_proposal(raw, parsed_criteria, tables),
-            saved={c: _trusted(lambda r: validate_proposal(r, parsed_criteria, tables), raw, c)
-                   for c, raw in (saved_proposals or {}).items()},
+            check=lambda raw, critic: blind_card(raw),
+            saved={c: _trusted(blind_card, raw, c) for c, raw in (saved_proposals or {}).items()},
             tables=tables)
         if sum(v is not None for v in proposals.values()) < 2:
             return _finish(store, INCOMPLETE_VERDICT, None, proposals)
@@ -777,10 +861,13 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
     author_id = next(c.candidate_id for c in candidates if c.source == AUTHOR_SOURCE)
     ordered = [candidates[i] for i in state.idea_candidates_permutation]
     ids = [c.candidate_id for c in ordered]
-    empty = {"решения": [], "области": [], "журнал_доказательств": []}
-    package = build_comparison_package(
-        sections, empty if registries is None else registries, "идея", candidates,
-        state.idea_candidates_permutation, tables=tables, withheld=withheld)
+    try:
+        package = build_comparison_package(
+            sections, registries, STAGE, candidates, state.idea_candidates_permutation,
+            tables=tables, withheld=withheld, criteria=criteria_view)
+    except PackageRefused:                  # the cards were checked before the set; this is the last net
+        return _finish(store, INCOMPLETE_VERDICT, None, proposals)
+    _pin_package(store, package, withheld)
     shown = [{"candidate_id": row["candidate_id"], "text": row["текст"]} for row in package.candidates]
 
     def compare(raw, critic):
@@ -790,7 +877,7 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
     comparisons = _collect(
         store, ask, critics, stage=COMPARE_STAGE, round_number=round_number,
         request=lambda critic, n: {"phase": "compare", "critic": critic, "attempt": n,
-                                   "criteria": criteria_view, "candidates": shown,
+                                   "criteria": package.criteria, "candidates": shown,
                                    "package": package.material()},
         check=compare,
         saved={c: _trusted(lambda r: compare(r, c), raw, c) for c, raw in (saved_comparisons or {}).items()},
@@ -839,6 +926,10 @@ def require_anton_ok(store) -> None:
 
 
 def leave_idea_stage(store) -> bool:
-    """Gate to the next stage. The critics' agreement never substitutes for the OK."""
+    """A PREDICATE: True only when Anton's OK is recorded after the last verdict.
+
+    It is not wired to a run transition and the OK flag is not a protected write — both
+    belong to the БУ block; until then nothing in the engine calls it on a transition.
+    The critics' agreement never substitutes for the OK."""
     require_anton_ok(store)
     return True

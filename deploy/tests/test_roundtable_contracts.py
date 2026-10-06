@@ -738,9 +738,12 @@ def test_retry_counter_survives_cold_load(directory):
                    ("claude", "blind"): [], ("codex", "blind"): []})
     result = stage(directory, again, saved_comparisons={"claude": json.dumps(comparison(
         IDS, ALL_PASS, "cand_a"))}, new_id=None)
-    # claude не переспрашивается, codex получает ровно один повтор (вызов 1 был до падения)
+    # claude не переспрашивается. Вызов 1 codex оборван до ответа: в бюджет повтора он не идёт
+    # (ответа не было), поэтому codex получает ответ (2) и свой ровно один повтор (3)
     assert [c for c in again.calls if c[0] == "claude"] == []
-    assert [c for c in again.calls if c[0] == "codex"] == [("codex", "compare", 2)]
+    assert [c for c in again.calls if c[0] == "codex"] == [("codex", "compare", 2), ("codex", "compare", 3)]
+    assert S.RunStore(directory, TABLES).load().attempts[
+        (cold.run_id, C.COMPARE_STAGE, 1, "codex", 1)].possible_duplicate
     assert result.verdict == "НЕПОЛНЫЙ_ПРОГОН"
 
 

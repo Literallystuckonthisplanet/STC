@@ -82,6 +82,12 @@ from . import state as state_module
 from . import tables as tables_module
 
 
+# The second question of the «идея» stage (stages.yaml) and the hidden section that the
+# comparison package shows on purpose -- as one of the candidates.
+COMPARE_QUESTION = "сравни_с_предложенным"
+SHOWN_AS_CANDIDATE = "предложенное_решение"
+
+
 class PackageRefused(Exception):
     """The package could not be assembled as a verifiable one."""
 
@@ -532,6 +538,16 @@ class Package:
         return self.as_dict()["файлы"]
 
     @property
+    def criteria(self) -> list:
+        """The criteria block of a comparison package ([] when it carries none)."""
+        return self.as_dict().get("критерии", [])
+
+    @property
+    def candidates(self) -> list:
+        """The candidate block of a comparison package, in the recorded order ([] elsewhere)."""
+        return self.as_dict().get("кандидаты", [])
+
+    @property
     def canonical_bytes(self) -> bytes:
         return self._bytes
 
@@ -559,12 +575,28 @@ def visible_sections(tables, stage: str, blind: bool) -> set | None:
     return set(rules["показываем"])
 
 
+def comparison_sections(tables, stage: str) -> set:
+    """Which sections the second (comparison) package carries.
+
+    The same list as the blind question: the second package differs only by the
+    candidate block. Allowed only on a stage whose second question is
+    `сравни_с_предложенным`.
+    """
+    if tables.stages["стадии"][stage]["второй_вопрос"] != COMPARE_QUESTION:
+        raise PackageRefused("сравнение_не_на_этой_стадии", stage)
+    return set(tables.stages["слепой_вопрос"]["показываем"])
+
+
 def _bad(detail: str):
     return PackageRefused("некорректный_вход", detail)
 
 
 def _validate_input(root, declared_files, sections, registries, stage):
     _root_text(root)
+    _validate_body(declared_files, sections, registries, stage)
+
+
+def _validate_body(declared_files, sections, registries, stage):
     if not isinstance(stage, str):
         raise _bad(f"стадия не строка: {stage!r}")
     if not isinstance(declared_files, (list, tuple)):
@@ -761,6 +793,19 @@ def _skeleton(text: str, leet: bool = False) -> str:
     return _skeleton_checked(text, leet=leet)[0]
 
 
+_ID_SEPARATORS = re.compile(r"[^._\-]+")
+
+
+def fold_identifier(text: str) -> str:
+    """An identifier as a human sees it: the skeleton of every part between `.`, `-`, `_`.
+
+    The same fold as the trace search (look-alikes of Cyrillic, digit twins, the "one stick"
+    class `I l 1`, `O 0`), so two ids a reader cannot tell apart fold to one string. The
+    separators stay as they are: `A-B` and `A_B` are different ids, both legible.
+    """
+    return _ID_SEPARATORS.sub(lambda part: _skeleton(part.group()), text)
+
+
 def _leaves(node, channel: str):
     """Every string/number leaf and every key below `node`, with its channel."""
     if isinstance(node, dict):
@@ -774,10 +819,13 @@ def _leaves(node, channel: str):
         yield channel, str(node), False
 
 
-def _shown_leaves(sections: dict, normalised: dict, paths) -> list:
+def _shown_leaves(sections: dict, normalised: dict, paths, candidates=()) -> list:
     leaves = []
     for name, value in sections.items():
         leaves.append((f"раздел.{name}", value, False))
+    for index, row in enumerate(candidates):
+        leaves.append((f"кандидат[{index}].candidate_id", row["candidate_id"], False))
+        leaves.append((f"кандидат[{index}].текст", row["текст"], False))
     leaves.extend(_leaves(normalised, "реестр"))
     leaves.extend((f"путь[{index}]", path, False) for index, path in enumerate(paths))
     return leaves
@@ -990,9 +1038,14 @@ def _check_share(name, skeleton, joined, size, percent, channel_at) -> None:
 
 # -- the build, in stages --------------------------------------------------------
 
-def _check_blind(tables, stage, blind, declared_files, sections, withheld):
-    """Exact equality with the shown list; returns the hidden texts, or None."""
-    allowed = visible_sections(tables, stage, blind)
+def _check_blind(tables, stage, blind, declared_files, sections, withheld, second=False):
+    """Exact equality with the shown list; returns the hidden texts, or None.
+
+    `second`: the comparison package. It is blind in every other respect, but the
+    proposed solution is SHOWN in it (as one of the candidates), so it is not among
+    the hidden texts -- and passing it is refused, not dropped silently.
+    """
+    allowed = comparison_sections(tables, stage) if second else visible_sections(tables, stage, blind)
     if allowed is None:
         return None
     if declared_files:
@@ -1005,7 +1058,25 @@ def _check_blind(tables, stage, blind, declared_files, sections, withheld):
     missing = allowed - present
     if missing:
         raise PackageRefused("слепой_пакет_неполон", ", ".join(sorted(missing)))
+    return _hidden_texts(tables, withheld, second)
+
+
+def check_withheld(tables, withheld, second: bool = False) -> None:
+    """The hidden names (and, for the blind package, the proposed solution) as the build reads them.
+
+    A wrong shape is `PackageRefused("некорректный_вход")` -- the caller's input, checked
+    here so that it is told apart from a card that merely fails the package.
+    """
+    _hidden_texts(tables, withheld, second)
+
+
+def _hidden_texts(tables, withheld, second=False) -> dict:
+    """The hidden texts, validated: exactly the names of `слепой_вопрос.прячем` (minus the shown one)."""
     wanted = set(tables.stages["слепой_вопрос"]["прячем"])
+    if second:
+        if SHOWN_AS_CANDIDATE not in wanted:
+            raise _bad(f"таблица: {SHOWN_AS_CANDIDATE} не среди скрываемого слепому")
+        wanted.discard(SHOWN_AS_CANDIDATE)
     if (not isinstance(withheld, dict) or set(withheld) != wanted
             or not all(isinstance(text, str) for text in withheld.values())):
         raise _bad(f"для слепого пакета нужен withheld ровно с {sorted(wanted)}")
@@ -1153,7 +1224,7 @@ def _check_root_place(root: Path) -> None:
 
 
 def build_package(root, declared_files, sections, registries, stage,
-                  blind: bool = False, tables=None, withheld=None) -> Package:
+                  blind: bool = False, tables=None, withheld=None, criteria=None) -> Package:
     """Assemble one verifiable package.
 
     `declared_files` is an explicit list of `(path, class)` pairs -- the manifest
@@ -1161,6 +1232,10 @@ def build_package(root, declared_files, sections, registries, stage,
     depend on what happens to be lying around. In the blind mode `withheld` must
     carry the hidden texts (exactly the names of `слепой_вопрос.прячем`): the
     package is refused if anything of them shows up in what the critic would see.
+
+    `criteria` (`{id, text, mandatory}` rows) is the blind mode's `критерии` block -- the same
+    `_criteria_block` / `_criteria_leaves` as the comparison package, judged with the rest.
+    Outside the blind mode it is refused (`некорректный_вход`).
     """
     tables = tables or tables_module.load()
     limits = tables.vocabulary["пакет"]
@@ -1182,24 +1257,31 @@ def build_package(root, declared_files, sections, registries, stage,
     if forbidden:
         raise PackageRefused("раздел_вне_пакета", ", ".join(sorted(forbidden)))
 
+    if criteria is not None and not blind:
+        raise _bad("критерии: блок есть только у слепого пакета")
     hidden_texts = _check_blind(tables, stage, blind, declared_files, sections, withheld)
     _check_sections(sections, limits)
+    criteria_block = None if criteria is None else _criteria_block(criteria, limits)
     entries, files = _read_declared_files(root, declared_files, tables)
     normalised = _build_registries(registries, tables, blind)
 
-    leaves = _shown_leaves(sections, normalised, [entry.path for entry in entries])
+    leaves = (_shown_leaves(sections, normalised, [entry.path for entry in entries])
+              + _criteria_leaves(criteria_block or []))
     _check_secrets(leaves, limits)
 
     manifest_dicts = [entry.as_dict() for entry in entries]
     manifest_hash = digest(canonical_json(manifest_dicts))
-    packed = canonical_json({
+    body = {
         "стадия": stage,
         "манифест": manifest_dicts,
         "хеш_манифеста": manifest_hash,
         "реестры": normalised,
         "разделы": dict(sections),
         "файлы": files,
-    })
+    }
+    if criteria_block is not None:
+        body["критерии"] = criteria_block
+    packed = canonical_json(body)
     # The size is settled before any search: a refusal for size must not wait for
     # an expensive comparison.
     if len(packed) > limits["предел_пакета_байт"]:
@@ -1208,6 +1290,151 @@ def build_package(root, declared_files, sections, registries, stage,
             f"пакет {len(packed)} > {limits['предел_пакета_байт']}")
     if hidden_texts is not None:
         _check_traces(hidden_texts, leaves, limits)
+    return Package(stage=stage, _bytes=packed, _hash=digest(packed))
+
+
+def _comparison_block(candidates, permutation, limits) -> list:
+    """The candidate block: `{candidate_id, текст}` in the recorded order, no source.
+
+    `текст` is the card's canonical bytes from the journal, untouched. Only the
+    id and the bytes are read from a candidate -- its source never enters here.
+    """
+    if (not isinstance(candidates, (list, tuple)) or not candidates
+            or not all(isinstance(c, state_module.IdeaCandidate) for c in candidates)):
+        raise _bad("кандидаты: нужен непустой список IdeaCandidate")
+    if (not isinstance(permutation, (list, tuple)) or len(permutation) != len(candidates)
+            or not all(isinstance(i, int) and not isinstance(i, bool) for i in permutation)
+            or sorted(permutation) != list(range(len(candidates)))):
+        raise _bad("перестановка кандидатов не соответствует набору")
+    ids = [c.candidate_id for c in candidates]
+    if not all(isinstance(i, str) and i.strip() for i in ids) or len(set(ids)) != len(ids):
+        raise _bad("кандидаты: ID пусты или повторяются")
+    block = []
+    for index in permutation:
+        candidate = candidates[index]
+        data = candidate.canonical_bytes
+        if not isinstance(data, bytes) or not data:
+            raise _bad("кандидат: байты пусты или не байты")
+        if len(data) > limits["предел_раздела_байт"]:
+            raise PackageRefused("превышение_размера", f"кандидат {len(block)}: {len(data)} > {limits['предел_раздела_байт']}")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise PackageRefused("файл_не_текст", f"кандидат {len(block)}")
+        _encodable(text, f"кандидат {len(block)}")
+        block.append({"candidate_id": candidate.candidate_id, "текст": text})
+    return block
+
+
+def _criteria_block(criteria, limits) -> list:
+    """The success criteria as the critic receives them: `{id, text, mandatory}`, bounded."""
+    if not isinstance(criteria, (list, tuple)) or not criteria:
+        raise _bad("критерии: нужен непустой список")
+    block = []
+    for row in criteria:
+        if (not isinstance(row, dict) or set(row) != {"id", "text", "mandatory"}
+                or not isinstance(row["id"], str) or not isinstance(row["text"], str)
+                or not isinstance(row["mandatory"], bool)):
+            raise _bad("критерии: запись не вида {id, text, mandatory}")
+        _encodable(row["id"], "критерий.id")
+        _encodable(row["text"], "критерий.text")
+        block.append({"id": row["id"], "text": row["text"], "mandatory": row["mandatory"]})
+    block.sort(key=lambda row: row["id"])        # one set, one bytes: the caller's order does not matter
+    if len(canonical_json(block)) > limits["предел_раздела_байт"]:
+        raise PackageRefused("превышение_размера", "критерии")
+    return block
+
+
+def _criteria_leaves(block) -> list:
+    leaves = []
+    for index, row in enumerate(block):
+        leaves.append((f"критерий[{index}].id", row["id"], False))
+        leaves.append((f"критерий[{index}].text", row["text"], False))
+    return leaves
+
+
+def _comparison_parts(sections, registries, stage, tables, withheld, criteria):
+    """What the second package shares with the check of its inputs: everything but the candidates."""
+    limits = tables.vocabulary["пакет"]
+    _validate_body([], sections, registries, stage)
+    if stage not in tables.stages["стадии"]:
+        raise PackageRefused("неизвестная_стадия", stage)
+    forbidden = set(limits["не_попадает"]) & set(sections)
+    if forbidden:
+        raise PackageRefused("раздел_вне_пакета", ", ".join(sorted(forbidden)))
+    hidden_texts = _check_blind(tables, stage, True, [], sections, withheld, second=True)
+    _check_sections(sections, limits)
+    criteria_block = None if criteria is None else _criteria_block(criteria, limits)
+    normalised = _build_registries(registries, tables, True)
+    return limits, hidden_texts, criteria_block, normalised
+
+
+def _judge(leaves, hidden_texts, limits) -> None:
+    _check_secrets(leaves, limits)
+    _check_traces(hidden_texts, leaves, limits)
+
+
+def check_comparison_inputs(sections, registries, stage, tables=None, withheld=None, criteria=None) -> None:
+    """Everything `build_comparison_package` will judge, except the candidates -- before any paid call.
+
+    The criteria are judged again by the blind package on purpose: a refusal there has another
+    classification (the caller of the stage tells them apart), so the repeat is not a copy to remove.
+    """
+    tables = tables or tables_module.load()
+    limits, hidden, criteria_block, normalised = _comparison_parts(
+        sections, registries, stage, tables, withheld, criteria)
+    _judge(_shown_leaves(sections, normalised, []) + _criteria_leaves(criteria_block or []), hidden, limits)
+
+
+def check_candidate_card(data: bytes, stage, tables=None, withheld=None) -> None:
+    """The checks the second package applies to ONE card, over the card's final (normalised) bytes.
+
+    The same code as the build: size, encoding, the character whitelist, the secret
+    signatures and the trace of the hidden. A card that fails here would fail the package
+    later, when the set is already written -- so the caller asks first.
+    """
+    tables = tables or tables_module.load()
+    limits = tables.vocabulary["пакет"]
+    comparison_sections(tables, stage)
+    hidden = _hidden_texts(tables, withheld, second=True)
+    block = _comparison_block([state_module.IdeaCandidate("cand_check", "check", data)], (0,), limits)
+    _judge(_shown_leaves({}, {}, [], block), hidden, limits)
+
+
+def build_comparison_package(sections, registries, stage, candidates, permutation,
+                             tables=None, withheld=None, criteria=None) -> Package:
+    """The second package of a stage with `второй_вопрос: сравни_с_предложенным`.
+
+    The same build as the blind one -- the same section list, no files, the same
+    registry rules, secret signatures, character whitelist and trace search --
+    plus the `кандидаты` block (and, when given, the `критерии` block: the criteria reach
+    the critic only inside the package, so they are judged like the rest). The candidate
+    block is the only place untrusted card text lives: it is a JSON value of its own, so
+    quotes, brackets and "ignore the task" in a card cannot reach a section. `withheld`
+    carries the author and the second critic; the proposed solution is shown here and is
+    not hidden.
+    """
+    tables = tables or tables_module.load()
+    limits, hidden_texts, criteria_block, normalised = _comparison_parts(
+        sections, registries, stage, tables, withheld, criteria)
+    block = _comparison_block(candidates, permutation, limits)
+    leaves = _shown_leaves(sections, normalised, [], block) + _criteria_leaves(criteria_block or [])
+    _check_secrets(leaves, limits)
+    body = {
+        "стадия": stage,
+        "манифест": [],
+        "хеш_манифеста": digest(canonical_json([])),
+        "реестры": normalised,
+        "разделы": dict(sections),
+        "файлы": {},
+        "кандидаты": block,
+    }
+    if criteria_block is not None:
+        body["критерии"] = criteria_block
+    packed = canonical_json(body)
+    if len(packed) > limits["предел_пакета_байт"]:
+        raise PackageRefused("превышение_размера", f"пакет {len(packed)} > {limits['предел_пакета_байт']}")
+    _check_traces(hidden_texts, leaves, limits)
     return Package(stage=stage, _bytes=packed, _hash=digest(packed))
 
 

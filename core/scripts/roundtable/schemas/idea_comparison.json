@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "idea_comparison",
+  "description": "Сравнение трёх анонимных кандидатов на второй проход стадии «идея».",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "assessments",
+    "selected_candidate_id",
+    "mechanism_relations",
+    "reasons",
+    "unknowns",
+    "blockers"
+  ],
+  "properties": {
+    "assessments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "criteria"
+        ],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "criteria": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "criterion_id",
+                "grade",
+                "reason"
+              ],
+              "properties": {
+                "criterion_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "grade": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "unknown"
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                }
+              }
+            },
+            "maxItems": 64
+          }
+        }
+      },
+      "maxItems": 3
+    },
+    "selected_candidate_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "mechanism_relations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pair",
+          "relation"
+        ],
+        "properties": {
+          "pair": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "same",
+              "different",
+              "unknown"
+            ]
+          }
+        }
+      },
+      "maxItems": 3
+    },
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 20
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 20
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 20
+    },
+    "возражения_к_постановке": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 20
+    }
+  }
+}

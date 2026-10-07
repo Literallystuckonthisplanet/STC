@@ -117,10 +117,27 @@ TOP_LEVEL = {
     },
     "stages": {
         "стадии", "слепой_вопрос", "сигнал_нежизнеспособности",
-        "метрика_цены_понимания", "приоритет_расхода",
+        "метрика_цены_понимания", "приоритет_расхода", "исходы_идеи",
+        "исполнение_идеи",
     },
     "findings": {"находки"},
 }
+
+
+# Исходы стадии «идея» (§4.5 плана): порядок строк — порядок проверки, первая
+# подошедшая решает. Коды называют предикаты, которые знает contracts.py;
+# перечень и порядок закрыты здесь, поэтому таблица не может молча их сменить.
+# Строки, где приоритета нет по определению: возражение держит стадию, а
+# последняя строка отдаёт решение рисунку выбора.
+OUTCOME_CHECKS = (
+    "открытое_возражение", "оба_нет_проходящего", "один_нет_проходящего",
+    "усиленный_случай", "нет_совокупно_годного", "рисунок_выбора",
+)
+OUTCOME_PATTERNS = ("обе_одну_авторскую", "обе_одну_неавторскую",
+                    "авторская_и_неавторская", "разные_неавторские")
+OUTCOME_UNPRIORITISED = ("открытое_возражение", "рисунок_выбора")
+OUTCOME_PATTERN_ROW = "рисунок_выбора"
+OUTCOME_PATTERN_ROW_REASON = "рисунок"
 
 
 class ContractError(Exception):
@@ -750,6 +767,10 @@ SHAPES = {
             "что_пишем", "когда", "зачем",
             базовая_точка=Record("проект", "стадия", "круг", "источник")),
         "приоритет_расхода": Record("правило", "экономим_на", "почему", "отменяет"),
+        "исходы_идеи": Record(
+            строки=Sequence(Record("проверка", "причина", "приоритет")),
+            рисунки=Sequence(Record("рисунок", "причина", "приоритет"))),
+        "исполнение_идеи": Record("предел_прерванных_попыток"),
     },
     "findings": {
         "находки": Sequence(Record("id", "круг", "что", "статус", "тест", "поломка",
@@ -1753,9 +1774,57 @@ class Tables:
         self._check_package_rules()
         checked.append("правила пакета: схемы, пределы, пути и разделы согласованы")
 
+        self._check_idea_outcomes()
+        self._check_idea_execution()
+        checked.append("исходы идеи: коды, порядок и приоритеты закрыты, причины сходятся со списком")
+
         self._check_shapes()
         checked.append(f"{len(SHAPES)} таблиц: выдуманных полей нет ни на какой глубине")
         return checked
+
+    def _check_idea_execution(self) -> None:
+        """stages.исполнение_идеи: предел вызовов критика, прерванных до ответа (БИ, аудит безопасности)."""
+        section = self.stages.get("исполнение_идеи")
+        if not isinstance(section, dict) or set(section) != {"предел_прерванных_попыток"}:
+            raise ContractError("stages.исполнение_идеи: нужно ровно поле предел_прерванных_попыток")
+        limit = section["предел_прерванных_попыток"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ContractError(f"stages.исполнение_идеи.предел_прерванных_попыток: целое от 1, получено {limit!r}")
+
+    def _check_idea_outcomes(self) -> None:
+        """stages.исходы_идеи (§4.5): закрытые коды, приоритеты и причины == blocks.списки.исходы_идеи."""
+        where = "stages.исходы_идеи"
+        section = self.stages.get("исходы_идеи")
+        if not isinstance(section, dict) or set(section) != {"строки", "рисунки"}:
+            raise ContractError(f"{where}: нужны ровно разделы строки и рисунки")
+        reasons = []
+        for name, key, codes in (("строки", "проверка", OUTCOME_CHECKS),
+                                 ("рисунки", "рисунок", OUTCOME_PATTERNS)):
+            rows = section[name]
+            if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+                raise ContractError(f"{where}.{name}: ожидался список записей")
+            if [r.get(key) for r in rows] != list(codes):
+                raise ContractError(f"{where}.{name}: ожидались {key} {list(codes)} именно в этом порядке")
+            for row in rows:
+                if set(row) != {key, "причина", "приоритет"}:
+                    raise ContractError(f"{where}.{name}: у записи {row.get(key)!r} поля {sorted(row)}")
+                reason, priority = row["причина"], row["приоритет"]
+                if not isinstance(reason, str) or not reason.strip():
+                    raise ContractError(f"{where}.{name}.{row[key]}: причина — непустая строка")
+                if row[key] in OUTCOME_UNPRIORITISED:
+                    if priority is not None:
+                        raise ContractError(f"{where}.{name}.{row[key]}: приоритета быть не должно")
+                elif isinstance(priority, bool) or not isinstance(priority, int) or priority < 1:
+                    raise ContractError(f"{where}.{name}.{row[key]}: приоритет — целое от 1, получено {priority!r}")
+                if row[key] == OUTCOME_PATTERN_ROW:
+                    if reason != OUTCOME_PATTERN_ROW_REASON:
+                        raise ContractError(f"{where}.{name}.{row[key]}: причина строки — {OUTCOME_PATTERN_ROW_REASON!r}")
+                else:
+                    reasons.append(reason)
+        declared = self.plan["списки"]["исходы_идеи"]
+        if len(set(reasons)) != len(reasons) or sorted(reasons) != sorted(declared):
+            raise ContractError(f"{where}: причины {sorted(reasons)} не совпадают со списком "
+                                f"blocks.списки.исходы_идеи {sorted(declared)}")
 
     def _check_package_rules(self) -> None:
         """Правила пакета (§6.9): всё, что читает код, названо, типизировано и сверено."""

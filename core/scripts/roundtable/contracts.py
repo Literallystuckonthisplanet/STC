@@ -1,0 +1,1243 @@
+#!/usr/bin/env python3
+"""БИ — executable contract of the «идея» stage: schemas, phases, outcomes.
+
+Three things are load-bearing here:
+
+**One validator, closed vocabulary.** Both idea schemas are checked by the same
+small validator over a *closed* subset of JSON Schema. A keyword it does not
+know is a `ContractError`, not silently ignored: a schema that says something
+the validator cannot enforce would look protective and protect nothing.
+
+**Three error classes, three owners.** `AnswerRejected` is a participant's bad
+answer (retry budget applies); `AuthorCardRefused` is the author's bad card
+(entry refused before any paid call, no verdict); `ContractError` is *our*
+breakage — a corrupt table, a duplicated engine-made ID — and is never charged
+to a participant.
+
+**The rules come from the tables.** Order, reasons and priorities of the nine
+outcomes are read through `outcome_rules(tables)` only, and the strictness of that
+section lives in one place, `Tables._check_idea_outcomes` (the order of the codes is
+fixed in `tables.OUTCOME_CHECKS`); the same goes for the abort limit
+(`Tables._check_idea_execution`). The retry policy comes from
+`vocabulary.повтор_невалидного_ответа`: the budget, the order, whether an answer spends
+it, and the verdict after it runs out. This module owns only the predicates the check
+codes name. The journal is touched only through the `RunStore` API (attempts, candidate
+assignment, events, flags).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import itertools
+import json
+import re
+import secrets
+import tempfile
+import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import tables as tables_module
+from .context import (PackageRefused, build_comparison_package, build_package, canonical_json,
+                      check_candidate_card, check_comparison_inputs, check_withheld, comparison_sections,
+                      digest, fold_identifier, same_package)
+from .state import IdeaCandidate
+from .tables import ContractError
+
+__all__ = [
+    "AnswerRejected", "AuthorCardRefused", "AntonOkRequired", "ContractError",
+    "validate", "load_schema", "check_schema", "parse_answer", "criterion_verdict", "candidate_state",
+    "validate_criteria", "validate_proposal", "validate_comparison", "check_author_card",
+    "normalize_card", "card_bytes", "fits_package", "Criterion", "ValidatedComparison",
+    "outcome_rules", "decide_outcome", "IdeaOutcome", "retry_budget", "retry_order", "abort_limit",
+    "calls_made", "incomplete_verdict", "run_idea_stage", "StageResult",
+    "require_anton_ok", "leave_idea_stage",
+    "ANTON_OK_FLAG", "OBJECTION_FLAG", "PACKAGE_FLAG", "INPUT_FLAG", "AUTHOR_SOURCE", "BLIND_STAGE",
+    "COMPARE_STAGE", "STAGE", "IDEA_VERDICT", "INCOMPLETE_VERDICT", "CRITERION_ID", "SCHEMAS_DIR",
+]
+
+SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
+
+AUTHOR_SOURCE = "автор"
+BLIND_STAGE = "идея:слепой"
+COMPARE_STAGE = "идея:сравнение"
+STAGE = "идея"
+PACKAGE_FLAG = "пакет_сравнения:"       # + sha256 of the second package: it is pinned once, in the journal
+INPUT_FLAG = "вход_стадии_идея:"        # + sha256 of the caller's inputs: pinned at the first entry
+OBJECTION_FLAG = "есть_открытые_возражения_к_постановке"
+# БИ-13: evidence of Anton's explicit OK. The real operation belongs to БУ;
+# until it exists the evidence is a run flag, and the guard reads only that.
+ANTON_OK_FLAG = "ок_антона_на_решение"
+
+# Verdict of every valid «идея» outcome (§4.5: "любой валидный итог приходит в
+# ждёт_Антона"). It is checked against the vocabulary and the run table below,
+# never trusted: ОДОБРЕНО on this stage is a ContractError.
+IDEA_VERDICT = "РЕШЕНИЕ_АНТОНА"
+INCOMPLETE_VERDICT = "НЕПОЛНЫЙ_ПРОГОН"      # what the table's `после_исчерпания` must say; read from there
+
+
+CLIP = 80
+REASON_CLIP = 300                            # a rejection reason travels back to the critic: room for the cause
+MAX_LISTED = 8                               # ids named in one exception text
+# A closed alphabet: Cyrillic, ASCII Latin, digits and `.-_`. A letter outside it is a look-alike
+# the fold cannot be trusted with (`İ`, `ԁ`, `ɡ`, `Ѵ`), so it is refused, not folded.
+CRITERION_ID = re.compile(r"[A-Za-zА-Яа-яЁё0-9._\-]{1,32}")
+
+
+def _clip(value, limit: int = CLIP) -> str:
+    """A participant's value inside an exception text: never longer than `limit`."""
+    text = value if isinstance(value, str) else repr(value)
+    text = text.encode("utf-8", "replace").decode("utf-8", "replace")
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _listed(values) -> str:
+    """A list of ids inside an exception text: a few of them, each clipped."""
+    values = list(values)
+    shown = ", ".join(_clip(v, 32) for v in values[:MAX_LISTED])
+    return f"[{shown}{', …' if len(values) > MAX_LISTED else ''}]"
+
+
+def _blank(text: str) -> bool:
+    """Empty for a human: spaces, controls and invisible format characters only."""
+    return all(ch.isspace() or ch == "\u2800" or unicodedata.category(ch) in ("Cf", "Cc", "Zs", "Zl", "Zp")
+               for ch in text)
+
+
+# --------------------------------------------------------------------------
+# errors
+# --------------------------------------------------------------------------
+
+class AnswerRejected(Exception):
+    """A participant's answer broke the input contract (retry budget applies)."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+class AuthorCardRefused(Exception):
+    """The author's card is unfit: entry refused, no verdict, no paid call."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+class AntonOkRequired(Exception):
+    """БИ-13: a transition was attempted with no recorded OK from Anton."""
+
+    code = "НЕТ_ОК_АНТОНА"
+
+    def __init__(self, detail: str = ""):
+        self.detail = detail
+        super().__init__(f"{self.code}: {detail}" if detail else self.code)
+
+
+# --------------------------------------------------------------------------
+# the validator: a closed subset of JSON Schema
+# --------------------------------------------------------------------------
+
+_KEYWORDS = {
+    "$schema", "title", "description", "type", "properties", "required",
+    "additionalProperties", "items", "enum", "minItems", "maxItems",
+    "minLength", "maxLength", "uniqueItems",
+}
+_TYPES = {"object", "array", "string", "boolean", "integer"}
+
+
+def check_schema(schema, where: str = "$") -> None:
+    """Refuse a schema that uses anything outside the closed subset."""
+    if not isinstance(schema, dict):
+        raise ContractError(f"схема {where}: ожидалась карта")
+    unknown = set(schema) - _KEYWORDS
+    if unknown:
+        raise ContractError(f"схема {where}: неизвестные ключевые слова {sorted(unknown)}")
+    kind = schema.get("type")
+    if kind is not None and kind not in _TYPES:
+        raise ContractError(f"схема {where}: неизвестный тип {kind!r}")
+    if "properties" in schema and not isinstance(schema["properties"], dict):
+        raise ContractError(f"схема {where}.properties: ожидалась карта")
+    for name, sub in (schema.get("properties") or {}).items():
+        check_schema(sub, f"{where}.{name}")
+    if "items" in schema:
+        check_schema(schema["items"], f"{where}[]")
+    extra = schema.get("additionalProperties")
+    if isinstance(extra, dict):
+        check_schema(extra, f"{where}.*")
+    elif extra is not None and not isinstance(extra, bool):
+        raise ContractError(f"схема {where}: additionalProperties — не boolean и не схема")
+    if "enum" in schema and (not isinstance(schema["enum"], list) or not schema["enum"]):
+        raise ContractError(f"схема {where}: enum — непустой список")
+    if "required" in schema and (not isinstance(schema["required"], list) or not all(
+            isinstance(x, str) for x in schema["required"])):
+        raise ContractError(f"схема {where}: required — список строк")
+    for name in ("minItems", "maxItems", "minLength", "maxLength"):
+        if name in schema and (not isinstance(schema[name], int) or isinstance(schema[name], bool)
+                               or schema[name] < 0):
+            raise ContractError(f"схема {where}: {name} — неотрицательное целое")
+    if "uniqueItems" in schema and not isinstance(schema["uniqueItems"], bool):
+        raise ContractError(f"схема {where}: uniqueItems — boolean")
+    if "required" in schema and "properties" in schema:
+        missing = set(schema["required"]) - set(schema["properties"])
+        if missing:
+            raise ContractError(f"схема {where}: required без описания в properties {sorted(missing)}")
+
+
+def load_schema(name: str, directory: Path = SCHEMAS_DIR) -> dict:
+    path = Path(directory) / f"{name}.json"
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ContractError(f"схема {name}: не читается — {error}") from None
+    check_schema(schema)
+    return schema
+
+
+def _type_ok(kind: str, value) -> bool:
+    if kind == "object":
+        return isinstance(value, dict)
+    if kind == "array":
+        return isinstance(value, list)
+    if kind == "string":
+        return isinstance(value, str)
+    if kind == "boolean":
+        return isinstance(value, bool)
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate(schema: dict, value, where: str = "$") -> None:
+    """Raise `AnswerRejected` unless `value` fits `schema`.
+
+    A schema outside the closed subset raises `ContractError` first, so the
+    answer is never blamed for a defect that is ours.
+    """
+    check_schema(schema, where)
+    _validate(schema, value, where)
+
+
+def _validate(schema: dict, value, where: str) -> None:
+    kind = schema.get("type")
+    if kind is not None and not _type_ok(kind, value):
+        raise AnswerRejected(f"{where}: ожидался {kind}, получено {type(value).__name__}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise AnswerRejected(f"{where}: {_clip(value)!r} не из {schema['enum']}")
+    if isinstance(value, str):
+        if "minLength" in schema and schema["minLength"] > 0 and (
+                _blank(value) or len(value) < schema["minLength"]):
+            raise AnswerRejected(f"{where}: пустая строка")
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            raise AnswerRejected(f"{where}: строка длиннее {schema['maxLength']}")
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            raise AnswerRejected(f"{where}: элементов меньше {schema['minItems']}")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            raise AnswerRejected(f"{where}: элементов больше {schema['maxItems']}")
+        if schema.get("uniqueItems") and len({json.dumps(v, sort_keys=True) for v in value}) != len(value):
+            raise AnswerRejected(f"{where}: повторяющиеся элементы")
+        if "items" in schema:
+            for index, item in enumerate(value):
+                _validate(schema["items"], item, f"{where}[{index}]")
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        for name in schema.get("required", []):
+            if name not in value:
+                raise AnswerRejected(f"{where}: нет поля {name!r}")
+        extra = schema.get("additionalProperties", True)
+        for name, sub in value.items():
+            if name in properties:
+                _validate(properties[name], sub, f"{where}.{name}")
+            elif extra is False:
+                raise AnswerRejected(f"{where}: лишнее поле {_clip(name)!r}")
+            elif isinstance(extra, dict):
+                _validate(extra, sub, f"{where}.{name}")
+
+
+def _no_duplicates(pairs):
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"повтор ключа {_clip(key)!r}")
+        seen[key] = value
+    return seen
+
+
+def _no_constant(name):
+    raise ValueError(f"недопустимая константа {name}")
+
+
+_HOSTILE = (RecursionError, ValueError, TypeError, UnicodeError, OverflowError, MemoryError,
+            PackageRefused)
+
+
+def parse_answer(raw, limit: int | None = None) -> object:
+    """Text or bytes of a critic's answer → JSON value, or `AnswerRejected`.
+
+    The raw size is bounded *before* parsing, and anything the parser or the
+    serialiser can throw at hostile input (deep nesting, lone surrogates)
+    becomes a rejection of the answer, not a crash of the stage.
+    """
+    try:
+        if isinstance(raw, (bytes, bytearray, str)):
+            if limit is not None and len(raw) > limit:
+                raise AnswerRejected("ответ длиннее предела пакет.предел_раздела_байт")
+            text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+            if limit is not None and len(text.encode("utf-8", "surrogatepass")) > limit:
+                raise AnswerRejected("ответ длиннее предела пакет.предел_раздела_байт")
+            value = json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_no_constant)
+        elif isinstance(raw, (dict, list)):
+            value = raw
+        else:
+            raise AnswerRejected(f"ответ не JSON: {type(raw).__name__}")
+        size = len(canonical_json(value))                  # fails on surrogates and on depth
+    except AnswerRejected:
+        raise
+    except _HOSTILE as error:
+        raise AnswerRejected(f"ответ не разобран: {type(error).__name__}: {_clip(str(error))}") from None
+    if limit is not None and size > limit:
+        raise AnswerRejected("ответ длиннее предела пакет.предел_раздела_байт")
+    return value
+
+
+# --------------------------------------------------------------------------
+# tables, read lazily
+# --------------------------------------------------------------------------
+
+def _tables(tables=None):
+    return tables if tables is not None else tables_module.load()
+
+
+RETRY_ORDER = "детерминированное_чередование_вендоров"      # the only order `retry_order` implements
+
+
+def _retry_policy(tables) -> dict:
+    """`vocabulary.повтор_невалидного_ответа`, every field the behaviour depends on checked (БИ-10).
+
+    `тратит_бюджет` — an answer spends the budget (the only mode the loop implements);
+    `порядок` — the order of the retries; `после_исчерпания` — the verdict when it runs out.
+    A value the code cannot honour is `ContractError`: a table that says something else
+    must not be silently run as if it said this.
+    """
+    spec = tables.vocabulary.get("повтор_невалидного_ответа")
+    if not isinstance(spec, dict):
+        raise ContractError("vocabulary.повтор_невалидного_ответа отсутствует")
+    maximum = spec.get("максимум_на_ответ")
+    if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 0:
+        raise ContractError(f"повтор_невалидного_ответа.максимум_на_ответ: {maximum!r}")
+    if spec.get("область") != "на_критика":
+        raise ContractError("повтор_невалидного_ответа.область: ожидалось на_критика")
+    if spec.get("тратит_бюджет") is not True:
+        raise ContractError("повтор_невалидного_ответа.тратит_бюджет: движок считает бюджет по ответам (true)")
+    if spec.get("порядок") != RETRY_ORDER:
+        raise ContractError(f"повтор_невалидного_ответа.порядок: движок умеет только {RETRY_ORDER}")
+    after = spec.get("после_исчерпания")
+    if not isinstance(after, str) or after not in tables.vocabulary.get("вердикты", []):
+        raise ContractError(f"повтор_невалидного_ответа.после_исчерпания: {_clip(after)!r} не вердикт")
+    return spec
+
+
+def retry_budget(tables=None) -> int:
+    """Retries allowed per critic per answer — from the vocabulary (БИ-10)."""
+    return _retry_policy(_tables(tables))["максимум_на_ответ"]
+
+
+def incomplete_verdict(tables=None) -> str:
+    """The verdict of a run whose retry budget ran out (`после_исчерпания`)."""
+    return _retry_policy(_tables(tables))["после_исчерпания"]
+
+
+def _sentinel(tables) -> str:
+    value = tables.vocabulary.get("выбор_кандидата_sentinel")
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"vocabulary.выбор_кандидата_sentinel: {value!r}")
+    return value
+
+
+def retry_order(run_id: str, critics) -> list:
+    """Deterministic alternation of vendors between retries: sha256(run_id) % 2 (`RETRY_ORDER`)."""
+    critics = list(critics)
+    parity = int(hashlib.sha256(run_id.encode("utf-8")).hexdigest(), 16) % 2
+    return critics[parity:] + critics[:parity]
+
+
+# --------------------------------------------------------------------------
+# truth table (§4.3)
+# --------------------------------------------------------------------------
+
+def criterion_verdict(first: str, second: str) -> str:
+    """pass/pass → pass, fail/fail → fail, anything else → unknown."""
+    if first == "pass" and second == "pass":
+        return "pass"
+    if first == "fail" and second == "fail":
+        return "fail"
+    return "unknown"
+
+
+def candidate_state(verdicts) -> str:
+    """First match: непроходной (any agreed fail), годен (all pass), else неясен."""
+    verdicts = list(verdicts)
+    if any(v == "fail" for v in verdicts):
+        return "непроходной"
+    if verdicts and all(v == "pass" for v in verdicts):
+        return "годен"
+    return "неясен"
+
+
+# --------------------------------------------------------------------------
+# criteria and proposals (phases 0 and A)
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Criterion:
+    id: str
+    text: str
+    mandatory: bool
+
+
+def validate_criteria(criteria) -> tuple:
+    """FORK-3: list of {id, текст, обязательный}; at least one mandatory."""
+    if not isinstance(criteria, list) or not criteria:
+        raise AuthorCardRefused("критерий_успеха: ожидался непустой список")
+    parsed = []
+    for row in criteria:
+        if not isinstance(row, dict) or set(row) != {"id", "текст", "обязательный"}:
+            raise AuthorCardRefused(f"критерий_успеха: плохая запись {_clip(row)}")
+        if not isinstance(row["id"], str) or not CRITERION_ID.fullmatch(row["id"]):
+            raise AuthorCardRefused(
+                f"критерий_успеха: id вне алфавита (кириллица, латиница, цифры, . - _; 1-32 знака) {_clip(row['id'])!r}")
+        if not isinstance(row["текст"], str) or _blank(row["текст"]):
+            raise AuthorCardRefused(f"критерий_успеха {row['id']}: пустой текст")
+        try:
+            row["текст"].encode("utf-8")
+        except UnicodeEncodeError:
+            raise AuthorCardRefused(f"критерий_успеха {row['id']}: суррогаты в тексте") from None
+        if not isinstance(row["обязательный"], bool):
+            raise AuthorCardRefused(f"критерий_успеха {row['id']}: обязательный — не boolean")
+        parsed.append(Criterion(row["id"], row["текст"], row["обязательный"]))
+    ids = [c.id for c in parsed]
+    if len(set(ids)) != len(ids):
+        raise AuthorCardRefused(f"критерий_успеха: повторяющиеся id {_listed(ids)}")
+    folded = [fold_identifier(i) for i in ids]
+    if len(set(folded)) != len(folded):
+        raise AuthorCardRefused(f"критерий_успеха: id совпадают после свёртки похожих букв {_listed(ids)}")
+    if not any(c.mandatory for c in parsed):
+        raise AuthorCardRefused("критерий_успеха: ни одного обязательного критерия")
+    return tuple(parsed)
+
+
+def _card_limit(tables) -> int:
+    limit = tables.vocabulary.get("пакет", {}).get("предел_раздела_байт")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        raise ContractError(f"пакет.предел_раздела_байт: {limit!r}")
+    return limit
+
+
+def validate_proposal(raw, criteria, tables=None) -> dict:
+    """Validate one proposal (blind answer or author card); returns the parsed dict.
+
+    Raises `AnswerRejected`. The card size limit is `пакет.предел_раздела_байт`
+    (FORK-5, decided): one number for a card everywhere -- the answer validator, the author's
+    card, the blind package (which hides the card as a section) and the second package.
+    """
+    tables = _tables(tables)
+    schema = load_schema("idea_proposal")
+    value = parse_answer(raw, _card_limit(tables))
+    validate(schema, value)
+    ids = [row["criterion_id"] for row in value["criteria_fit"]]
+    wanted = [c.id for c in criteria]
+    if len(set(ids)) != len(ids):
+        raise AnswerRejected(f"criteria_fit: повторяющиеся критерии {_listed(ids)}")
+    if sorted(ids) != sorted(wanted):
+        raise AnswerRejected(
+            f"criteria_fit: нужны ровно критерии {_listed(sorted(wanted))}, получено {_listed(sorted(ids))}")
+    return value
+
+
+def normalize_card(card: dict) -> dict:
+    """§4.8: one form for all three cards, so the field set cannot reveal the source.
+
+    `criteria_fit` goes by criterion id; optional fields are always present
+    (as an empty list).
+    """
+    form = dict(card)
+    form["criteria_fit"] = sorted(card["criteria_fit"], key=lambda row: row["criterion_id"])
+    form.setdefault("возражения_к_постановке", [])
+    return form
+
+
+def card_bytes(card: dict) -> bytes:
+    """The card's canonical bytes in its one form: what is checked, stored and shown."""
+    return canonical_json(normalize_card(card))
+
+
+def _withheld_checked(tables, withheld, second: bool) -> None:
+    """The hidden names as the build reads them; a wrong shape is the caller's, not a card's fault."""
+    try:
+        check_withheld(tables, withheld, second)
+    except PackageRefused as refused:
+        raise ContractError(f"withheld: {refused.reason}: {_clip(refused.detail)}") from None
+
+
+def fits_package(card: dict, tables, withheld) -> None:
+    """The card, in its final (normalised) bytes, passes what the second package will judge.
+
+    One function of `context.py`, not a copy: a card that would be refused by the package
+    after the set is written must be refused here, before it. A malformed `withheld` is
+    `ContractError` (the caller's input), never a verdict on the card.
+    """
+    _withheld_checked(tables, withheld, True)
+    try:
+        check_candidate_card(card_bytes(card), STAGE, tables, withheld)
+    except PackageRefused as refused:
+        raise AnswerRejected(f"карточка не пройдёт пакет: {refused.reason}") from None
+
+
+def check_author_card(card, criteria_raw, tables=None, withheld=None) -> dict:
+    """Phase 0 (БИ-6): pure checking, no store and no `ask` — nothing paid can precede it.
+
+    With `withheld` the card must also pass the package checks of its normalised bytes.
+    `AuthorCardRefused` is only about the content of the card and the criteria; a malformed
+    `withheld` is `ContractError`.
+    """
+    criteria = validate_criteria(criteria_raw)
+    try:
+        value = validate_proposal(card, criteria, tables)
+        if withheld is not None:
+            fits_package(value, _tables(tables), withheld)
+        return value
+    except AnswerRejected as error:
+        raise AuthorCardRefused(f"авторская карточка негодна: {error.reason}") from None
+    except _HOSTILE as error:                       # pragma: no cover - parse_answer already converts
+        raise AuthorCardRefused(f"авторская карточка негодна: {type(error).__name__}") from None
+
+
+# --------------------------------------------------------------------------
+# comparisons (phase C)
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ValidatedComparison:
+    critic: str
+    grades: dict          # candidate_id -> {mandatory criterion_id -> grade}
+    selected: str
+    relations: dict       # frozenset({id, id}) -> relation
+    raw: dict
+
+    def passing(self) -> list:
+        return [c for c, g in self.grades.items() if g and all(v == "pass" for v in g.values())]
+
+
+def validate_comparison(raw, *, candidate_ids, criteria, critic: str = "", tables=None) -> ValidatedComparison:
+    """Validate a comparison, including the two-sided selection invariant (§4.4)."""
+    tables = _tables(tables)
+    sentinel = _sentinel(tables)
+    candidate_ids = list(candidate_ids)
+    if len(candidate_ids) != 3 or len(set(candidate_ids)) != 3:
+        raise ContractError(f"набор должен быть из трёх разных ID: {_listed(candidate_ids)}")
+    value = parse_answer(raw, _card_limit(tables))
+    validate(load_schema("idea_comparison"), value)
+
+    known = {c.id for c in criteria}
+    mandatory = [c.id for c in criteria if c.mandatory]
+    grades: dict = {}
+    for entry in value["assessments"]:
+        cid = entry["candidate_id"]
+        if cid not in candidate_ids:
+            raise AnswerRejected(f"assessments: чужой candidate_id {_clip(cid)!r}")
+        if cid in grades:
+            raise AnswerRejected(f"assessments: кандидат {_clip(cid)!r} оценён дважды")
+        seen = {}
+        for row in entry["criteria"]:
+            if row["criterion_id"] not in known:
+                raise AnswerRejected(f"assessments: чужой критерий {_clip(row['criterion_id'])!r}")
+            if row["criterion_id"] in seen:
+                raise AnswerRejected(
+                    f"assessments: критерий {_clip(row['criterion_id'])!r} оценён дважды у {_clip(cid)!r}")
+            seen[row["criterion_id"]] = row["grade"]
+        missing = [m for m in mandatory if m not in seen]
+        if missing:
+            raise AnswerRejected(f"assessments: у {_clip(cid)!r} нет оценки обязательных {_listed(missing)}")
+        grades[cid] = {m: seen[m] for m in mandatory}
+    if set(grades) != set(candidate_ids):
+        raise AnswerRejected(f"assessments: нужны ровно кандидаты {_listed(sorted(candidate_ids))}")
+
+    relations: dict = {}
+    for row in value["mechanism_relations"]:
+        pair = row["pair"]
+        if pair[0] == pair[1]:
+            raise AnswerRejected(f"mechanism_relations: пара из одного ID {_clip(pair[0])!r}")
+        if any(x not in candidate_ids for x in pair):
+            raise AnswerRejected(f"mechanism_relations: чужой ID в паре {_clip(pair)}")
+        key = frozenset(pair)
+        if key in relations:
+            raise AnswerRejected(f"mechanism_relations: пара {_clip(sorted(pair))} повторена")
+        relations[key] = row["relation"]
+    expected = {frozenset(p) for p in itertools.combinations(candidate_ids, 2)}
+    if set(relations) != expected:
+        raise AnswerRejected("mechanism_relations: нужны ровно три неупорядоченные пары")
+
+    comparison = ValidatedComparison(critic, grades, value["selected_candidate_id"], relations, value)
+    passing = comparison.passing()
+    selected = comparison.selected
+    if selected == sentinel:
+        if passing:
+            raise AnswerRejected(f"selected_candidate_id: {sentinel}, хотя проходят {_listed(sorted(passing))}")
+    else:
+        if selected not in candidate_ids:
+            raise AnswerRejected(f"selected_candidate_id: чужой ID {_clip(selected)!r}")
+        if selected not in passing:
+            raise AnswerRejected(
+                f"selected_candidate_id: {_clip(selected)!r} не проходит по всем обязательным у этого критика")
+    return comparison
+
+
+# --------------------------------------------------------------------------
+# outcomes (§4.5)
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class IdeaOutcome:
+    reason: str
+    priority: int | None
+    verdict: str
+    run_state: str
+    row: int
+
+
+def outcome_rules(tables=None) -> dict:
+    """The only door to the outcome rules: `stages.исходы_идеи` (FORK-1).
+
+    Form: {строки: [{проверка, причина, приоритет}], рисунки: [{рисунок, причина,
+    приоритет}]}. Order is the order of evaluation; the order of the codes is fixed in
+    `tables.OUTCOME_CHECKS` / `OUTCOME_PATTERNS`. The section is judged by the one check
+    the table owns (`Tables._check_idea_outcomes`), not by a second copy of it here.
+    """
+    tables = _tables(tables)
+    tables._check_idea_outcomes()
+    return tables.stages["исходы_идеи"]
+
+
+def _combined(first: ValidatedComparison, second: ValidatedComparison, candidate: str) -> dict:
+    return {c: criterion_verdict(first.grades[candidate][c], second.grades[candidate][c])
+            for c in first.grades[candidate]}
+
+
+def _enhanced(first, second, author_id: str, sentinel: str) -> bool:
+    """§4.6: three converging testimonies; the name describes testimony, not a conclusion."""
+    if first.selected != second.selected or first.selected in (sentinel, author_id):
+        return False
+    if not any(v == "fail" for v in _combined(first, second, author_id).values()):
+        return False
+    pair = frozenset((author_id, first.selected))
+    return first.relations[pair] == "different" and second.relations[pair] == "different"
+
+
+def _pattern(first, second, author_id: str) -> str:
+    a, b = first.selected, second.selected
+    if a == b == author_id:
+        return "обе_одну_авторскую"
+    if a == b:
+        return "обе_одну_неавторскую"
+    if author_id in (a, b):
+        return "авторская_и_неавторская"
+    return "разные_неавторские"
+
+
+def decide_outcome(first: ValidatedComparison, second: ValidatedComparison, *, author_id: str,
+                   framing_open: bool, tables=None) -> IdeaOutcome:
+    """First matching row of §4.5; one of nine outcomes, always to ждёт_Антона."""
+    tables = _tables(tables)
+    rules = outcome_rules(tables)
+    sentinel = _sentinel(tables)
+    if set(first.grades) != set(second.grades) or author_id not in first.grades:
+        raise ContractError("сравнения построены на разных наборах кандидатов")
+    if any(set(first.grades[c]) != set(second.grades[c]) for c in first.grades):
+        raise ContractError("сравнения оценили разные обязательные критерии")
+    pairs = {frozenset(p) for p in itertools.combinations(first.grades, 2)}
+    if set(first.relations) != pairs or set(second.relations) != pairs:
+        raise ContractError("сравнения не покрывают все пары кандидатов")
+    states = {c: candidate_state(_combined(first, second, c).values()) for c in first.grades}
+    sentinels = [first.selected == sentinel, second.selected == sentinel]
+
+    def holds(code: str) -> bool:
+        if code == "открытое_возражение":
+            return framing_open
+        if code == "оба_нет_проходящего":
+            return all(sentinels)
+        if code == "один_нет_проходящего":
+            return any(sentinels)
+        if code == "усиленный_случай":
+            return _enhanced(first, second, author_id, sentinel)
+        if code == "нет_совокупно_годного":
+            return not any(s == "годен" for s in states.values())
+        if code == "рисунок_выбора":
+            return True                               # последняя строка: решает рисунок
+        raise ContractError(f"исход: неизвестный код проверки {code!r}")
+
+    for matched_row, matched in enumerate(rules["строки"], start=1):
+        if holds(matched["проверка"]):
+            break
+    else:
+        raise ContractError("исход: ни одна строка не подошла")
+    result = matched
+    if matched["проверка"] == "рисунок_выбора":
+        pattern = _pattern(first, second, author_id)
+        result = next((r for r in rules["рисунки"] if r["рисунок"] == pattern), None)
+        if result is None:
+            raise ContractError(f"исход: в таблице нет рисунка {pattern!r}")
+
+    verdict = IDEA_VERDICT
+    if verdict == "ОДОБРЕНО" or verdict not in tables.vocabulary.get("вердикты", []):
+        raise ContractError(f"вердикт {verdict!r} недопустим на стадии идея")
+    run_state = tables.decide("идёт_круг", "вердикт", {"verdict": verdict}).to
+    return IdeaOutcome(result["причина"], result["приоритет"], verdict, run_state, matched_row)
+
+
+# --------------------------------------------------------------------------
+# attempts and the retry budget (БИ-10)
+# --------------------------------------------------------------------------
+
+def calls_made(state, stage: str, round_number: int, critic: str) -> int:
+    """Calls already made for this critic in this phase (all of them) — read from the attempt journal."""
+    return len({k[4] for k in state.attempts
+                if k[1] == stage and k[2] == round_number and k[3] == critic})
+
+
+def _attempt_states(tables) -> list:
+    order = tables.vocabulary.get("попытка", {}).get("состояния")
+    if not isinstance(order, list) or "получена" not in order or "провалидирована" not in order:
+        raise ContractError("vocabulary.попытка.состояния: нет состояний получена и провалидирована")
+    return order
+
+
+def _rank(order: list, attempt) -> int:
+    """Position of an attempt's status in the table's order; a status the table lacks is a corrupt journal."""
+    if attempt.status not in order:
+        raise ContractError(f"журнал попыток: состояние {_clip(attempt.status)!r} не из vocabulary.попытка.состояния")
+    return order.index(attempt.status)
+
+
+def _split_attempts(state, tables, stage: str, round_number: int, critic: str) -> tuple:
+    """`(answered, aborted)` attempts of one critic in one phase.
+
+    Answered: the status is not below `получена` — the vendor's answer exists, the budget
+    is spent. Aborted: cut off before the answer (the process died) — no answer, no spend.
+    """
+    order = _attempt_states(tables)
+    floor = order.index("получена")
+    answered, aborted = [], []
+    for key, attempt in state.attempts.items():
+        if key[1] == stage and key[2] == round_number and key[3] == critic:
+            (answered if _rank(order, attempt) >= floor else aborted).append(attempt)
+    return answered, aborted
+
+
+def abort_limit(tables=None) -> int:
+    """Aborted calls allowed per critic per phase — from `stages.исполнение_идеи`.
+
+    The section is judged by the one check the table owns (`Tables._check_idea_execution`).
+    """
+    tables = _tables(tables)
+    tables._check_idea_execution()
+    return tables.stages["исполнение_идеи"]["предел_прерванных_попыток"]
+
+
+def _valid_recorded(state, tables, stage: str, round_number: int, critic: str) -> bool:
+    order = _attempt_states(tables)
+    floor = order.index("провалидирована")
+    return any(_rank(order, a) >= floor for k, a in state.attempts.items()
+               if k[1] == stage and k[2] == round_number and k[3] == critic)
+
+
+@dataclass(frozen=True)
+class _Run:
+    """What every phase of one `run_idea_stage` call shares (all of it already checked)."""
+
+    store: object
+    ask: object
+    tables: object
+    critics: tuple
+    criteria: tuple               # parsed `Criterion`s
+    criteria_view: list           # {id, text, mandatory}: the form the package carries
+    sections: dict
+    registries: dict
+    withheld: dict
+    round_number: int
+
+
+def _collect(run: _Run, *, stage: str, phase: str, package: str, check, saved) -> tuple:
+    """Ask every critic once, then retry invalid answers within the table budget.
+
+    A valid answer is never re-requested: it comes from `saved` (the caller's
+    own durable copy — the journal records that an answer was valid, not its
+    bytes). Only an ANSWER spends the retry budget; a call cut off before its answer
+    is marked a possible duplicate and bounded by its own limit. A rejected answer's
+    reason (clipped) goes into the retry's request as `previous_rejection`.
+
+    Returns `(results, rejections)`: critic -> validated value or None (budget exhausted),
+    and critic -> the reasons of this call's rejected answers (the journal has no place for
+    them: a resumed run starts with none — a finding for БУ).
+    """
+    store, tables, critics = run.store, run.tables, run.critics
+    round_number = run.round_number
+    limit = 1 + retry_budget(tables)
+    cutoff = abort_limit(tables)
+    results = {c: saved[c] for c in critics if c in saved}
+    rejections = {c: [] for c in critics}
+    state = store.load()
+    for critic in critics:
+        if critic not in results and _valid_recorded(state, tables, stage, round_number, critic):
+            raise ContractError(f"{critic}: в журнале валидный ответ, а его байтов нет")
+        for attempt in _split_attempts(state, tables, stage, round_number, critic)[1]:
+            if not attempt.possible_duplicate:
+                store.mark_possible_duplicate(stage, round_number, critic, attempt.key[4])
+    iteration = 0
+    while True:
+        order = list(critics) if iteration == 0 else retry_order(state.run_id, critics)
+        progressed = False
+        for critic in order:
+            state = store.load()
+            answered, aborted = _split_attempts(state, tables, stage, round_number, critic)
+            if critic in results or len(answered) >= limit or len(aborted) >= cutoff:
+                continue
+            number = calls_made(state, stage, round_number, critic) + 1
+            store.record_attempt(stage, round_number, critic, number, "подготовлена")
+            store.record_attempt(stage, round_number, critic, number, "запущена")
+            request = {"phase": phase, "critic": critic, "attempt": number, "package": package,
+                       "previous_rejection": rejections[critic][-1] if rejections[critic] else None}
+            raw = run.ask(critic, request)
+            store.record_attempt(stage, round_number, critic, number, "получена")
+            try:
+                results[critic] = check(raw, critic)
+            except AnswerRejected as error:
+                rejections[critic].append(_clip(error.reason, REASON_CLIP))
+            else:
+                store.record_attempt(stage, round_number, critic, number, "провалидирована")
+                store.record_attempt(stage, round_number, critic, number, "зафиксирована")
+            progressed = True
+        iteration += 1
+        if not progressed:
+            break
+    return {c: results.get(c) for c in critics}, rejections
+
+
+# --------------------------------------------------------------------------
+# the stage: phases 0, A, B, C
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class StageResult:
+    """What the stage hands on. `comparisons` and `rejections` are what Anton reads.
+
+    `comparisons`: critic -> validated comparison (reasons, unknowns, blockers in `.raw`);
+    only the critics whose answer is valid. `rejections`: phase -> critic -> reasons of
+    the answers rejected in this call. `incomplete_reason`: why the run is incomplete
+    (None for a verdict). There is no journal place for the reasons yet: БУ.
+    """
+
+    verdict: str
+    outcome: IdeaOutcome | None
+    run_state: str
+    proposals: dict
+    comparisons: dict = field(default_factory=dict)
+    rejections: dict = field(default_factory=dict)
+    incomplete_reason: str | None = None
+
+
+def _finish(run: _Run, outcome, proposals, comparisons, rejections, incomplete_reason=None) -> StageResult:
+    verdict = outcome.verdict if outcome is not None else incomplete_verdict(run.tables)
+    state = run.store.record_event("вердикт", {"verdict": verdict})
+    return StageResult(verdict, outcome, state.state, proposals, comparisons, rejections, incomplete_reason)
+
+
+def _trusted(check, raw, who: str):
+    """A saved answer is our own input: if it no longer fits, that is our breakage."""
+    try:
+        return check(raw)
+    except AnswerRejected as error:
+        raise ContractError(f"сохранённый ответ {who} не проходит проверку: {error.reason}") from None
+
+
+def _pin_package(store, package, withheld) -> None:
+    """The second package is pinned in the journal once; a resumed run must rebuild the same print.
+
+    The print is sha256 over the package hash and the sha256 of the canonical `withheld`
+    (the hash only, never the text): a changed hidden name is not passed over silently.
+    """
+    print_ = digest(canonical_json({"пакет": package.hash, "withheld": digest(canonical_json(withheld))}))
+    state = store.load()
+    pinned = sorted(f for f in state.flags if f.startswith(PACKAGE_FLAG))
+    if not pinned:
+        store.set_flag(PACKAGE_FLAG + print_)
+    elif pinned != [PACKAGE_FLAG + print_]:
+        raise ContractError("второй пакет при возобновлении не совпал с записанным в журнале "
+                            "(изменились разделы, критерии, имена скрытого или карточки)")
+
+
+def _permutation_ok(order, size: int) -> bool:
+    return (isinstance(order, (list, tuple)) and len(order) == size
+            and all(isinstance(i, int) and not isinstance(i, bool) for i in order)
+            and sorted(order) == list(range(size)))
+
+
+def _check_critics(critics) -> tuple:
+    critics = list(critics)
+    if len(critics) != 2 or len(set(critics)) != 2 or not all(
+            isinstance(c, str) and c.strip() for c in critics):
+        raise ContractError(f"нужны ровно два разных критика: {_listed(critics)}")
+    return tuple(critics)
+
+
+def _check_engine(tables) -> None:
+    """Phase 0, the engine's own readiness: a corrupt schema or table is found before a paid call."""
+    load_schema("idea_proposal")
+    load_schema("idea_comparison")
+    _sentinel(tables)
+    outcome_rules(tables)
+    retry_budget(tables)
+    abort_limit(tables)
+    _attempt_states(tables)
+
+
+def _check_shape(sections, registries, withheld, tables) -> None:
+    """The caller's inputs are the right shape — `ContractError` otherwise (never the author's fault)."""
+    shown = comparison_sections(tables, STAGE)
+    if not isinstance(sections, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in sections.items()):
+        raise ContractError("sections: нужен словарь строка -> строка")
+    if set(sections) != shown:
+        raise ContractError(f"sections: нужны ровно разделы {sorted(shown)}")
+    if not isinstance(registries, dict):
+        raise ContractError("registries: нужен словарь")
+    _withheld_checked(tables, withheld, True)
+
+
+def _check_saved(saved, owner: str, critics) -> dict | None:
+    """The caller's saved answers: a mapping (or None) of critic name -> what `parse_answer` reads.
+
+    Checked before any write; returns ONE copy (a `dict`) that the rest of the stage works with,
+    so a caller's mapping that changes after the check changes nothing.
+    """
+    if saved is None:
+        return None
+    if not isinstance(saved, Mapping):
+        raise ContractError(f"сохранённые {owner}: нужно отображение критик -> ответ или None")
+    foreign = [k for k in saved if not isinstance(k, str) or k not in critics]
+    if foreign:
+        raise ContractError(f"сохранённые {owner}: чужие критики {_listed(sorted(map(str, foreign)))}")
+    bad = [k for k, v in saved.items() if not isinstance(v, (str, bytes, bytearray, dict, list))]
+    if bad:
+        raise ContractError(f"сохранённые {owner}: ответ не текст, не байты и не JSON-значение у {_listed(sorted(bad))}")
+    return dict(saved)
+
+
+def _blind_checker(criteria, tables, withheld):
+    """The check of a blind card: the answer's own validation and what the second package will judge."""
+    def blind_card(raw, critic=None):
+        card = validate_proposal(raw, criteria, tables)
+        fits_package(card, tables, withheld)    # what the package will judge, before the set exists
+        return card
+    return blind_card
+
+
+def _compare_checker(ids, criteria, tables):
+    def compare(raw, critic):
+        return validate_comparison(raw, candidate_ids=ids, criteria=criteria, critic=critic, tables=tables)
+    return compare
+
+
+def _check_saved_content(state, saved_proposals, saved_comparisons, criteria, tables, withheld) -> None:
+    """Phase 0: the CONTENT of the saved answers, by the same checks the phases apply, before any write.
+
+    Saved proposals are read only while the set of cards does not exist yet, so only then are they
+    judged. Saved comparisons need a set to compare: on a fresh run there is none -- `ContractError`;
+    on a resumed one they are judged against the journal's candidates in the recorded order.
+    """
+    if not state.idea_candidates:
+        if saved_comparisons:
+            raise ContractError("сохранённые сравнения: набора кандидатов в журнале нет, сравнивать нечего")
+        check = _blind_checker(criteria, tables, withheld)
+        for critic, raw in (saved_proposals or {}).items():
+            _trusted(check, raw, critic)
+        return
+    permutation = state.idea_candidates_permutation
+    if not _permutation_ok(permutation, len(state.idea_candidates)):
+        raise ContractError("журнал: перестановка не соответствует записанному набору")
+    ids = [state.idea_candidates[i].candidate_id for i in permutation]
+    compare = _compare_checker(ids, criteria, tables)
+    for critic, raw in (saved_comparisons or {}).items():
+        _trusted(lambda r, c=critic: compare(r, c), raw, critic)
+
+
+def _check_state(store, tables):
+    """The journal is a run of THIS stage, started and still open for it; returns the loaded state."""
+    state = store.load()
+    if state.stage != STAGE:
+        raise ContractError(f"прогон другой стадии: {state.stage!r}, нужна {STAGE!r}")
+    if state.state is None:
+        raise ContractError("прогон не запущен: сначала операция start")
+    if state.state == tables.decide("идёт_круг", "вердикт", {"verdict": incomplete_verdict(tables)}).to:
+        raise ContractError("неполный прогон; возобновление — операция блока уточнений")
+    if state.state not in ("создан", "идёт_круг"):
+        raise ContractError(f"стадия завершена: прогон в состоянии {state.state!r}")
+    return state
+
+
+def _input_print(run_inputs: dict) -> str:
+    return INPUT_FLAG + digest(canonical_json(run_inputs))
+
+
+def _pin_inputs(store, fingerprint: str, *, write: bool) -> None:
+    """The caller's inputs are pinned at the first entry; a resumed run with other inputs is refused.
+
+    Compared BEFORE the package is rebuilt: a changed input must not close the run as
+    incomplete — the run stays fit for the corrected input.
+    """
+    pinned = sorted(f for f in store.load().flags if f.startswith(INPUT_FLAG))
+    if pinned and pinned != [fingerprint]:
+        raise ContractError("вход стадии при возобновлении не совпал с записанным в журнале "
+                            "(изменились разделы, реестры, критерии, карточка автора или имена скрытого)")
+    if not pinned and write:
+        store.set_flag(fingerprint)
+
+
+def _blind_package(run_inputs: tuple, author: dict, tables):
+    """The real blind package the first-phase critic gets: the task, with the author's card hidden.
+
+    `предложенное_решение` is the author's card text; the author and the second critic come
+    from `withheld`. The criteria go in as the package's own `критерии` block (the critic answers by
+    their IDs). A refusal by the content (the card's trace, a criterion) is `AuthorCardRefused`; one
+    about the build root or a shape is ours.
+    """
+    sections, registries, withheld, criteria_view = run_inputs
+    hidden = {**withheld, "предложенное_решение": card_bytes(author).decode("utf-8")}
+    try:
+        with tempfile.TemporaryDirectory() as root:
+            return build_package(root, [], sections, registries, STAGE, blind=True, tables=tables,
+                                 withheld=hidden,
+                                 criteria=criteria_view)
+    except PackageRefused as refused:
+        if refused.reason in ("путь_запрещён", "файл_нечитаем", "некорректный_вход"):
+            raise ContractError(f"слепой пакет не собирается: {refused.reason}: {_clip(refused.detail)}") from None
+        raise AuthorCardRefused(f"слепой пакет не принят: {refused.reason}") from None
+
+
+def _second_package(run: _Run, candidates, permutation):
+    return build_comparison_package(
+        run.sections, run.registries, STAGE, candidates, permutation,
+        tables=run.tables, withheld=run.withheld, criteria=run.criteria_view)
+
+
+def _author_id(candidates) -> str:
+    authors = [c.candidate_id for c in candidates if c.source == AUTHOR_SOURCE]
+    if len(authors) != 1:
+        raise ContractError(f"в записанном наборе авторских карточек {len(authors)}, нужна одна")
+    return authors[0]
+
+
+def _phase_blind(run: _Run, blind_package, saved_proposals) -> tuple:
+    """Phase A: each critic proposes blind; a card the second package would refuse is a bad answer."""
+    blind_card = _blind_checker(run.criteria, run.tables, run.withheld)
+    return _collect(
+        run, stage=BLIND_STAGE, phase="blind", package=blind_package.material(), check=blind_card,
+        saved={c: _trusted(blind_card, raw, c) for c, raw in (saved_proposals or {}).items()})
+
+
+def _phase_set(run: _Run, author: dict, proposals: dict, new_id, shuffle) -> tuple:
+    """Phase B: the engine makes the IDs and the order, builds the whole second package, and only then writes.
+
+    The write of the set is the point of no return, so the second package is built here in
+    full, from the future IDs and order (the same `build_comparison_package`, as a trial):
+    total size, grams and hashes across card borders. A refusal leaves the journal clean.
+    Returns `(package, None)` or `(None, reason)`.
+    """
+    sentinel = _sentinel(run.tables)
+    make_id = new_id or (lambda: "cand_" + secrets.token_hex(4))
+    cards = [(AUTHOR_SOURCE, author)] + [(c, proposals[c]) for c in run.critics]
+    ids = [make_id() for _ in cards]
+    if not all(isinstance(i, str) and i.strip() for i in ids):
+        raise ContractError(f"движок выдал пустой candidate_id: {_listed(ids)}")
+    if len(set(ids)) != len(ids):
+        raise ContractError(f"движок выдал повторяющиеся candidate_id: {_listed(ids)}")
+    if sentinel in ids:
+        raise ContractError("движок выдал candidate_id, равный выбору «нет подходящего»")
+    order = list(range(len(cards)))
+    (shuffle or secrets.SystemRandom().shuffle)(order)
+    if not _permutation_ok(order, len(cards)):
+        raise ContractError(f"перестановка {_clip(order)} не из {len(cards)} карточек")
+    candidates = [IdeaCandidate(i, source, card_bytes(card)) for i, (source, card) in zip(ids, cards)]
+    try:
+        package = _second_package(run, candidates, order)
+    except PackageRefused as refused:
+        return None, f"второй пакет из этих карточек не собирается: {refused.reason}"
+    run.store.assign_idea_candidates(candidates, order)
+    return package, None
+
+
+def _phase_compare(run: _Run, state, expected, saved_comparisons, proposals, rejections) -> StageResult:
+    """Phase C: both critics compare the same package; the outcome is the table's."""
+    candidates = state.idea_candidates
+    permutation = state.idea_candidates_permutation
+    if not _permutation_ok(permutation, len(candidates)):
+        raise ContractError("журнал: перестановка не соответствует записанному набору")
+    author_id = _author_id(candidates)
+    ids = [candidates[i].candidate_id for i in permutation]
+    try:
+        package = _second_package(run, candidates, permutation)
+    except PackageRefused as refused:         # a set written by somebody else, or a table that changed: the last net
+        return _finish(run, None, proposals, {}, rejections,
+                       f"второй пакет из записанного набора не собирается: {refused.reason}")
+    if expected is not None and not same_package(expected, package):
+        raise ContractError("второй пакет, собранный из журнала, не равен собранному до записи набора")
+    _pin_package(run.store, package, run.withheld)
+
+    compare = _compare_checker(ids, run.criteria, run.tables)
+    comparisons, compare_rejections = _collect(
+        run, stage=COMPARE_STAGE, phase="compare", package=package.material(), check=compare,
+        saved={c: _trusted(lambda r, c=c: compare(r, c), raw, c) for c, raw in (saved_comparisons or {}).items()})
+    rejections = {**rejections, "compare": compare_rejections}
+    valid = {c: v for c, v in comparisons.items() if v is not None}
+    if len(valid) < len(run.critics):
+        missing = [c for c in run.critics if c not in valid]
+        return _finish(run, None, proposals, valid, rejections,
+                       f"сравнение: нет валидного ответа у {_listed(missing)}")
+    first, second = (comparisons[c] for c in run.critics)
+    outcome = decide_outcome(first, second, author_id=author_id,
+                             framing_open=OBJECTION_FLAG in state.flags, tables=run.tables)
+    return _finish(run, outcome, proposals, valid, rejections)
+
+
+def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, registries=None,
+                   critics=("claude", "codex"), saved_proposals=None, saved_comparisons=None,
+                   new_id=None, shuffle=None, tables=None) -> StageResult:
+    """Run the «идея» stage end to end against a locked `RunStore`.
+
+    `ask(critic, request)` is the only paid call. Phase 0 runs before it can be
+    reached. `new_id` / `shuffle` are injection points for tests; by default
+    IDs and the permutation come from `secrets` (identity permutation allowed).
+
+    A request is `{phase, critic, attempt, package, previous_rejection}`: the task, the
+    criteria and (in the second phase) the candidates reach the critic only inside `package`.
+
+    `sections` (exactly the shown task sections), `registries` (default: empty) and `withheld`
+    (the NAMES of both critics: `{"автор": ..., "второй_критик": ...}`; the proposed solution
+    is the author's card and is added here) feed both packages. The second one is built by
+    `context.build_comparison_package` from the journal's cards and permutation only -- so a
+    resumed run builds the same bytes.
+
+    Errors: a wrong shape of the caller's inputs, a corrupt table or journal, a changed input on
+    resume -- `ContractError`; the content of the author's card, the criteria or the sections
+    -- `AuthorCardRefused`. An incomplete run (`НЕПОЛНЫЙ_ПРОГОН`) is a result, not an error; entering
+    it again is `ContractError`: resuming it is an operation of the clarification block (БУ),
+    which also decides whether a new round or a reset budget follows.
+
+    Phase 0 refuses in this order: the shape of the inputs (the saved answers included), the run's
+    stage, its state, then the cards and criteria. Remaining boundary: the caller's `saved_proposals`
+    can be swapped before the inputs are pinned -- the journal holds no answer bytes until the
+    clarification block (БУ).
+
+    The saved answers are judged by content in phase 0 too (the same checks as the phases), before
+    the first write. Not judged there: saved proposals when the set of cards already exists (they
+    are not read then). Writing the input print before the `пакет_собран` event closes the window in
+    which a crash would leave the run started but not pinned. If the `fit` of the author's card
+    repeats a criterion's text word for word, the author is refused by the trace of the hidden:
+    retell it in your own words (the check is not loosened).
+    """
+    tables = _tables(tables)
+    critics = _check_critics(critics)
+    _check_engine(tables)                                                  # phase 0
+    _check_shape(sections, {} if registries is None else registries, withheld, tables)
+    saved_proposals = _check_saved(saved_proposals, "предложения", critics)
+    saved_comparisons = _check_saved(saved_comparisons, "сравнения", critics)
+    state = _check_state(store, tables)                                    # the stage, then the state
+    registries = {"решения": [], "области": [], "журнал_доказательств": []} if registries is None else registries
+    parsed_criteria = validate_criteria(criteria)
+    criteria_view = [{"id": c.id, "text": c.text, "mandatory": c.mandatory} for c in parsed_criteria]
+    try:
+        card_print = digest(canonical_json(parse_answer(author_card)))
+    except (AnswerRejected, PackageRefused):
+        card_print = None                                                  # refused below, by the card's own check
+    fingerprint = _input_print({
+        "разделы": sections, "реестры": registries, "критерии": criteria_view, "карточка": card_print,
+        "критики": list(critics), "withheld": digest(canonical_json(withheld))})
+    _pin_inputs(store, fingerprint, write=False)                           # before anything is rebuilt
+    try:       # the task, criteria and hidden names go through the package's own checks first
+        check_comparison_inputs(sections, registries, STAGE, tables, withheld, criteria_view)
+    except PackageRefused as refused:
+        if refused.reason == "некорректный_вход":              # a shape the package cannot read: the caller's
+            raise ContractError(f"вход пакета: {refused.reason}: {_clip(refused.detail)}") from None
+        raise AuthorCardRefused(f"вход пакета не принят: {refused.reason}") from None
+    author = check_author_card(author_card, criteria, tables, withheld)
+    blind_package = _blind_package((sections, registries, withheld, criteria_view), author, tables)
+
+    _check_saved_content(state, saved_proposals, saved_comparisons, parsed_criteria, tables, withheld)
+    _pin_inputs(store, fingerprint, write=True)         # the print first: a crash after it cannot admit other inputs
+    if state.state == "создан":
+        state = store.record_event("пакет_собран")
+    run = _Run(store, ask, tables, critics, parsed_criteria, criteria_view, sections, registries, withheld,
+               max(state.round_number, 1))
+
+    proposals: dict = {}
+    rejections: dict = {}
+    expected = None
+    if not state.idea_candidates:
+        proposals, blind_rejections = _phase_blind(run, blind_package, saved_proposals)     # phase A
+        rejections["blind"] = blind_rejections
+        if sum(v is not None for v in proposals.values()) < len(critics):
+            missing = [c for c in critics if proposals[c] is None]
+            return _finish(run, None, proposals, {}, rejections,
+                           f"слепая фаза: нет валидного предложения у {_listed(missing)}")
+        expected, reason = _phase_set(run, author, proposals, new_id, shuffle)             # phase B
+        if expected is None:
+            return _finish(run, None, proposals, {}, rejections, reason)
+        state = store.load()
+    return _phase_compare(run, state, expected, saved_comparisons, proposals, rejections)  # phase C
+
+
+# --------------------------------------------------------------------------
+# БИ-13: no transition without Anton's recorded OK
+# --------------------------------------------------------------------------
+
+def require_anton_ok(store) -> None:
+    """Refuse unless the stage is finished and Anton's OK follows its last verdict.
+
+    The OK counts only when (by journal order) the run waits for Anton, the last
+    verdict is the idea one and belongs to the current round (it follows the last round
+    start), no framing objection is open, the OK flag is still on, and it was recorded
+    after that verdict.
+    """
+    state = store.load()
+    if state.state != "ждёт_Антона":
+        raise AntonOkRequired(f"прогон в состоянии {state.state!r}, ждать ОК нечего")
+    if OBJECTION_FLAG in state.flags:
+        raise AntonOkRequired("открыто возражение к постановке — оно держит стадию")
+    if ANTON_OK_FLAG not in state.flags:
+        raise AntonOkRequired("нет записанного ОК Антона на решение")
+    position = {"verdict": -1, "round": -1, "ok": -1}
+    last_verdict = None
+    for index, entry in enumerate(store._entries()):    # временно: до публичного чтения журнала в state.py (блок БУ)
+        kind = entry.get("kind")
+        if kind == "event" and entry.get("event") == "вердикт" and (entry.get("outcome") or {}).get("moved"):
+            position["verdict"] = index
+            last_verdict = (entry.get("conditions") or {}).get("verdict")
+        elif kind == "round_started":
+            position["round"] = index
+        elif kind == "flag" and entry.get("flag") == ANTON_OK_FLAG:
+            position["ok"] = index if entry.get("on") else -1
+    if last_verdict != IDEA_VERDICT:
+        raise AntonOkRequired(f"последний вердикт {last_verdict!r}, а не {IDEA_VERDICT}")
+    if position["verdict"] < position["round"]:
+        raise AntonOkRequired("последний вердикт — с прошлого круга: в текущем круге вердикта ещё нет")
+    if position["ok"] < 0 or position["ok"] < position["verdict"]:
+        raise AntonOkRequired("ОК Антона дан не после последнего вердикта текущего круга")
+
+
+def leave_idea_stage(store) -> bool:
+    """A PREDICATE: True only when Anton's OK is recorded after the last verdict.
+
+    It is not wired to a run transition and the OK flag is not a protected write — both
+    belong to the БУ block; until then nothing in the engine calls it on a transition.
+    The critics' agreement never substitutes for the OK."""
+    require_anton_ok(store)
+    return True

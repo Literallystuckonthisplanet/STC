@@ -2908,6 +2908,22 @@ def test_every_absorption_formula_fires_on_its_own():
         module.Tables.from_raw(raw).check()
 
 
+def test_a_satisfied_gate_is_history_and_is_pinned_whole():
+    # Круг 50: пока предусловие шлюза открыто, его состав держит отпечаток
+    # объёма открытого блока. Когда закрыты все — не держит никто: замер на
+    # закрытии идеи нашёл, что вычеркнуть закрытый блок из `до_закрытия`
+    # можно молча. Исполненный шлюз — история решения ревью, закрепляется целиком.
+    tables = import_tables_module().load()
+    satisfied = {name: (sorted(spec["блокирует"]), list(spec["до_закрытия"]))
+                 for name, spec in tables.plan["шлюзы"].items()
+                 if all(tables.closed(b) for b in spec["до_закрытия"])}
+    assert satisfied == {
+        "ремонт_после_ревью_12": (
+            ["Б0б", "Б10", "Б11", "Б12", "Б13", "Б15", "Б3б", "Б4", "Б5", "Б6", "Б7", "Б8", "Б9"],
+            ["БК", "Б1", "Б2", "БТ2", "БИ"]),
+    }
+
+
 def test_a_gate_lets_its_own_preconditions_close():
     # БК-6, вторая сторона. Шлюз, который держит и собственные предусловия,
     # не откроется никогда — «блок из до_закрытия закрывается» проверяется

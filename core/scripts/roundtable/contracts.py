@@ -53,7 +53,8 @@ __all__ = [
     "outcome_rules", "decide_outcome", "IdeaOutcome", "retry_budget", "retry_order", "abort_limit",
     "calls_made", "incomplete_verdict", "run_idea_stage", "StageResult",
     "require_anton_ok", "leave_idea_stage",
-    "ResumeImpossible", "AntonOkRefused", "record_anton_ok", "ok_marker", "OBJECTION_FLAG", "PIN_INPUT", "PIN_PACKAGE", "AUTHOR_SOURCE", "BLIND_STAGE",
+    "ResumeImpossible", "AntonOkRefused", "RefinementError", "CorrectionRefused", "RefinementCeiling",
+    "submit_correction", "record_anton_ok", "ok_marker", "OBJECTION_FLAG", "PIN_INPUT", "PIN_PACKAGE", "AUTHOR_SOURCE", "BLIND_STAGE",
     "COMPARE_STAGE", "STAGE", "IDEA_VERDICT", "INCOMPLETE_VERDICT", "CRITERION_ID", "SCHEMAS_DIR",
 ]
 
@@ -142,6 +143,33 @@ class AntonOkRequired(Exception):
         if code is not None:
             self.code = code                 # the table's refusal (НЕТ_ОК_АНТОНА, ОК_УСТАРЕЛ, ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ)
         super().__init__(f"{self.code}: {detail}" if detail else self.code)
+
+
+class RefinementError(Exception):
+    """The common base of the refinement cycle's named outcomes (`.code` is the table's code)."""
+
+    code = ""
+
+    def __init__(self, code: str, detail: str = ""):
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}" if detail else code)
+
+
+class CorrectionRefused(RefinementError):
+    """БУ-1…БУ-8: a correction was offered and not taken -- NOTHING is written."""
+
+
+class RefinementCeiling(RefinementError):
+    """БУ-8: the turns of the cycle are used up -- the run was stopped for redesign (terminal), no agreement follows.
+
+    Not a `CorrectionRefused`: that one means "nothing was written", here the stop IS written (on Anton's word).
+    `history` is the journal's account of every turn, the stop included.
+    """
+
+    def __init__(self, detail: str = "", history: list | None = None):
+        super().__init__("ПОТОЛОК_ОБОРОТОВ", detail)
+        self.history = history or []
 
 
 class AntonOkRefused(Exception):
@@ -974,6 +1002,7 @@ class StageResult:
     comparisons: dict = field(default_factory=dict)
     rejections: dict = field(default_factory=dict)
     incomplete_reason: str | None = None
+    turns: list = field(default_factory=list)       # БУ-6: the refinement history at the moment of the result
 
 
 def _finish(run: _Run, outcome, proposals, comparisons, rejections, incomplete_reason=None,
@@ -981,7 +1010,8 @@ def _finish(run: _Run, outcome, proposals, comparisons, rejections, incomplete_r
     """`cause`: why a run is incomplete when it is not the budget (the input does not build) -- kept with the verdict."""
     verdict = outcome.verdict if outcome is not None else incomplete_verdict(run.tables)
     state = run.store.record_event("вердикт", {"verdict": verdict}, {"cause": cause} if cause else None)
-    return StageResult(verdict, outcome, state.state, proposals, comparisons, rejections, incomplete_reason)
+    return StageResult(verdict, outcome, state.state, proposals, comparisons, rejections, incomplete_reason,
+                       run.store.refinement_history())
 
 
 def _package_pin(run_round: int, revision: str, package, withheld) -> dict:
@@ -1100,8 +1130,42 @@ def _check_state(store, tables):
     return state
 
 
-def _input_pin(round_number: int, revision: str, run_inputs: dict) -> dict:
-    return dict(round_number=round_number, revision=revision, content_hash=digest(canonical_json(run_inputs)))
+def _card_checks(tables, sections, registries, withheld, criteria, criteria_view, author_card) -> tuple:
+    """The checks of the author's card and of the input around it -- phase 0 of the stage AND of a correction.
+
+    The task, criteria and hidden names go through the package's own checks first; a card the package
+    refuses is `AuthorCardRefused`, a shape it cannot read is `ContractError`. Returns `(author, blind_package)`.
+    """
+    try:
+        check_comparison_inputs(sections, registries, STAGE, tables, withheld, criteria_view)
+    except PackageRefused as refused:
+        if refused.reason == "некорректный_вход":              # a shape the package cannot read: the caller's
+            raise ContractError(f"вход пакета: {refused.reason}: {_clip(refused.detail)}") from None
+        raise AuthorCardRefused(f"вход пакета не принят: {refused.reason}") from None
+    author = check_author_card(author_card, criteria, tables, withheld)
+    return author, _blind_package((sections, registries, withheld, criteria_view), author, tables)
+
+
+def _revision_of(card) -> str | None:
+    """The revision of an author's card: the sha256 of its canonical bytes (`card_bytes`) -- or None for a card that does not read."""
+    try:
+        return digest(card_bytes(parse_answer(card)))
+    except (AnswerRejected, PackageRefused, KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _frame(sections, registries, criteria_view, critics, withheld) -> dict:
+    """The input of the stage WITHOUT the author's card: task, registries, criteria, critics, hidden names (as a hash).
+
+    A correction changes the card only; the frame is what stays, and its hash is kept with every input pin.
+    """
+    return {"разделы": sections, "реестры": registries, "критерии": criteria_view, "критики": list(critics),
+            "withheld": digest(canonical_json(withheld))}
+
+
+def _input_pin(round_number: int, revision: str, run_inputs: dict, frame: dict) -> dict:
+    return dict(round_number=round_number, revision=revision, content_hash=digest(canonical_json(run_inputs)),
+                frame_hash=digest(canonical_json(frame)))
 
 
 def _pin_inputs(store, pin: dict, *, write: bool) -> None:
@@ -1166,17 +1230,15 @@ def _phase_blind(run: _Run, blind_package) -> tuple:
         run, stage=BLIND_STAGE, phase="blind", package=blind_package.material(), check=blind_card)
 
 
-def _phase_set(run: _Run, author: dict, proposals: dict, new_id, shuffle) -> tuple:
-    """Phase B: the engine makes the IDs and the order, builds the whole second package, and only then writes.
+def _draw_set(run: _Run, cards: list, new_id, shuffle) -> tuple:
+    """The engine makes the IDs and the order of a set and builds the whole second package as a trial.
 
-    The write of the set is the point of no return, so the second package is built here in
-    full, from the future IDs and order (the same `build_comparison_package`, as a trial):
-    total size, grams and hashes across card borders. A refusal leaves the journal clean.
-    Returns `(package, None)` or `(None, reason)`.
+    `cards`: `[(source, canonical bytes)]`. Returns `(candidates, order, package, None)` or, when the
+    package would not build, `(None, None, None, reason)`. Nothing is written: the caller decides.
+    Phase B and the correction (a new round) draw their sets here, by the same rules.
     """
     sentinel = _sentinel(run.tables)
     make_id = new_id or (lambda: "cand_" + secrets.token_hex(4))
-    cards = [(AUTHOR_SOURCE, author)] + [(c, proposals[c]) for c in run.critics]
     ids = [make_id() for _ in cards]
     if not all(isinstance(i, str) and i.strip() for i in ids):
         raise ContractError(f"движок выдал пустой candidate_id: {_listed(ids)}")
@@ -1188,11 +1250,25 @@ def _phase_set(run: _Run, author: dict, proposals: dict, new_id, shuffle) -> tup
     (shuffle or secrets.SystemRandom().shuffle)(order)
     if not _permutation_ok(order, len(cards)):
         raise ContractError(f"перестановка {_clip(order)} не из {len(cards)} карточек")
-    candidates = [IdeaCandidate(i, source, card_bytes(card)) for i, (source, card) in zip(ids, cards)]
+    candidates = [IdeaCandidate(i, source, data) for i, (source, data) in zip(ids, cards)]
     try:
         package = _second_package(run, candidates, order)
     except PackageRefused as refused:
-        return None, f"второй пакет из этих карточек не собирается: {refused.reason}"
+        return None, None, None, f"второй пакет из этих карточек не собирается: {refused.reason}"
+    return candidates, order, package, None
+
+
+def _phase_set(run: _Run, author: dict, proposals: dict, new_id, shuffle) -> tuple:
+    """Phase B: the engine makes the IDs and the order, builds the whole second package, and only then writes.
+
+    The write of the set is the point of no return, so the second package is built in full first
+    (`_draw_set`): total size, grams and hashes across card borders. A refusal leaves the journal clean.
+    Returns `(package, None)` or `(None, reason)`.
+    """
+    cards = [(AUTHOR_SOURCE, card_bytes(author))] + [(c, card_bytes(proposals[c])) for c in run.critics]
+    candidates, order, package, reason = _draw_set(run, cards, new_id, shuffle)
+    if package is None:
+        return None, reason
     run.store.assign_idea_candidates(candidates, order)
     return package, None
 
@@ -1313,24 +1389,15 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
     registries = {"решения": [], "области": [], "журнал_доказательств": []} if registries is None else registries
     parsed_criteria = validate_criteria(criteria)
     criteria_view = [{"id": c.id, "text": c.text, "mandatory": c.mandatory} for c in parsed_criteria]
-    try:
-        card_print = digest(canonical_json(parse_answer(author_card)))
-    except (AnswerRejected, PackageRefused):
-        card_print = None                                                  # refused below, by the card's own check
+    card_print = _revision_of(author_card)                                # None: refused below, by the card's own check
     round_number = max(state.round_number, 1)
     revision = card_print or "карточка_не_разобрана"
-    input_pin = _input_pin(round_number, revision, {
-        "разделы": sections, "реестры": registries, "критерии": criteria_view, "карточка": card_print,
-        "критики": list(critics), "withheld": digest(canonical_json(withheld))})
+    frame = _frame(sections, registries, criteria_view, critics, withheld)
+    input_pin = _input_pin(round_number, revision, {**frame, "карточка": card_print}, frame)
     _pin_inputs(store, input_pin, write=False)                             # before anything is rebuilt
-    try:       # the task, criteria and hidden names go through the package's own checks first
-        check_comparison_inputs(sections, registries, STAGE, tables, withheld, criteria_view)
-    except PackageRefused as refused:
-        if refused.reason == "некорректный_вход":              # a shape the package cannot read: the caller's
-            raise ContractError(f"вход пакета: {refused.reason}: {_clip(refused.detail)}") from None
-        raise AuthorCardRefused(f"вход пакета не принят: {refused.reason}") from None
-    author = check_author_card(author_card, criteria, tables, withheld)
-    blind_package = _blind_package((sections, registries, withheld, criteria_view), author, tables)
+    author, blind_package = _card_checks(tables, sections, registries, withheld, criteria, criteria_view, author_card)
+    if digest(card_bytes(author)) != card_print:
+        raise ContractError("редакция карточки не сходится с хешем её канонических байтов")
 
     run = _Run(store, ask, tables, critics, parsed_criteria, criteria_view, sections, registries, withheld,
                round_number, revision)
@@ -1393,6 +1460,33 @@ def _parse_time(value):
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+def _shown_problem(state, revision: str, found: dict, spec: dict, tables) -> tuple:
+    """`(problem, fork)`: the marker of this run and of the current revision stands in the LAST text block of the assistant
+    before the reply (in fork mode inside the card after 🗳). One check for the OK and for Anton's correction."""
+    block = found["last_text"]
+    if block is None:
+        return "перед репликой нет текстового блока ассистента: вопроса, на который она отвечает, нет", False
+    fork = "🗳" in block
+    shown = _markers_shown(block[block.rindex("🗳"):] if fork else block, spec)
+    if shown != {(state.run_id, revision[:spec["длина_хеша"]])}:
+        return ("в последнем блоке ассистента перед репликой" + (" (в карточке после 🗳)" if fork else "")
+                + f" нет строки с этим прогоном и текущей редакцией ({ok_marker(state.run_id, revision, tables)})"
+                  " или есть строка с другими"), fork
+    return None, fork
+
+
+def _after_verdict_problem(state, found: dict) -> str | None:
+    """The reply and the block of the assistant are not older than the last verdict of the current round."""
+    verdict_at = _parse_time(state.last_verdict_at)
+    for what, stamp in (("реплика", found["timestamp"]), ("блок ассистента с вопросом", found["last_text_at"])):
+        moment = _parse_time(stamp)
+        if moment is None:
+            return f"у записи «{what}» нет времени в переписке: порядок относительно вердикта не доказать"
+        if verdict_at is None or moment < verdict_at:
+            return f"{what} раньше последнего вердикта текущего круга"
+    return None
+
+
 def _ok_problem(store, state, spec: dict, basis, home) -> tuple:
     """`(fields, None)` for an OK that is counted, `(None, problem)` for one that is not.
 
@@ -1412,16 +1506,10 @@ def _ok_problem(store, state, spec: dict, basis, home) -> tuple:
     found = tables_module.transcript_reply(basis["сессия"], basis["native_uuid"], home)
     if isinstance(found, str):
         return None, found
-    block, own = found["last_text"], found["own"]
-    if block is None:
-        return None, "перед репликой нет текстового блока ассистента: вопроса, на который она отвечает, нет"
-    fork = "🗳" in block
-    shown = _markers_shown(block[block.rindex("🗳"):] if fork else block, spec)
-    if shown != {(state.run_id, revision[:spec["длина_хеша"]])}:
-        return None, ("в последнем блоке ассистента перед репликой"
-                      + (" (в карточке после 🗳)" if fork else "")
-                      + f" нет строки с этим прогоном и текущей редакцией ({ok_marker(state.run_id, revision, store.tables)})"
-                        " или есть строка с другими")
+    own = found["own"]
+    problem, fork = _shown_problem(state, revision, found, spec, store.tables)
+    if problem:
+        return None, problem
     if fork:
         quote = own.strip(" \t\r\n\x00")
         problem = tables_module.resolve_basis(
@@ -1431,13 +1519,9 @@ def _ok_problem(store, state, spec: dict, basis, home) -> tuple:
         problem = tables_module.bare_consent_problem(own)
     if problem:
         return None, problem
-    verdict_at = _parse_time(state.last_verdict_at)
-    for what, stamp in (("реплика", found["timestamp"]), ("блок ассистента с вопросом", found["last_text_at"])):
-        moment = _parse_time(stamp)
-        if moment is None:
-            return None, f"у записи «{what}» нет времени в переписке: порядок относительно вердикта не доказать"
-        if verdict_at is None or moment < verdict_at:
-            return None, f"{what} раньше последнего вердикта текущего круга"
+    problem = _after_verdict_problem(state, found)
+    if problem:
+        return None, problem
     return {"session": basis["сессия"], "native_uuid": basis["native_uuid"], "reply_at": found["timestamp"],
             "run_id": state.run_id, "stage": state.stage, "artifact": spec["артефакт"], "revision": revision,
             "round_number": max(state.round_number, 1)}, None
@@ -1526,3 +1610,163 @@ def leave_idea_stage(store, home=None) -> bool:
     except Refusal as refused:
         raise AntonOkRequired(refused.detail, code=refused.code) from None
     return True
+
+
+# --------------------------------------------------------------------------
+# БУ-1 … БУ-8, БУ-16: the correction -- one turn of the refinement cycle
+# --------------------------------------------------------------------------
+
+def _correction_reply_problem(state, spec_ok: dict, found, tables) -> str | None:
+    """Anton's word behind a correction, judged on the ONE reading of the transcript (`found`).
+
+    Required for ANY correction, whoever composed the card: his human reply (no service record, no tool result,
+    no plan approval), without inserted text, words and not a consent in any form (a formula, a «yes» option, a
+    reply that begins with a word of consent), no negation, no question; after the answer that shows the
+    current revision (the marker in the last text block) and not older than the last verdict.
+    """
+    if isinstance(found, str):
+        return found
+    if not found["human_prompt"]:
+        return "основание — не реплика человека (служебная запись или результат инструмента)"
+    if found["inserted"]:
+        return "в реплике есть вставка (служебный или вставленный чужой текст): основанием годятся только слова человека"
+    problem = tables_module.correction_reply_problem(found["own"], found["chose_yes"])
+    if problem:
+        return problem
+    problem, _ = _shown_problem(state, state.input_revision, found, spec_ok, tables)
+    return problem or _after_verdict_problem(state, found)
+
+
+def _correction_arguments(store, tables, new_card, source, basis, criteria, sections, withheld, registries, critics):
+    """Step 1: the shape of the arguments and the state of the run; returns `(critics, registries, state)`."""
+    spec_c = tables.vocabulary["цикл_уточнений"]
+    critics = _check_critics(critics)
+    _check_engine(tables)
+    registries = {"решения": [], "области": [], "журнал_доказательств": []} if registries is None else registries
+    _check_shape(sections, registries, withheld, tables)
+    state = store.load()
+    if state.stage != STAGE:
+        raise ContractError(f"прогон другой стадии: {state.stage!r}, нужна {STAGE!r}")
+    if state.state not in ("ждёт_Антона", "неполный"):
+        raise CorrectionRefused("ПОПРАВКА_НЕВОЗМОЖНА", f"прогон в состоянии {state.state!r}: поправка возможна после показа "
+                                                       "Антону или в неполном прогоне")
+    if source not in spec_c["источники"]:
+        raise CorrectionRefused("ПОПРАВКА_НЕ_ЗАСЧИТАНА", f"источник поправки {source!r}: нужен один из {spec_c['источники']}")
+    return critics, registries, state
+
+
+def _correction_basis_shape(basis) -> None:
+    """Step 2b: a correction without a reference to Anton's reply is not counted -- whoever composed the card."""
+    if not isinstance(basis, Mapping) or set(basis) != {"сессия", "native_uuid"}:
+        raise CorrectionRefused("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "поправка без слова Антона не засчитывается: нужна ссылка "
+                                                         "{сессия, native_uuid} на его реплику")
+
+
+def _correction_card(state, tables, new_card, criteria, sections, registries, withheld, critics) -> tuple:
+    """Step 2: the new card passes the checks of phase 0 and is a revision the run has never judged.
+
+    Returns `(author bytes, blind package, revision, input pin)`. Refused with nothing written: the same
+    revision as now or as ANY earlier one of the run (a return to an old card), a copy of a critic's card.
+    """
+    parsed = validate_criteria(criteria)
+    criteria_view = [{"id": c.id, "text": c.text, "mandatory": c.mandatory} for c in parsed]
+    revision = _revision_of(new_card)
+    author, blind_package = _card_checks(tables, sections, registries, withheld, criteria, criteria_view, new_card)
+    data = card_bytes(author)
+    if revision is None or digest(data) != revision:
+        raise ContractError("редакция карточки не сходится с хешем её канонических байтов")
+    if revision == state.input_revision:
+        raise CorrectionRefused("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "та же редакция, что текущая: поправка без изменения")
+    if revision in {p.revision for p in state.pins if p.event == PIN_INPUT}:
+        raise CorrectionRefused("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "возврат к прежней редакции прогона: она уже была судима, оборот не тратится")
+    if any(c.source != AUTHOR_SOURCE and c.canonical_bytes == data for c in state.idea_candidates):
+        raise CorrectionRefused("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "карточка автора побайтово равна карточке критика: дубль в наборе "
+                                                         "для сравнения бессмыслен")
+    frame = _frame(sections, registries, criteria_view, critics, withheld)
+    pin = _input_pin(max(state.round_number, 1) + 1, revision, {**frame, "карточка": revision}, frame)
+    first = next((p for p in state.pins if p.event == PIN_INPUT), None)
+    if first is not None and first.frame_hash is not None and pin["frame_hash"] != first.frame_hash:
+        raise CorrectionRefused("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "изменилась рамка входа (задача, ограничения, критерии, критики, "
+                                                         "скрытые имена): это новый прогон, а не поправка")
+    return data, blind_package, revision, pin, parsed, criteria_view
+
+
+def _correction_proof(store, state, tables, basis, home) -> dict:
+    """Step 3: Anton's word. The transcript is read ONCE; returns the basis as the journal keeps it."""
+    spec_ok = tables.vocabulary["ок_антона"]
+    found = tables_module.transcript_reply(basis["сессия"], basis["native_uuid"], home)
+    problem = _correction_reply_problem(state, spec_ok, found, tables)
+    if problem:
+        raise CorrectionRefused("ПОПРАВКА_НЕ_ЗАСЧИТАНА", problem)
+    words = found["own"].strip()
+    return {"session": basis["сессия"], "native_uuid": basis["native_uuid"], "reply_at": found["timestamp"],
+            "words_hash": digest(words.encode("utf-8")), "words_clip": words[:200]}
+
+
+def _correction_kept_cards(store, state, tables, critics, parsed_criteria, withheld, blind_package) -> list:
+    """The critics' cards that stay: those of the past set byte for byte, or -- if no set was ever made -- their valid blind proposals."""
+    if state.idea_candidates:
+        return [(c.source, c.canonical_bytes) for c in state.idea_candidates if c.source != AUTHOR_SOURCE]
+    check = _blind_checker(parsed_criteria, tables, withheld)
+    kept = []
+    for critic in critics:
+        seen = _recorded(store, state, tables, BLIND_STAGE, max(state.round_number, 1), critic, check,
+                         _question("blind", critic, blind_package.material()))
+        valid = [item for item in seen if item.accepted]
+        if not valid:                                   # the dead end has its own row in the table
+            refusal = tables.decide("неполный", "поправка", {"blind_cards_ready": False}).refusal
+            raise CorrectionRefused(refusal, f"у критика {critic} нет валидного слепого предложения: слепая фаза не повторяется")
+        kept.append((critic, card_bytes(valid[0].value)))
+    return kept
+
+
+def submit_correction(store, *, new_card, source, basis, criteria, sections, withheld, from_candidate=None,
+                      home=None, registries=None, critics=("claude", "codex"), new_id=None, shuffle=None,
+                      tables=None):
+    """One turn of the cycle: a corrected card of the author opens a NEW comparison round (БУ-1 … БУ-8, БУ-16).
+
+    NO correction is counted without Anton's word: `basis` is the reference `{сессия, native_uuid}` to his reply
+    in the transcript, proven here -- for any `source`. `source` says who COMPOSED the card: `антон` (by his
+    words) or `автор` (by the critics' findings, with his consent). So neither a turn, nor a paid call, nor the stop
+    at the ceiling can happen without him. His words are kept as a hash and a clip of 200 signs; one reply serves once.
+
+    From `ждёт_Антона` (after the show) or an incomplete run that cannot go on by itself. Only the author's
+    card changes; the frame (task, constraints, criteria, critics, hidden names) is the pinned one -- another
+    frame is a new run. The new card passes the checks of phase 0 before any write; the same card as now, a
+    return to any earlier card of the run and a copy of a critic's card are refused. `from_candidate` names a
+    candidate of a past round the revision grew from; its source is the journal's, the critics' cards stay as they
+    are. One journal entry carries the whole turn (new revision, new set with new IDs and order, the pins of the new
+    round, the stale mark for the old scores). The comparison is then run by `run_idea_stage` with the new card:
+    only the second phase, with the budget of the new round. The call itself makes no paid call.
+
+    Returns the new state. Raises: `CorrectionRefused` (a named code, nothing written: wrong state, no basis,
+    the reply is no correction, same/earlier revision, a copy, another frame, the run can go on without it, no blind
+    cards); `RefinementCeiling` (the stop IS written: the run is terminal, `.history` has every turn);
+    `AuthorCardRefused` (the new card is unfit, or the second package would not build); `ContractError` (a wrong
+    shape of the inputs, a corrupt table or journal, a run of another stage); `TypeError` (an unknown argument).
+    """
+    tables = tables or store.tables
+    spec_c = tables.vocabulary["цикл_уточнений"]
+    critics, registries, state = _correction_arguments(store, tables, new_card, source, basis, criteria, sections,
+                                                       withheld, registries, critics)
+    data, blind_package, revision, input_pin, parsed, criteria_view = _correction_card(
+        state, tables, new_card, criteria, sections, registries, withheld, critics)
+    _correction_basis_shape(basis)
+    wire = _correction_proof(store, state, tables, basis, home)
+    run = _Run(store, None, tables, critics, parsed, criteria_view, sections, registries, withheld,
+               max(state.round_number, 1) + 1, revision)
+    kept = _correction_kept_cards(store, state, tables, critics, parsed, withheld, blind_package)
+    candidates, order, package, reason = _draw_set(run, [(AUTHOR_SOURCE, data)] + kept, new_id, shuffle)
+    if package is None:
+        raise AuthorCardRefused(reason)
+    try:
+        after = store._record_correction(
+            source=source, basis=wire, from_candidate=from_candidate, to_revision=revision, candidates=candidates,
+            permutation=order, input_pin=input_pin,
+            package_pin={"content_hash": package.hash, "hidden_hash": digest(canonical_json(withheld))})
+    except Refusal as refused:
+        raise CorrectionRefused(refused.code, refused.detail) from None
+    if after.state == spec_c["терминальное"]:
+        raise RefinementCeiling("обороты исчерпаны: прогон остановлен для перепроектирования, согласия не будет",
+                                store.refinement_history())
+    return after

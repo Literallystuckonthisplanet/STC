@@ -3192,7 +3192,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert ISSUES["допустимые_решения"] == {'блокер_правкой_круги_исчерпаны': ['принять_риск', 'остановить', 'запросить_ещё_правку'], 'блокер_сменой_решения': ['сменить_решение', 'принять_риск', 'остановить'], 'блокер_только_сменой_цели': ['изменить_цель', 'принять_риск', 'остановить'], 'неизвестное_высокой_существенности': ['принять_риск', 'запросить_ещё_правку', 'остановить']}, (
         "допустимое решение по типу замечания убрано — Антон лишился варианта")
     assert VOCAB["состояния_блока"] == {'рабочие': ['идёт', 'переоткрыт', 'неполный'], 'терминальные': ['сделано', 'объединён_с']}
-    assert {key: VOCAB["коды_условий"][key] for key in VOCAB["коды_условий"]} == {'verdict': ['ОДОБРЕНО', 'НУЖНЫ_ПРАВКИ', 'РЕШЕНИЕ_АНТОНА', 'НЕПОЛНЫЙ_ПРОГОН'], 'decision': ['принять_риск', 'остановить', 'сменить_решение', 'изменить_цель', 'запросить_ещё_правку'], 'framing_decision': ['подтвердить_постановку', 'изменить_цель', 'сменить_решение', 'остановить'], 'budget_allows_round': [True, False], 'budget_fits_quorum': [True, False], 'change_index': ['первая', 'вторая'], 'round_running': [True, False], 'run_finished': [True, False], 'all_verdict_blocking_resolved': [True, False], 'budget_remains': [True, False], 'input_can_progress': [True, False], 'ok_binding': [True, False], 'anton_ok': ['есть', 'нет', 'устарел'], 'framing_objection': [True, False]}
+    assert {key: VOCAB["коды_условий"][key] for key in VOCAB["коды_условий"]} == {'verdict': ['ОДОБРЕНО', 'НУЖНЫ_ПРАВКИ', 'РЕШЕНИЕ_АНТОНА', 'НЕПОЛНЫЙ_ПРОГОН'], 'decision': ['принять_риск', 'остановить', 'сменить_решение', 'изменить_цель', 'запросить_ещё_правку'], 'framing_decision': ['подтвердить_постановку', 'изменить_цель', 'сменить_решение', 'остановить'], 'budget_allows_round': [True, False], 'budget_fits_quorum': [True, False], 'change_index': ['первая', 'вторая'], 'round_running': [True, False], 'run_finished': [True, False], 'all_verdict_blocking_resolved': [True, False], 'budget_remains': [True, False], 'input_can_progress': [True, False], 'ok_binding': [True, False], 'anton_ok': ['есть', 'нет', 'устарел'], 'framing_objection': [True, False], 'turns_left': [True, False], 'blind_cards_ready': [True, False]}
     assert STAGES["слепой_вопрос"]["прячем"] == ['предложенное_решение', 'автор', 'второй_критик'], (
         "из слепого вопроса убрано то, что прячется от критика")
     assert STAGES["слепой_вопрос"]["показываем"] == ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения']
@@ -3219,6 +3219,9 @@ def test_closed_code_lists_are_pinned_whole():
         # БУ-15: added — Anton's OK: not counted / absent at the exit / overtaken by an edit / an open objection
         "ОК_НЕ_ЗАСЧИТАН", "НЕТ_ОК_АНТОНА", "ОК_УСТАРЕЛ", "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ",
         "ФЛАГ_ЗАЩИЩЁН",        # БУ-15: the objection flag is taken off by Anton's decision, not by a flag call
+        # БУ-1…БУ-8: the correction — wrong state / not taken / the run can go on without it / the ceiling
+        "ПОПРАВКА_НЕВОЗМОЖНА", "ПОПРАВКА_НЕ_ЗАСЧИТАНА", "КОРРЕКЦИЯ_НЕ_НУЖНА", "ПОТОЛОК_ОБОРОТОВ",
+        "ПОПРАВКА_ТУПИК",      # БУ-2: no set of cards and no valid blind proposal of a critic: nothing to correct
     }
     assert set(VOCAB["коды_условий"]) == {
         "verdict", "decision", "framing_decision", "budget_allows_round",
@@ -3227,6 +3230,8 @@ def test_closed_code_lists_are_pinned_whole():
         "budget_remains",       # БУ-13: added — whether the critics without a valid answer have attempts left
         "input_can_progress",   # БУ-13: added — whether the continuation can change anything (input builds, round pinned)
         "ok_binding", "anton_ok", "framing_objection",   # БУ-15: added — the OK of Anton: counted, standing at the exit, objection
+        "turns_left",           # БУ-4, БУ-8: added — the turns of the refinement cycle are not used up
+        "blind_cards_ready",    # БУ-2: added — an incomplete run with no set has the blind proposals of both critics
     }
     assert set(VOCAB["решения_по_возражению"]) == {
         "подтвердить_постановку", "изменить_цель", "сменить_решение", "остановить",
@@ -4720,3 +4725,50 @@ def test_bu15_a_transcript_that_cannot_be_read_is_a_refusal_for_a_permission_too
                                     "native_uuid": "aaaaaaaa-bbbb-cccc-dddd-000000000001",
                                     "цитата": "разрешаю всё это делать"}, tmp_path)
     assert "не читается" in (problem or "")
+
+
+def test_bu4_the_ceiling_has_one_source_in_the_table_and_a_closed_form():
+    spec = VOCAB["цикл_уточнений"]
+    assert spec["потолок_оборотов"] == 3                                    # Anton's decision of 11.10
+    assert spec["событие"] == "поправка" and spec["источники"] == ["антон", "автор"]
+    assert spec["терминальное"] in VOCAB["состояния_прогона"]["терминальные"]
+    assert spec["потолок_оборотов"] != VOCAB["повтор_невалидного_ответа"]["максимум_на_ответ"]   # a number of its own
+    REAL_TABLES.check()                                                                        # positive control
+    for mutate in (
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(потолок_оборотов=0),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(потолок_оборотов=True),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(потолок_оборотов="три"),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(терминальное="идёт_круг"),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(источники=["антон"]),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(событие="resume"),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(выдумка=1),
+        lambda r: r["vocabulary"].pop("цикл_уточнений"),
+    ):
+        with pytest.raises(_MODULE.ContractError):
+            _tables_with(lambda r: mutate(r)).check()
+
+
+def test_bu8_without_turns_the_correction_ends_in_the_terminal_state_and_only_when_nothing_else_can_go_on():
+    stop = REAL_TABLES.vocabulary["цикл_уточнений"]["терминальное"]
+    assert REAL_TABLES.decide("ждёт_Антона", "поправка", {"turns_left": False}).to == stop
+    outcome = REAL_TABLES.decide("ждёт_Антона", "поправка", {"turns_left": True})
+    assert outcome.to == "идёт_круг" and "mark_results_stale" in outcome.actions
+    stuck = {"blind_cards_ready": True, "budget_remains": False}                       # nothing to resume with
+    assert REAL_TABLES.decide("неполный", "поправка", {**stuck, "turns_left": False}).to == stop
+    assert REAL_TABLES.decide("неполный", "поправка", {**stuck, "turns_left": True}).to == "идёт_круг"
+    blocked = {"blind_cards_ready": True, "budget_remains": True, "input_can_progress": False}
+    assert REAL_TABLES.decide("неполный", "поправка", {**blocked, "turns_left": False}).to == stop
+    assert REAL_TABLES.decide("неполный", "поправка", {**blocked, "turns_left": True}).to == "идёт_круг"
+    # while the run can go on, the correction is not needed AT ANY number of turns: never the ceiling, never a new round
+    for turns in (True, False):
+        refused = REAL_TABLES.decide("неполный", "поправка", {"blind_cards_ready": True, "budget_remains": True,
+                                                               "input_can_progress": True, "turns_left": turns})
+        assert refused.refusal == "КОРРЕКЦИЯ_НЕ_НУЖНА" and refused.to == "неполный"
+    dead = REAL_TABLES.decide("неполный", "поправка", {"blind_cards_ready": False, "turns_left": False})
+    assert dead.refusal == "ПОПРАВКА_ТУПИК" and dead.to == "неполный"                    # the dead end is a named row, not the ceiling
+    with pytest.raises(_MODULE.ContractError):                      # not from a running round, not from a terminal state
+        REAL_TABLES.decide("идёт_круг", "поправка", {"turns_left": True})
+    with pytest.raises(_MODULE.ContractError):
+        REAL_TABLES.decide(stop, "поправка", {"turns_left": True})
+    assert "поправка" not in VOCAB["операции"]
+    assert not [r for r in RUN["переходы"] if r["событие"] == "вход_закреплён" and r["из"] == "ждёт_Антона"]   # no pin after the show

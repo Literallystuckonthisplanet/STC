@@ -86,7 +86,7 @@ TOP_LEVEL = {
         "состояния_блока", "внешние_действия",
         "оценка_критерия", "состояния_кандидата", "выбор_кандидата_sentinel",
         "отношение_механизмов", "повтор_невалидного_ответа",
-        "ответ_критика", "закрепление", "ок_антона",
+        "ответ_критика", "закрепление", "ок_антона", "цикл_уточнений",
         "операции", "операции_без_бюджета",
         "коды_условий", "коды_действий", "коды_отказа",
         "схемы_контрактов", "схемы_вне_контрактов",
@@ -679,6 +679,7 @@ SHAPES = {
         "коды_условий": Mapping(LIST),
         "ответ_критика": Record("каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов", "почему"),
         "закрепление": Record("события", "на_круг", "иное_содержимое"),
+        "цикл_уточнений": Record("потолок_оборотов", "событие", "источники", "терминальное", "почему"),
         "ок_антона": Record("событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша",
                             "почему"),
         "повтор_невалидного_ответа": Record(
@@ -1783,6 +1784,7 @@ class Tables:
         self._check_idea_execution()
         self._check_answer_records()
         self._check_anton_ok()
+        self._check_refinement()
         checked.append("исходы идеи: коды, порядок и приоритеты закрыты, причины сходятся со списком")
 
         self._check_shapes()
@@ -1865,6 +1867,32 @@ class Tables:
         for row in (t for t in self.transitions if t.event == spec["событие"]):
             if row.source != row.target or row.actions:
                 raise ContractError(f"{where}.событие: запись ОК не должна менять состояние прогона")
+
+    def _check_refinement(self) -> None:
+        """vocabulary.цикл_уточнений (БУ-4, БУ-8): потолок — число, исход — терминальное состояние, поправка — событие движка."""
+        where = "vocabulary.цикл_уточнений"
+        spec = self.vocabulary.get("цикл_уточнений")
+        if not isinstance(spec, dict):
+            raise ContractError(f"{where}: ожидалась карта")
+        _require(spec, {"потолок_оборотов", "событие", "источники", "терминальное", "почему"}, set(), where)
+        ceiling = spec["потолок_оборотов"]
+        if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
+            raise ContractError(f"{where}.потолок_оборотов: целое от 1, получено {ceiling!r}")
+        if spec["источники"] != ["антон", "автор"]:
+            raise ContractError(f"{where}.источники: ожидалось [антон, автор]")
+        if spec["терминальное"] not in self.vocabulary["состояния_прогона"]["терминальные"]:
+            raise ContractError(f"{where}.терминальное: {spec['терминальное']!r} не терминальное состояние")
+        _nonempty_string(spec["почему"], f"{where}.почему")
+        event = spec["событие"]
+        if event in self.vocabulary["операции"] or event not in self.events:
+            raise ContractError(f"{where}.событие: {event!r} — не событие движка из run.yaml")
+        rows = [t for t in self.transitions if t.event == event]
+        if {t.conditions.get("turns_left") for t in rows} - {None} != {True, False}:
+            raise ContractError(f"{where}: у поправки должны быть строки и с оборотами, и без")
+        if any(t.conditions.get("turns_left") is False and t.target != spec["терминальное"] for t in rows):
+            raise ContractError(f"{where}: без оборотов поправка ведёт в {spec['терминальное']!r}")
+        if any(t.target == spec["терминальное"] and t.conditions.get("turns_left") is not False for t in rows):
+            raise ContractError(f"{where}: терминальное состояние — только по исчерпанию оборотов")
 
     def _check_idea_execution(self) -> None:
         """stages.исполнение_идеи: предел вызовов критика, прерванных до ответа (БИ, аудит безопасности)."""
@@ -3098,6 +3126,30 @@ def bare_consent_problem(own: str) -> str | None:
     return _refuses(reply)
 
 
+def correction_reply_problem(own: str, chose_yes: bool = False) -> str | None:
+    """БУ-2: реплика Антона как основание ПОПРАВКИ — слова поправки, а не согласие, отрицание или вопрос.
+
+    Не принимается всё, что читается как согласие в любой форме: формула согласия (с «на <что>» и без),
+    название варианта «да» развилки, дословная копия такого варианта, реплика, НАЧИНАЮЩАЯСЯ со слова
+    согласия («Да, но…»). Не принимаются отрицание и вопрос. Условие («если…») поправке не мешает.
+    """
+    edges = " \t\r\n\x00"
+    reply = _normal(own).strip(edges)
+    if not reply:
+        return "в реплике нет слов"
+    if chose_yes:
+        return "реплика — копия варианта «да» развилки: это согласие, а не поправка"
+    bare = reply.rstrip(".!").strip(edges)
+    if CONSENT_FORMULA.match(bare) or OPTION_CONSENT.match(bare) or re.match(
+            rf"(?:{CONSENT_WORDS})(?![^\W\d_])", reply, flags=re.I):
+        return "реплика читается как согласие (начинается со слова согласия): её место в ОК, а не в поправке"
+    if NEGATION.search(reply):
+        return "в реплике отрицание: поправкой её не прочесть"
+    if "?" in reply:
+        return "реплика — вопрос, а не поправка"
+    return None
+
+
 def _assistant_turn(record: dict, records: dict) -> str:
     """Текст последнего ответа ассистента прямо перед этой репликой."""
     texts, current, seen = [], record.get("parentUuid"), set()
@@ -3213,7 +3265,11 @@ def transcript_reply(session: str, native_uuid: str, home: Path | None = None) -
         return refusal
     timestamp = record.get("timestamp")
     last_text, last_text_at = _last_assistant_text(record, records)
-    return {"own": own_words(text), "timestamp": timestamp if isinstance(timestamp, str) else None,
+    own = own_words(text)
+    turn = _assistant_turn(record, records)
+    return {"own": own, "inserted": own != text, "human_prompt": _is_human_prompt(record),
+            "chose_yes": "🗳" in turn and _chosen_yes(own, record, records) is None,
+            "timestamp": timestamp if isinstance(timestamp, str) else None,
             "assistant_turn": _assistant_turn(record, records), "records": records,
             "last_text": last_text, "last_text_at": last_text_at}
 

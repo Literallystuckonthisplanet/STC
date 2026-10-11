@@ -6,6 +6,7 @@
 """
 
 import copy
+import hashlib
 import itertools
 import json
 import re
@@ -1024,7 +1025,7 @@ def test_ok_does_not_survive_a_new_round(directory, tmp_path):
     _done(directory)
     _give_ok(directory, tmp_path)
     with locked(directory) as store:
-        store.start_round(2)
+        store._start_round(2)
         with pytest.raises(C.AntonOkRequired, match="прошлого круга") as refused:      # вердикт прошлого круга выхода не открывает
             C.leave_idea_stage(store, home=_TALK_HOME["last"])
     assert refused.value.code == "ОК_УСТАРЕЛ" and _state(directory).state == "ждёт_Антона"
@@ -2131,7 +2132,7 @@ def test_r2_card_bytes_is_what_is_checked_and_what_is_stored(directory):
 def test_r2_an_ok_after_a_new_round_start_does_not_open_the_exit_without_a_new_verdict(directory, tmp_path):
     _done(directory)
     with locked(directory) as store:
-        store.start_round(2)
+        store._start_round(2)
     with pytest.raises(C.AntonOkRefused, match="вердикта"):          # a reply cannot be an OK with no verdict to give it for
         _give_ok(directory, tmp_path)
     with locked(directory) as store:
@@ -2871,7 +2872,7 @@ def test_bu13_a_new_round_of_an_incomplete_run_without_a_changed_input_is_a_name
     _crash_in_compare_run(directory)
     _supervisor_marks_incomplete(directory)
     with locked(directory) as store:
-        store.start_round(2)
+        store._start_round(2)
     before, ask = _journal(directory), _happy()
     with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА") as info:
         stage(directory, ask)
@@ -3095,9 +3096,13 @@ def test_bu15_the_same_reply_with_other_content_is_a_conflict_not_a_repeat(direc
 
 def test_bu15_an_edit_after_the_ok_revokes_it_also_after_a_cold_restart(directory, tmp_path):
     _done(directory)
-    _give_ok(directory, tmp_path)
-    with locked(directory) as store:                       # a new revision of the input is pinned: "ОК -> правка"
-        store.pin(C.PIN_INPUT, round_number=2, revision="d" * 64, content_hash="e" * 64)
+    old = _give_ok(directory, tmp_path)
+    # "ОК -> правка": the only way to a new revision is the correction, on Anton's word, and a new round
+    with locked(directory) as store:
+        with pytest.raises(S.Refusal, match="только операция поправки"):
+            store.pin(C.PIN_INPUT, round_number=2, revision="d" * 64, content_hash="e" * 64, frame_hash="f" * 64)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    _next_round(directory, CARD2)
     for reader in (lambda: locked(directory), lambda: locked(directory)):                  # twice: a fresh store each time
         with reader() as store:
             with pytest.raises(C.AntonOkRequired) as refused:
@@ -3105,22 +3110,16 @@ def test_bu15_an_edit_after_the_ok_revokes_it_also_after_a_cold_restart(director
         assert refused.value.code == "ОК_УСТАРЕЛ"
     cold = S.RunStore(directory, TABLES).load()
     assert cold.state == "ждёт_Антона" and cold.stage_exit_position == -1
-    assert len([p for p in cold.pins if p.event == C.PIN_INPUT]) == 2 and cold.anton_oks[0].revision != cold.input_revision      # the old OK stays in the history
-    # the critics never judged the new revision: an OK on it is not counted (the exit stays shut)
-    before = _journal(directory)
-    with pytest.raises(C.AntonOkRefused, match="не судили"):
-        _give_ok(directory, tmp_path)
-    assert _journal(directory) == before
-    with pytest.raises(C.AntonOkRequired) as refused:
-        _leave(directory)
-    assert refused.value.code == "ОК_УСТАРЕЛ"
+    assert len([p for p in cold.pins if p.event == C.PIN_INPUT]) == 2 and cold.anton_oks[0].revision == old.revision != cold.input_revision
+    assert _give_ok(directory, tmp_path).revision == cold.input_revision                  # the OK on the new, judged revision
+    assert _leave(directory) is True
 
 
 def test_bu15_a_new_round_without_a_new_verdict_does_not_count_the_old_ok(directory, tmp_path):
     _done(directory)
     _give_ok(directory, tmp_path)
     with locked(directory) as store:
-        store.start_round(2)
+        store._start_round(2)
     basis, before = _reply(directory, tmp_path), None
     before = _journal(directory)
     with locked(directory) as store:
@@ -3331,3 +3330,629 @@ def test_bu15_the_direct_doors_are_shut(directory, tmp_path):
                                    reply_at=LATE, run_id=record.run_id, stage=record.stage, artifact=record.artifact,
                                    revision="c" * 64, round_number=1)
     assert _state(directory).state == "ждёт_Антона" and len(_state(directory).anton_oks) == 1
+
+
+# ==========================================================================
+# БУ, часть 2б: поправки, редакции, новый круг, потолок (БУ-1 … БУ-8, БУ-16)
+# ==========================================================================
+
+_NEW_IDS = itertools.count()
+CARD2 = proposal(ONE, "автор-2")
+CARD3 = proposal(ONE, "автор-3")
+CARD4 = proposal(ONE, "автор-4")
+ANTON_WORDS = "Давай переделаем: пусть решение будет проще и дешевле, без нового сервиса"
+
+
+def _round_answer(request):
+    """A comparison built from the request: every candidate passes, the first one shown is chosen."""
+    ids = [c["candidate_id"] for c in request_candidates(request)]
+    mandatory = [c["id"] for c in request_criteria(request) if c["mandatory"]]
+    rows = [{"candidate_id": i, "criteria": [{"criterion_id": m, "grade": "pass", "reason": "р"} for m in mandatory]}
+            for i in ids]
+    pairs = [{"pair": list(p), "relation": "unknown"} for p in itertools.combinations(ids, 2)]
+    return json.dumps({"assessments": rows, "selected_candidate_id": ids[0], "mechanism_relations": pairs,
+                       "reasons": ["р"], "unknowns": [], "blockers": []})
+
+
+def _round_ask():
+    """Answers for a comparison round whatever the IDs of the set are."""
+    return Asker({("claude", "compare"): [_round_answer], ("codex", "compare"): [_round_answer]})
+
+
+_NO_BASIS = object()
+
+
+def _correct(directory, new_card, source="автор", basis=None, from_candidate=None, tmp_path=None, **kw):
+    """A correction. Anton's word is required for ANY correction: unless told otherwise, he says something
+    (after the answer that shows the current revision) and that reply is the basis."""
+    kw.setdefault("sections", SECTIONS)
+    kw.setdefault("withheld", WITHHELD)
+    kw.setdefault("criteria", ONE)
+    kw.setdefault("new_id", lambda: "cand_n%d" % next(_NEW_IDS))
+    kw.setdefault("shuffle", lambda order: None)
+    kw.setdefault("tables", TABLES)
+    if basis is None and tmp_path is not None:
+        basis = _anton_says(directory, tmp_path)
+    elif basis is _NO_BASIS:
+        basis = None
+    if tmp_path is not None:
+        kw["home"] = tmp_path / "home"
+    with locked(directory) as store:
+        return C.submit_correction(store, new_card=new_card, source=source, basis=basis,
+                                   from_candidate=from_candidate, **kw)
+
+
+def _next_round(directory, card, ask=None, **kw):
+    """Run the comparison of the new round with the corrected card (the only phase that repeats)."""
+    return stage(directory, ask or _round_ask(), author_card=card, new_id=None, **kw)
+
+
+def _anton_says(directory, tmp_path, words=ANTON_WORDS, **extra):
+    """Anton's own words in the transcript after the answer that shows the current revision."""
+    return _reply(directory, tmp_path, reply=words, turn=f"Показываю карточку. {_shown(directory)}. Что изменить?", **extra)
+
+
+def test_bu10_the_whole_scenario_round_show_anton_correction_new_round_show_ok_exit(directory, tmp_path):
+    first = _done(directory)
+    assert first.run_state == "ждёт_Антона" and [t["turn"] for t in first.turns] == [0]
+    old = _state(directory)
+    old_revision, old_set = old.input_revision, old.idea_candidates
+    basis = _anton_says(directory, tmp_path)
+    after = _correct(directory, CARD2, source="антон", basis=basis, tmp_path=tmp_path)
+    assert after.state == "идёт_круг" and after.round_number == 2                                 # БУ-1: back to work, a new round
+    assert after.input_revision != old_revision and after.input_revision == hashlib.sha256(C.card_bytes(CARD2)).hexdigest()   # БУ-3: own hash
+    assert [c.source for c in after.idea_candidates].count("автор") == 1
+    assert {c.candidate_id for c in after.idea_candidates}.isdisjoint({c.candidate_id for c in old_set})    # БУ-7: new IDs
+    kept = lambda cards: sorted((c.source, c.canonical_bytes) for c in cards if c.source != "автор")      # noqa: E731
+    assert kept(after.idea_candidates) == kept(old_set)                                          # the critics' cards are untouched
+    assert after.idea_candidate_history[0][1] == old_set and after.stale_rounds == [1]           # the old set stays; old scores stale
+    ask = _round_ask()
+    second = _next_round(directory, CARD2, ask)
+    assert second.verdict == "РЕШЕНИЕ_АНТОНА" and ask.count("blind") == 0 and ask.count("compare") == 2   # only phase C repeats
+    assert second.turns[-1]["proposed_by"] == "антон" and second.turns[-1]["ended"] == "вердикт:РЕШЕНИЕ_АНТОНА"
+    # the OK of the old revision does not reach the new one; the OK on the new one, after the new verdict, opens the exit
+    with pytest.raises(C.AntonOkRequired):
+        _leave(directory)
+    assert _give_ok(directory, tmp_path).revision == _state(directory).input_revision
+    assert _leave(directory) is True and _state(directory).state == "завершён"
+    history = _state(directory) and S.RunStore(directory, TABLES).refinement_history()
+    assert [(t["turn"], t["proposed_by"], t["ended"]) for t in history] == [
+        (0, "автор", "вердикт:РЕШЕНИЕ_АНТОНА"), (1, "антон", "ок_и_выход")]
+    assert history[1]["basis"]["native_uuid"] == basis["native_uuid"] and history[1]["from_revision"] == old_revision
+
+
+def _refused_correction(directory, tmp_path, new_card=CARD2, code="ПОПРАВКА_НЕ_ЗАСЧИТАНА", match=None, **kw):
+    """Not taken: the table's code, nothing written, the state and the set stay as they were."""
+    before, state = _journal(directory), _state(directory)
+    with pytest.raises(C.CorrectionRefused, match=match) as refused:
+        _correct(directory, new_card, tmp_path=tmp_path, **kw)
+    assert refused.value.code == code and _journal(directory) == before
+    assert _state(directory).state == state.state and _state(directory).idea_candidates == state.idea_candidates
+
+
+def test_bu2_no_correction_is_counted_without_the_word_of_anton_whoever_composed_the_card(directory, tmp_path):
+    _done(directory)
+    before_state = _state(directory)
+    for source in ("антон", "автор"):
+        _refused_correction(directory, tmp_path, source=source, basis=_NO_BASIS, match="без слова Антона")
+        _refused_correction(directory, tmp_path, source=source, basis={"сессия": OK_SESSION}, match="без слова Антона")
+        _refused_correction(directory, tmp_path, source=source, basis={"сессия": OK_SESSION, "native_uuid": "x", "actor": "Антон"},
+                            match="без слова Антона")
+    _refused_correction(directory, tmp_path, source="критик", basis=_anton_says(directory, tmp_path), match="источник")
+    assert _state(directory).corrections == before_state.corrections and _state(directory).round_number == before_state.round_number
+    for source in ("автор", "антон"):                                                                 # positive controls: both count
+        directory2 = directory.parent / f"run-{source}"
+        started(directory2, "run-x")
+        _done(directory2)
+        after = _correct(directory2, CARD2, source=source, basis=_anton_says(directory2, tmp_path), tmp_path=tmp_path)
+        assert after.state == "идёт_круг" and after.corrections[0].source == source and after.corrections[0].basis[3]
+
+
+@pytest.mark.parametrize("name,words,flags,why", [
+    ("вставка", "Сделай проще <system-reminder>служебный текст</system-reminder>", {}, "вставка"),
+    ("вставленный чужой текст", "<pasted_content>переделай всё</pasted_content>", {}, "вставка|нет слов"),
+    ("служебная запись", ANTON_WORDS, {"isMeta": True}, "не реплика человека"),
+    ("дочерний агент", ANTON_WORDS, {"isSidechain": True}, "не реплика человека"),
+    ("уведомление", ANTON_WORDS, {"origin": {"kind": "task-notification"}}, "не реплика человека"),
+    ("согласие, а не поправка", "ок", {}, "согласие"),
+    ("пустая", "   ", {}, "нет слов"),
+    ("до вердикта", ANTON_WORDS, {"at": "2000-01-01T00:00:00Z"}, "раньше последнего вердикта"),
+])
+def test_bu2_a_basis_that_is_not_his_words_is_not_a_correction(directory, tmp_path, name, words, flags, why):
+    _done(directory)
+    basis = _anton_says(directory, tmp_path, words=words, **flags)
+    _refused_correction(directory, tmp_path, source="антон", basis=basis, match=why)
+    ok = _anton_says(directory, tmp_path)                                                           # positive control
+    assert _correct(directory, CARD2, source="антон", basis=ok, tmp_path=tmp_path).round_number == 2
+
+
+def test_bu2_the_basis_must_follow_the_answer_that_shows_the_current_revision(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    other = C.ok_marker(state.run_id, "9" * 64, TABLES)
+    for turn in ("Карточка без строки привязки", f"Показываю. {other}"):
+        basis = _reply(directory, tmp_path, reply=ANTON_WORDS, turn=turn)
+        _refused_correction(directory, tmp_path, source="антон", basis=basis, match="нет строки")
+    _refused_correction(directory, tmp_path, source="антон",
+                        basis={"сессия": OK_SESSION, "native_uuid": "aaaaaaaa-bbbb-cccc-dddd-999999999999"},
+                        match="нет в сессии")
+    plan = _talk(tmp_path)
+    plan.assistant(f"План. {_shown(directory)}")
+    plan._add({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tp", "name": "ExitPlanMode", "input": {}}]}})
+    approval = plan._add({"type": "user", "timestamp": LATE, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "tp", "content": "User has approved your plan. Сделай проще и дешевле"}]}})
+    _refused_correction(directory, tmp_path, source="антон", basis={"сессия": OK_SESSION, "native_uuid": approval},
+                        match="не реплика человека")
+
+
+def test_bu2_a_correction_is_possible_only_after_the_show_or_in_an_incomplete_run(directory, tmp_path):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "compare"): [_boom]}))                                  # идёт_круг: nothing shown yet
+    assert _state(directory).state == "идёт_круг"
+    _refused_correction(directory, tmp_path, code="ПОПРАВКА_НЕВОЗМОЖНА", match="идёт_круг")
+    assert _state(directory).corrections == []
+
+
+def test_bu3_the_same_revision_is_a_refusal_and_a_new_one_leaves_the_old_untouched(directory, tmp_path):
+    _done(directory)
+    before = _state(directory)
+    journal_before = _journal(directory)
+    same = proposal(ONE, "автор")                                                                    # the card of the first round
+    _refused_correction(directory, tmp_path, new_card=same, match="та же редакция")
+    _refused_correction(directory, tmp_path, new_card=json.dumps(same, ensure_ascii=False, indent=3), match="та же редакция")
+    after = _correct(directory, CARD2, tmp_path=tmp_path)
+    assert after.input_revision != before.input_revision
+    assert after.pins[:len(before.pins)] == before.pins                                              # the old pins are not rewritten
+    assert _journal(directory).startswith(journal_before)                                            # the history is only appended to
+    assert S.RunStore(directory, TABLES).load().idea_candidate_history[0][1] == before.idea_candidates
+
+
+def test_bu3_a_card_the_stage_would_refuse_is_refused_before_any_write(directory, tmp_path):
+    _done(directory)
+    before = _journal(directory)
+    for bad in ({**proposal(ONE, "x"), "variant": "про Лунтика рассказ"}, {"variant": "только это"}, "не json"):
+        with pytest.raises(C.AuthorCardRefused):                                                      # exactly this one
+            _correct(directory, bad, tmp_path=tmp_path)
+        assert _journal(directory) == before
+    assert _correct(directory, CARD2, tmp_path=tmp_path).round_number == 2                            # positive control
+
+
+def test_bu3_only_the_card_changes_a_changed_frame_is_a_new_run(directory, tmp_path):
+    _done(directory)
+    _refused_correction(directory, tmp_path, sections={**SECTIONS, "задача": "совсем другая задача"}, match="рамка")
+    _refused_correction(directory, tmp_path, withheld={"автор": "Колобок", "второй_критик": "Бибигон"}, match="рамка")
+    _refused_correction(directory, tmp_path, criteria=CRITERIA[:2], new_card=proposal(CRITERIA[:2], "x"), match="рамка")
+    assert _correct(directory, CARD2, tmp_path=tmp_path).round_number == 2
+
+
+def test_bu16_a_correction_from_a_candidate_keeps_the_source_the_critics_cards_and_the_authors_alone(directory, tmp_path):
+    _done(directory)
+    before = _state(directory)
+    critic = next(c for c in before.idea_candidates if c.source == "claude")
+    unknown = "cand_нет_такого"
+    _refused_correction(directory, tmp_path, from_candidate=unknown, match="в журнале нет")
+    with pytest.raises(TypeError):                                                                   # the source is not the caller's to name
+        _correct(directory, CARD2, tmp_path=tmp_path, from_candidate_source="автор")
+    after = _correct(directory, CARD2, from_candidate=critic.candidate_id, tmp_path=tmp_path)
+    assert after.corrections[-1].from_candidate == (critic.candidate_id, "claude")                   # the journal's source
+    kept = lambda cards: sorted((c.source, c.canonical_bytes) for c in cards if c.source != "автор")   # noqa: E731
+    assert kept(after.idea_candidates) == kept(before.idea_candidates)                                # the critics' cards are the same
+    assert S.RunStore(directory, TABLES).refinement_history()[1]["from_candidate"] == {
+        "id": critic.candidate_id, "source": "claude"}
+    # the candidates shown to the critics carry no source: the origin is in the journal only
+    seen = []
+    ask = Asker({("claude", "compare"): [lambda r: seen.append(r["package"]) or _round_answer(r)],
+                 ("codex", "compare"): [_round_answer]})
+    _next_round(directory, CARD2, ask)
+    assert "candidate_id" in seen[0] and '"source"' not in seen[0] and "claude" not in seen[0]
+
+
+def test_bu16_a_critics_card_cannot_be_rewritten_through_the_doors(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    critic = next(c for c in state.idea_candidates if c.source == "claude")
+    basis = _anton_says(directory, tmp_path)
+    reply = {"session": OK_SESSION, "native_uuid": basis["native_uuid"], "reply_at": LATE,
+             "words_hash": "ab" * 32, "words_clip": "слова"}
+    with locked(directory) as store:
+        with pytest.raises(S.Refusal) as conflict:                                                    # a second set is not assigned
+            store.assign_idea_candidates([S.IdeaCandidate("cand_z", "claude", b"{}")])
+        assert conflict.value.code == "КОНФЛИКТ_ВХОДА"
+        with pytest.raises(S.StateError):                                                             # the event has one door
+            store.record_event("поправка", {"turns_left": True})
+        author = b'{"variant": "other"}'
+        tampered = [S.IdeaCandidate("cand_t1", "автор", author),
+                    S.IdeaCandidate("cand_t2", "claude", critic.canonical_bytes + b" "),             # the critic's card, changed
+                    S.IdeaCandidate("cand_t3", "codex", next(c for c in state.idea_candidates if c.source == "codex").canonical_bytes)]
+        frame = [p for p in state.pins if p.event == C.PIN_INPUT][-1].frame_hash
+        with pytest.raises(S.Refusal, match="неизменны"):
+            store._record_correction(source="автор", basis=reply, from_candidate=None,
+                                     to_revision=hashlib.sha256(author).hexdigest(), candidates=tampered,
+                                     permutation=[0, 1, 2], input_pin={"content_hash": "a" * 64, "frame_hash": frame},
+                                     package_pin={"content_hash": "c" * 64, "hidden_hash": [
+                                         p for p in state.pins if p.event == C.PIN_PACKAGE][-1].hidden_hash})
+    assert _state(directory).idea_candidates == state.idea_candidates and not _state(directory).corrections
+
+
+def _turn(directory, card, tmp_path, source="автор", ask=None):
+    """One whole turn: the correction, then the comparison of the new round. Returns the stage result."""
+    _correct(directory, card, source=source, tmp_path=tmp_path)
+    return _next_round(directory, card, ask)
+
+
+def test_bu4_the_ceiling_is_three_turns_the_fourth_stops_the_run_and_no_ok_follows(directory, tmp_path):
+    ceiling = TABLES.vocabulary["цикл_уточнений"]["потолок_оборотов"]
+    assert ceiling == 3
+    _done(directory)
+    for number, card in enumerate((CARD2, CARD3, CARD4), start=1):
+        assert _turn(directory, card, tmp_path).run_state == "ждёт_Антона"
+        assert len(_state(directory).corrections) == number
+    before = _journal(directory)
+    with pytest.raises(C.RefinementCeiling) as stopped:                                              # the fourth turn
+        _correct(directory, proposal(ONE, "автор-5"), tmp_path=tmp_path)
+    assert stopped.value.code == "ПОТОЛОК_ОБОРОТОВ" and _journal(directory).startswith(before)
+    state = _state(directory)
+    assert state.state == TABLES.vocabulary["цикл_уточнений"]["терминальное"] == "остановлено_для_перепроектирования"
+    assert len(state.corrections) == ceiling and state.ceiling_stop["source"] == "автор"           # the fourth card is not a revision
+    assert stopped.value.history[-1]["ended"] == "потолок" and stopped.value.history[-1]["turn"] == 4
+    # no automatic agreement and no OK after the stop: the exit stays shut, every door says so
+    with pytest.raises(C.AntonOkRefused):
+        _give_ok(directory, tmp_path)
+    with pytest.raises(C.AntonOkRequired):
+        _leave(directory)
+    assert not state.anton_oks and state.stage_exit_position == -1
+    with pytest.raises(C.CorrectionRefused) as again:
+        _correct(directory, proposal(ONE, "автор-6"), tmp_path=tmp_path)
+    assert again.value.code == "ПОПРАВКА_НЕВОЗМОЖНА"
+    assert _state(directory).state == "остановлено_для_перепроектирования"
+
+
+def test_bu8_the_third_turn_is_still_allowed_and_can_end_in_an_ok(directory, tmp_path):
+    _done(directory)
+    for card in (CARD2, CARD3, CARD4):
+        _turn(directory, card, tmp_path)
+    assert _give_ok(directory, tmp_path).revision == _state(directory).input_revision
+    assert _leave(directory) is True and _state(directory).state == "завершён"
+    assert [t["ended"] for t in S.RunStore(directory, TABLES).refinement_history()] == [
+        "вердикт:РЕШЕНИЕ_АНТОНА"] * 3 + ["ок_и_выход"]
+
+
+def test_bu4_the_ceiling_comes_from_its_own_table_entry_and_not_from_the_retry_limit(directory, tmp_path):
+    retry = REAL.vocabulary["повтор_невалидного_ответа"]
+    ceiling = REAL.vocabulary["цикл_уточнений"]
+    one_turn = tables_with(цикл_уточнений={**ceiling, "потолок_оборотов": 1},
+                           повтор_невалидного_ответа={**retry, "максимум_на_ответ": 5})
+    assert C.retry_budget(one_turn) == 5                                                              # the retry limit is not touched
+    _done(directory)
+    with locked(directory, one_turn) as store:
+        assert store.turns_left()
+        C.submit_correction(store, new_card=CARD2, source="автор", basis=_anton_says(directory, tmp_path), criteria=ONE,
+                            sections=SECTIONS, withheld=WITHHELD, home=tmp_path / "home",
+                            new_id=lambda: "cand_n%d" % next(_NEW_IDS), shuffle=lambda order: None, tables=one_turn)
+        assert not store.turns_left()                                                                 # ceiling 1: used up at once
+    zero_retry = tables_with(повтор_невалидного_ответа={**retry, "максимум_на_ответ": 0})
+    with locked(directory, zero_retry) as store:
+        assert store.turns_left()                                                                     # the retry limit did not change it (1 of 3)
+    assert TABLES.vocabulary["цикл_уточнений"]["потолок_оборотов"] == 3 and C.retry_budget(TABLES) == 1
+
+
+def test_bu4_a_resumed_round_is_not_a_turn(directory, tmp_path):
+    _done(directory)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    with pytest.raises(_Boom):
+        _next_round(directory, CARD2, Asker({("claude", "compare"): [_round_answer], ("codex", "compare"): [_boom]}))
+    _supervisor_marks_incomplete(directory)
+    ask = _round_ask()
+    assert _next_round(directory, CARD2, ask).run_state == "ждёт_Антона"                             # resumed in the SAME new round
+    assert [c for c in ask.calls if c[0] == "claude"] == []                                          # claude's valid answer is not asked again
+    state = _state(directory)
+    assert len(state.corrections) == 1 and state.round_number == 2                                    # one turn, not two
+    assert S.RunStore(directory, TABLES).turns_left()
+
+
+def test_bu7_a_new_round_has_its_own_budget_and_the_spent_one_is_not_carried(directory, tmp_path):
+    first_ask = Asker({("claude", "blind"): [good_blind("c")], ("codex", "blind"): [good_blind("x")],
+                       ("claude", "compare"): ["мусор", _round_answer_fixed()], ("codex", "compare"): [_from_request(ALL_PASS, "cand_a")]})
+    stage(directory, first_ask)                                                                      # round 1: claude spent a retry
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    garbage = Asker({("claude", "compare"): ["опять мусор"], ("codex", "compare"): [_round_answer]})
+    result = _next_round(directory, CARD2, garbage)                                                  # round 2: its own two tries
+    assert result.run_state == "неполный" and garbage.count("compare") == 3                           # claude 2 (try + retry), codex 1
+    keys = [k for k in _state(directory).attempts if k[1] == C.COMPARE_STAGE and k[3] == "claude"]
+    assert sorted((k[2], k[4]) for k in keys) == [(1, 1), (1, 2), (2, 1), (2, 2)]                      # numbering restarts per round
+    with pytest.raises(C.ResumeImpossible):                                                          # round 2 is exhausted by ITS tries
+        _next_round(directory, CARD2, _round_ask())
+
+
+def _round_answer_fixed():
+    return _from_request(ALL_PASS, "cand_a")
+
+
+def test_bu1_an_exhausted_incomplete_round_does_not_end_the_run_a_correction_opens_a_fresh_round(directory, tmp_path):
+    _done(directory)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    bad = Asker({("claude", "compare"): ["мусор"], ("codex", "compare"): ["мусор"]})
+    assert _next_round(directory, CARD2, bad).run_state == "неполный"
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ"):
+        _next_round(directory, CARD2, _round_ask())
+    result = _turn(directory, CARD3, tmp_path)                                                       # from `неполный`: a new revision
+    assert result.run_state == "ждёт_Антона" and len(_state(directory).corrections) == 2
+    assert [t["ended"] for t in result.turns] == ["вердикт:РЕШЕНИЕ_АНТОНА", "вердикт:НЕПОЛНЫЙ_ПРОГОН", "вердикт:РЕШЕНИЕ_АНТОНА"]
+
+
+def test_bu1_an_incomplete_run_that_can_simply_go_on_needs_no_correction(directory, tmp_path):
+    _done(directory)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    with pytest.raises(_Boom):
+        _next_round(directory, CARD2, Asker({("claude", "compare"): [_round_answer], ("codex", "compare"): [_boom]}))
+    _supervisor_marks_incomplete(directory)                                                          # budget is left: resume works
+    _refused_correction(directory, tmp_path, new_card=CARD3, code="КОРРЕКЦИЯ_НЕ_НУЖНА", match="возможно и без")
+    assert _next_round(directory, CARD2, _round_ask()).run_state == "ждёт_Антона"
+
+
+def test_bu1_a_package_that_cannot_be_built_is_mended_by_a_shorter_card(tmp_path):
+    small = dict(REAL.vocabulary["пакет"], предел_пакета_байт=2400)
+    tables = _table_patch(("vocabulary", "пакет"), small)
+    pad = "п" * 120
+    directory = started(tmp_path / "big", "run-big")
+    options = dict(tables=tables)
+    result = stage(directory, Asker({("claude", "blind"): [good_blind_with(pad)], ("codex", "blind"): [good_blind_with(pad)]}),
+                   author_card={**proposal(ONE, "а"), "variant": pad}, **options)
+    assert result.run_state == "неполный" and "превышение_размера" in result.incomplete_reason
+    with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА"):
+        stage(directory, _happy(), author_card={**proposal(ONE, "а"), "variant": pad}, **options)
+    short = proposal(ONE, "к")
+    with locked(directory, tables) as store:                                                         # no set was ever made: the blind cards are taken
+        after = C.submit_correction(store, new_card=short, source="автор", basis=_anton_says(directory, tmp_path),
+                                    criteria=ONE, sections=SECTIONS, withheld=WITHHELD, tables=tables,
+                                    home=tmp_path / "home", shuffle=lambda order: None)
+    assert after.state == "идёт_круг" and len(after.idea_candidates) == 3 and after.round_number == 2
+    assert _next_round(directory, short, _round_ask(), tables=tables).run_state == "ждёт_Антона"
+
+
+def test_bu9_the_ok_of_the_old_revision_does_not_survive_a_correction(directory, tmp_path):
+    _done(directory)
+    old = _give_ok(directory, tmp_path)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    with pytest.raises(C.AntonOkRequired):                                                           # the run is back in work
+        _leave(directory)
+    _next_round(directory, CARD2)
+    with pytest.raises(C.AntonOkRequired) as stale:                                                  # the new verdict, but the old OK
+        _leave(directory)
+    assert stale.value.code == "ОК_УСТАРЕЛ" and old.revision != _state(directory).input_revision
+    basis = _reply(directory, tmp_path, turn=f"Карточка. {C.ok_marker(old.run_id, old.revision, TABLES)}")
+    with locked(directory) as store:
+        with pytest.raises(C.AntonOkRefused, match="нет строки"):                                    # a marker of the old revision
+            C.record_anton_ok(store, basis, home=tmp_path / "home")
+    assert _give_ok(directory, tmp_path).revision == _state(directory).input_revision
+    assert _leave(directory) is True
+
+
+def test_bu6_every_turn_is_in_the_history_with_who_what_and_how_it_ended(directory, tmp_path):
+    result = _done(directory)
+    critic = next(c for c in _state(directory).idea_candidates if c.source == "codex")
+    _correct(directory, CARD2, source="антон", basis=_anton_says(directory, tmp_path), tmp_path=tmp_path)
+    _next_round(directory, CARD2)
+    _correct(directory, CARD3, from_candidate=critic.candidate_id, tmp_path=tmp_path)
+    final = _next_round(directory, CARD3)
+    history = final.turns
+    assert history == S.RunStore(directory, TABLES).refinement_history()
+    assert [(t["turn"], t["proposed_by"], t["round"]) for t in history] == [(0, "автор", 1), (1, "антон", 2), (2, "автор", 3)]
+    assert history[1]["basis"]["reply_at"] == LATE and history[2]["basis"]["reply_at"] == LATE     # every turn is on his word
+    assert history[1]["basis"]["words_clip"] == ANTON_WORDS[:200] and len(history[1]["basis"]["words_hash"]) == 64
+    assert history[1]["basis"]["native_uuid"] != history[2]["basis"]["native_uuid"]
+    assert history[0]["to_revision"] == history[1]["from_revision"] and history[1]["to_revision"] == history[2]["from_revision"]
+    assert history[1]["to_revision"] != history[1]["from_revision"]
+    assert history[2]["from_candidate"] == {"id": critic.candidate_id, "source": "codex"} and history[1]["from_candidate"] is None
+    assert [t["ended"] for t in history] == ["вердикт:РЕШЕНИЕ_АНТОНА"] * 3 and result.turns[0]["ended"].startswith("вердикт")
+
+
+def test_bu_the_correction_has_no_door_but_its_own_a_reply_is_used_once(directory, tmp_path):
+    _done(directory)
+    basis = _anton_says(directory, tmp_path)
+    _correct(directory, CARD2, source="антон", basis=basis, tmp_path=tmp_path)
+    _next_round(directory, CARD2)
+    after = _state(directory)
+    wire = {"session": basis["сессия"], "native_uuid": basis["native_uuid"], "reply_at": LATE,
+            "words_hash": "ab" * 32, "words_clip": "слова"}
+    frame = [p for p in after.pins if p.event == C.PIN_INPUT][-1].frame_hash
+    author = b'{"variant": "other"}'
+    kept = [(c.source, c.canonical_bytes) for c in after.idea_candidates if c.source != "автор"]
+    candidates = [S.IdeaCandidate("cand_q0", "автор", author)] + [S.IdeaCandidate(f"cand_q{i + 1}", s_, b) for i, (s_, b) in enumerate(kept)]
+    arguments = dict(source="антон", from_candidate=None, to_revision=hashlib.sha256(author).hexdigest(),
+                     candidates=candidates, permutation=[0, 1, 2], input_pin={"content_hash": "a" * 64, "frame_hash": frame},
+                     package_pin={"content_hash": "c" * 64, "hidden_hash": [p for p in after.pins if p.event == C.PIN_PACKAGE][-1].hidden_hash})
+    with locked(directory) as store:
+        with pytest.raises(S.Refusal, match="уже использована"):
+            store._record_correction(basis=wire, **arguments)
+        with pytest.raises(S.Refusal, match="без слова Антона"):
+            store._record_correction(basis=None, **arguments)
+    assert _state(directory).corrections == after.corrections
+
+
+# -- БУ-2б, доработка: слово Антона обязательно, потолок, возврат, дубль, двери, утечки ---------------------------------
+
+def test_bu_the_exceptions_of_the_cycle_have_a_common_base_and_the_ceiling_is_not_a_refusal():
+    assert issubclass(C.CorrectionRefused, C.RefinementError) and issubclass(C.RefinementCeiling, C.RefinementError)
+    assert not issubclass(C.RefinementCeiling, C.CorrectionRefused)          # "nothing written" vs "the stop is written"
+    assert not issubclass(C.CorrectionRefused, C.RefinementCeiling)
+
+
+@pytest.mark.parametrize("words,why", [
+    ("ок", "согласие"), ("Да", "согласие"), ("согласен", "согласие"), ("ОК на коммит", "согласие"),
+    ("Да, но сделай проще", "согласие"), ("одобряю.", "согласие"),
+    ("Не нужен новый сервис, сделай проще", "отрицание"), ("А если сделать проще и дешевле?", "вопрос"),
+])
+def test_bu2_a_reply_that_reads_as_consent_a_negation_or_a_question_is_no_correction(directory, tmp_path, words, why):
+    _done(directory)
+    _refused_correction(directory, tmp_path, source="автор", basis=_anton_says(directory, tmp_path, words=words), match=why)
+    assert _correct(directory, CARD2, tmp_path=tmp_path).round_number == 2                            # positive control
+
+
+def test_bu2_a_copy_of_the_yes_option_of_a_fork_card_is_no_correction(directory, tmp_path):
+    _done(directory)
+    yes = "Дать явное «ОК» — Для тебя: выход со стадии, дальше работа идёт (советую)"
+    basis = _reply(directory, tmp_path, reply=yes, turn=FORK.format(marker=_shown(directory)))
+    _refused_correction(directory, tmp_path, source="автор", basis=basis, match="вариант")
+    other = "Отложить — Для тебя: прогон ждёт дальше"                                            # a copy of the OTHER option is words
+    ok_basis = _reply(directory, tmp_path, reply=other, turn=FORK.format(marker=_shown(directory)))
+    assert _correct(directory, CARD2, source="автор", basis=ok_basis, tmp_path=tmp_path).round_number == 2
+
+
+def test_bu4_the_fourth_turn_without_the_word_of_anton_does_not_stop_the_run(directory, tmp_path):
+    _done(directory)
+    for card in (CARD2, CARD3, CARD4):
+        _turn(directory, card, tmp_path)
+    before = _journal(directory)
+    for basis in (_NO_BASIS, _anton_says(directory, tmp_path, words="ок")):
+        with pytest.raises(C.CorrectionRefused):                                                      # not a RefinementCeiling
+            _correct(directory, proposal(ONE, "автор-5"), basis=basis, tmp_path=tmp_path)
+    assert _state(directory).state == "ждёт_Антона" and _state(directory).ceiling_stop is None
+    assert _journal(directory).startswith(before)
+    with pytest.raises(C.RefinementCeiling):                                                          # with his word it does
+        _correct(directory, proposal(ONE, "автор-5"), tmp_path=tmp_path)
+    stop = _state(directory).ceiling_stop
+    assert stop["basis"]["words_clip"] == ANTON_WORDS and len(stop["basis"]["words_hash"]) == 64     # the reply is spent
+    assert [p for p in S.RunStore(directory, TABLES).refinement_history()][-1]["basis"]["native_uuid"] == stop["basis"]["native_uuid"]
+
+
+def test_bu4_an_incomplete_run_that_can_go_on_is_never_stopped_by_the_ceiling(directory, tmp_path):
+    _done(directory)
+    _turn(directory, CARD2, tmp_path)
+    _turn(directory, CARD3, tmp_path)
+    _correct(directory, CARD4, tmp_path=tmp_path)                                                     # the third and last turn ...
+    assert not S.RunStore(directory, TABLES).turns_left()
+    with pytest.raises(_Boom):                                                                        # ... its round is broken
+        _next_round_from(directory, CARD4)
+    _supervisor_marks_incomplete(directory)                                                           # budget is left: it can resume
+    _refused_correction(directory, tmp_path, new_card=proposal(ONE, "автор-5"), code="КОРРЕКЦИЯ_НЕ_НУЖНА", match="возможно и без")
+    assert _state(directory).state == "неполный" and _state(directory).ceiling_stop is None
+    assert _next_round(directory, CARD4, _round_ask()).run_state == "ждёт_Антона"                      # it simply goes on
+
+
+def _next_round_from(directory, card):
+    """The comparison of the CURRENT round cut off by a crash (the comparison of codex dies)."""
+    return _next_round(directory, card, Asker({("claude", "compare"): [_round_answer], ("codex", "compare"): [_boom]}))
+
+
+def test_bu4_an_incomplete_run_that_cannot_go_on_and_has_no_turns_left_is_stopped(tmp_path):
+    one = tables_with(цикл_уточнений={**REAL.vocabulary["цикл_уточнений"], "потолок_оборотов": 1})
+    other = started(tmp_path / "other", "run-o")
+    stage(other, _happy())
+
+    def correct(card):
+        with locked(other, one) as store:
+            return C.submit_correction(store, new_card=card, source="автор", basis=_anton_says(other, tmp_path), criteria=ONE,
+                                       sections=SECTIONS, withheld=WITHHELD, home=tmp_path / "home",
+                                       new_id=lambda: "cand_n%d" % next(_NEW_IDS), shuffle=lambda order: None, tables=one)
+
+    correct(CARD2)                                                                                     # the only turn of the ceiling
+    bad = Asker({("claude", "compare"): ["мусор"], ("codex", "compare"): ["мусор"]})
+    assert stage(other, bad, author_card=CARD2, new_id=None).run_state == "неполный"                  # exhausted: nothing to resume with
+    with pytest.raises(C.RefinementCeiling):
+        correct(CARD3)
+    assert _state(other).state == "остановлено_для_перепроектирования" and _state(other).ceiling_stop["source"] == "автор"
+
+
+def test_bu2_the_dead_end_without_blind_cards_has_its_own_named_outcome(tmp_path):
+    directory = started(tmp_path / "run", "run-d")
+    ask = Asker({("claude", "blind"): ["x"], ("codex", "blind"): [good_blind("x")]})                  # claude never gives a valid card
+    assert stage(directory, ask).run_state == "неполный" and not _state(directory).idea_candidates
+    before = _journal(directory)
+    with pytest.raises(C.CorrectionRefused) as refused:
+        _correct(directory, CARD2, tmp_path=tmp_path)
+    assert refused.value.code == "ПОПРАВКА_ТУПИК" and _journal(directory) == before
+    assert REAL.decide("неполный", "поправка", {"blind_cards_ready": False}).refusal == "ПОПРАВКА_ТУПИК"
+
+
+def test_bu3_a_return_to_an_earlier_revision_is_refused_cleanly_and_costs_no_turn(directory, tmp_path):
+    _done(directory)
+    _turn(directory, CARD2, tmp_path)                                                                 # A -> B
+    before, turns = _journal(directory), len(_state(directory).corrections)
+    for back in (proposal(ONE, "автор"), json.dumps(proposal(ONE, "автор"), indent=2)):              # B -> A, however written
+        _refused_correction(directory, tmp_path, new_card=back, match="возврат к прежней")
+    assert len(_state(directory).corrections) == turns
+    assert _turn(directory, CARD3, tmp_path).run_state == "ждёт_Антона"                               # a new card goes on at once
+
+
+def test_bu3_a_card_equal_to_a_critics_card_is_a_copy_and_is_refused(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    for source in ("claude", "codex"):
+        critic = next(c for c in state.idea_candidates if c.source == source)
+        copy_of = json.loads(critic.canonical_bytes)
+        _refused_correction(directory, tmp_path, new_card=copy_of, match="дубль")                    # also with the candidate as its source
+        _refused_correction(directory, tmp_path, new_card=copy_of, from_candidate=critic.candidate_id, match="дубль")
+
+
+def test_bu7_the_new_round_has_its_own_non_identity_order_and_the_critics_see_it(directory, tmp_path):
+    _done(directory)
+    after = _correct(directory, CARD2, tmp_path=tmp_path, shuffle=lambda order: order.reverse())
+    assert after.idea_candidates_permutation == (2, 1, 0) != tuple(range(3))
+    seen = []
+    ask = Asker({("claude", "compare"): [lambda r: seen.append(request_candidates(r)) or _round_answer(r)],
+                 ("codex", "compare"): [_round_answer]})
+    assert _next_round(directory, CARD2, ask).run_state == "ждёт_Антона"
+    shown = [c["candidate_id"] for c in seen[0]]
+    assert shown == [after.idea_candidates[i].candidate_id for i in (2, 1, 0)]                      # the recorded order, as shown
+
+
+def test_bu16_nothing_about_the_source_the_hint_or_the_words_of_anton_reaches_the_critics(directory, tmp_path):
+    _done(directory)
+    critic = next(c for c in _state(directory).idea_candidates if c.source == "codex")
+    _correct(directory, CARD2, from_candidate=critic.candidate_id, tmp_path=tmp_path)
+    requests = []
+    spy = lambda r: requests.append(json.dumps(r, ensure_ascii=False)) or _round_answer(r)         # noqa: E731
+    _next_round(directory, CARD2, Asker({("claude", "compare"): [spy], ("codex", "compare"): [spy]}))
+    assert len(requests) == 2                                                                          # BOTH critics, the WHOLE request
+    forbidden = ["claude", "codex", critic.candidate_id, ANTON_WORDS, ANTON_WORDS[:30], WITHHELD["автор"],
+                 WITHHELD["второй_критик"], "source", "from_candidate", "basis", "native_uuid", OK_SESSION]
+    for request in requests:
+        for word in forbidden:
+            if word in ("claude", "codex") and f'"critic": "{word}"' in request:
+                continue                                                                               # the request names its own addressee
+            assert word not in request.replace(f'"critic": "claude"', "").replace(f'"critic": "codex"', ""), word
+
+
+def test_bu3_one_journal_line_carries_a_correction_and_a_failed_write_leaves_the_run_as_it_was(directory, tmp_path, monkeypatch):
+    _done(directory)
+    basis = _anton_says(directory, tmp_path)
+    lines = _journal(directory).count(b"\n")
+    real = S.RunStore._append
+
+    def failing(self, entry):
+        if entry.get("event") == "поправка":
+            raise _Boom
+        return real(self, entry)
+
+    monkeypatch.setattr(S.RunStore, "_append", failing)
+    before = _journal(directory)
+    with pytest.raises(_Boom):
+        _correct(directory, CARD2, basis=basis, tmp_path=tmp_path)
+    monkeypatch.undo()
+    assert _journal(directory) == before and _state(directory).state == "ждёт_Антона" and not _state(directory).corrections
+    _correct(directory, CARD2, basis=basis, tmp_path=tmp_path)                                         # the same reply still serves
+    assert _journal(directory).count(b"\n") == lines + 1                                              # exactly ONE line for the turn
+    assert len([e for e in map(json.loads, _journal(directory).decode().splitlines()) if e.get("event") == "поправка"]) == 1
+
+
+def test_bu2_a_reply_from_another_session_than_the_runs_own_is_no_basis(tmp_path):
+    other = "99999999-2222-3333-4444-555555555555"
+    directory = tmp_path / "run"
+    S.RunStore(directory, TABLES).create("run-s", "идея", OK_SESSION)
+    with locked(directory) as store:
+        store.submit("start")
+    _done(directory)
+    talk = Talk(tmp_path / "home", session=other)
+    talk.assistant(f"Показываю карточку. {_shown(directory)}. Что изменить?")
+    basis = {"сессия": other, "native_uuid": talk.human(ANTON_WORDS)}
+    _refused_correction(directory, tmp_path, source="антон", basis=basis, match="другой сессии")
+    assert _correct(directory, CARD2, source="антон", tmp_path=tmp_path).round_number == 2           # his own session goes
+
+
+def test_bu2_a_correction_after_the_exit_is_impossible(directory, tmp_path):
+    _done(directory)
+    _give_ok(directory, tmp_path)
+    assert _leave(directory) is True
+    _refused_correction(directory, tmp_path, code="ПОПРАВКА_НЕВОЗМОЖНА", match="завершён")
+    assert _state(directory).state == "завершён"

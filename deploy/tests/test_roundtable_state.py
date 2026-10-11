@@ -43,9 +43,9 @@ class _TestRun:
     """
 
     _MUTATING = {
-        "submit", "record_event", "revoke", "start_round", "set_flag",
+        "submit", "record_event", "revoke", "_start_round", "set_flag",
         "record_attempt", "mark_possible_duplicate", "assign_idea_candidates",
-        "record_received", "record_validation", "pin", "_record_anton_ok", "record_stage_exit",
+        "record_received", "record_validation", "pin", "_record_anton_ok", "record_stage_exit", "_record_correction",
     }
 
     def __init__(self, directory, tables):
@@ -411,7 +411,7 @@ def test_the_transition_comes_from_the_table_and_not_from_this_module(tmp_path):
 
 def test_the_actions_named_by_the_table_are_applied(run):
     _to_anton(run)
-    run.start_round(3)
+    run._start_round(3)
     run.submit("submit-decision", {"decision": "изменить_цель"}, "issue", "I-1", {"n": 1})
     state = run.load()
     assert state.validity == "superseded", "mark_run_superseded was not applied"
@@ -420,7 +420,7 @@ def test_the_actions_named_by_the_table_are_applied(run):
 
 def test_resetting_the_round_counter_does_not_touch_anything_else(run):
     _to_anton(run)
-    run.start_round(2)
+    run._start_round(2)
     run.submit("submit-decision", {"decision": "сменить_решение", "change_index": "первая"},
                "issue", "I-1", {"n": 1})
     state = run.load()
@@ -641,7 +641,7 @@ def test_a_mutating_runstore_is_unobtainable_outside_open_run(tmp_path):
         lambda: bare.submit("start"),
         lambda: bare.record_event("пакет_собран"),
         lambda: bare.revoke("не-существует"),
-        lambda: bare.start_round(1),
+        lambda: bare._start_round(1),
         lambda: bare.set_flag("флаг"),
         lambda: bare.record_attempt("план", 1, "claude", 1, "запущена"),
         lambda: bare.assign_idea_candidates([S.IdeaCandidate("C1", "автор", b"x")]),
@@ -1068,6 +1068,8 @@ def _started(run):
 
 
 def _pin(run, event="пакет_закреплён", round_number=1, revision="r" * 64, content="c" * 64, hidden="h" * 64):
+    if event == "вход_закреплён":                      # the input pin carries the frame, the package pin the hidden names
+        return run.pin(event, round_number=round_number, revision=revision, content_hash=content, frame_hash=hidden)
     return run.pin(event, round_number=round_number, revision=revision, content_hash=content, hidden_hash=hidden)
 
 
@@ -1216,7 +1218,7 @@ def test_bu13_a_new_round_without_a_pinned_input_does_not_progress(run):
     run.record_event("пакет_собран")
     run.record_event("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"})
     assert run.resume_conditions()["input_can_progress"] is True
-    run.start_round(2)
+    run._start_round(2)
     assert run.resume_conditions()["input_can_progress"] is False
     assert run.submit("resume").refusal == "НУЖНА_КОРРЕКЦИЯ_ВХОДА"
 
@@ -1401,7 +1403,7 @@ OK_FIELDS = dict(session="11111111-2222-3333-4444-555555555555", native_uuid="aa
 def _waiting_for_anton(tmp_path, session=None):
     run = _started(_idea_run(tmp_path, session))
     run.record_event("пакет_собран")
-    run.pin("вход_закреплён", round_number=1, revision="d" * 64, content_hash="c" * 64)    # the critics judge THIS revision
+    run.pin("вход_закреплён", round_number=1, revision="d" * 64, content_hash="c" * 64, frame_hash="f" * 64)    # the critics judge THIS revision
     run.record_event("вердикт", {"verdict": "РЕШЕНИЕ_АНТОНА"})
     return run
 
@@ -1506,14 +1508,26 @@ def test_bu15_the_record_checks_the_journal_itself_revision_state_judged_and_ses
     assert run.load().session == OK_FIELDS["session"]
 
 
+def _forge(run, entry):
+    """Append a line the honest doors would not write (a journal edited by hand): the store must still judge it."""
+    lines = run.journal_path.read_text(encoding="utf-8").splitlines()
+    forged = {"seq": len(lines) + 1, "at": "2026-10-12T00:00:00+00:00", **entry}
+    run.journal_path.write_text("\n".join(lines + [json.dumps(forged, ensure_ascii=False, sort_keys=True)]) + "\n",
+                                encoding="utf-8")
+
+
 def test_bu15_a_revision_pinned_after_the_last_verdict_was_never_judged_and_takes_no_ok(tmp_path):
     run = _waiting_for_anton(tmp_path)
-    run.pin("вход_закреплён", round_number=2, revision="e" * 64, content_hash="f" * 64)    # the verdict was about "d"
+    with pytest.raises(S.Refusal, match="только операция поправки"):               # the honest door is shut after the show
+        run.pin("вход_закреплён", round_number=2, revision="e" * 64, content_hash="f" * 64, frame_hash="f" * 64)
+    _forge(run, {"kind": "event", "event": "вход_закреплён", "conditions": {}, "refusal": None,
+                 "outcome": {"to": "ждёт_Антона", "actions": [], "refusal": None, "moved": True},
+                 "pin": {"round": 2, "revision": "e" * 64, "content_hash": "f" * 64, "frame_hash": "f" * 64}})
     size = run.journal_path.read_bytes()
-    with pytest.raises(S.Refusal, match="не судили"):
+    with pytest.raises(S.Refusal, match="не судили"):                              # the verdict was about "d"
         run._record_anton_ok(**{**OK_FIELDS, "revision": "e" * 64})
     with pytest.raises(S.Refusal):
-        run._record_anton_ok(**OK_FIELDS)                                           # nor does the old one: it is not current
+        run._record_anton_ok(**OK_FIELDS)                                          # nor does the old one: it is not current
     assert run.journal_path.read_bytes() == size
 
 
@@ -1523,3 +1537,168 @@ def test_bu15_the_run_remembers_the_session_it_started_in(tmp_path):
     assert _idea_run(tmp_path / "b").load().session is None
     with pytest.raises(S.StateError):
         S.RunStore(tmp_path / "c", TABLES).create("run-1", "идея", " ")
+
+
+# --------------------------------------------------------------------------
+# БУ-1 … БУ-8 — the turn of the cycle as the journal holds it
+# --------------------------------------------------------------------------
+
+def _card(tag):
+    return json.dumps({"v": tag}, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _revision(card):
+    return hashlib.sha256(card).hexdigest()
+
+
+def _basis(n=1, **changes):
+    return {"session": "11111111-2222-3333-4444-555555555555", "native_uuid": f"aaaaaaaa-bbbb-cccc-dddd-{n:012d}",
+            "reply_at": "2999-01-01T00:00:00Z", "words_hash": "ab" * 32, "words_clip": "сделай проще", **changes}
+
+
+def _with_set(tmp_path, session=None):
+    """A run that waits for Anton with a made set and its pins (the pins are written BEFORE the verdict, as the stage does)."""
+    run = _started(_idea_run(tmp_path, session))
+    run.record_event("пакет_собран")
+    run.pin("вход_закреплён", round_number=1, revision="d" * 64, content_hash="c" * 64, frame_hash="f" * 64)
+    run.assign_idea_candidates([S.IdeaCandidate("c0", "автор", _card(0)), S.IdeaCandidate("c1", "claude", _card(1)),
+                                S.IdeaCandidate("c2", "codex", _card(2))])
+    package = run.pin("пакет_закреплён", round_number=1, revision="d" * 64, content_hash="9" * 64, hidden_hash="8" * 64)
+    run.record_event("вердикт", {"verdict": "РЕШЕНИЕ_АНТОНА"})
+    return run, "f" * 64, package
+
+
+def _arguments(frame, **changes):
+    fresh = [S.IdeaCandidate("n0", "автор", _card(9)), S.IdeaCandidate("n1", "claude", _card(1)),
+             S.IdeaCandidate("n2", "codex", _card(2))]
+    arguments = dict(source="автор", basis=_basis(), from_candidate=None, to_revision=_revision(_card(9)),
+                     candidates=fresh, permutation=[0, 1, 2],
+                     input_pin={"content_hash": "a" * 64, "frame_hash": frame},
+                     package_pin={"content_hash": "b" * 64, "hidden_hash": "8" * 64})
+    arguments.update(changes)
+    return arguments
+
+
+def test_bu3_a_correction_entry_that_is_damaged_is_a_state_error_not_a_key_error(tmp_path):
+    run, frame, _ = _with_set(tmp_path)
+    run._record_correction(**_arguments(frame, permutation=[2, 0, 1]))
+    state = run.load()
+    assert state.state == "идёт_круг" and state.round_number == 2 and state.stale_rounds == [1]
+    assert [c.candidate_id for c in state.idea_candidates] == ["n0", "n1", "n2"] and state.idea_candidates_permutation == (2, 0, 1)
+    assert state.corrections[0].turn == 1 and state.corrections[0].to_revision == _revision(_card(9))
+    assert state.corrections[0].basis[3:] == ("ab" * 32, "сделай проще")           # the hash and the clip of his words
+    assert [p.round_number for p in state.pins if p.event == "вход_закреплён"] == [1, 2]
+    assert [p.frame_hash for p in state.pins if p.event == "вход_закреплён"] == [frame, frame]
+    good = run.journal_path.read_text(encoding="utf-8")
+    damages = (
+        lambda e: {**e, "correction": {k: v for k, v in e["correction"].items() if k != "to_revision"}},
+        lambda e: {**e, "correction": {**e["correction"], "source": "кто-то"}},
+        lambda e: {**e, "correction": {**e["correction"], "basis": {"session": "x"}}},
+        lambda e: {**e, "correction": {**e["correction"], "basis": None}},                     # no word of Anton: no turn
+        lambda e: {**e, "correction": {**e["correction"], "basis": {**e["correction"]["basis"], "words_hash": "zz"}}},
+        lambda e: {**e, "correction": {**e["correction"], "basis": {**e["correction"]["basis"], "words_clip": "я" * 201}}},
+        lambda e: {**e, "correction": {**e["correction"], "round": 0}},
+        lambda e: {**e, "correction": {**e["correction"], "round": 5}},                        # not the old one + 1
+        lambda e: {**e, "correction": {**e["correction"], "turn": 2}},                         # not len + 1
+        lambda e: {**e, "correction": {**e["correction"], "candidates": []}},
+        lambda e: {**e, "correction": {**e["correction"], "candidates": ["не карточка"]}},
+        lambda e: {**e, "correction": {**e["correction"], "candidates": [
+            {**e["correction"]["candidates"][0], "candidate_id": "n1"}] + e["correction"]["candidates"][1:]}},
+        lambda e: {**e, "correction": {**e["correction"], "permutation": [0, 0, 1]}},
+        lambda e: {**e, "correction": {**e["correction"], "permutation": [True, 1, 2]}},
+        lambda e: {**e, "correction": {**e["correction"], "pins": []}},
+        lambda e: {**e, "correction": "не словарь"},
+        lambda e: {**e, "correction": None, "ceiling": {"source": "автор"}},
+        lambda e: {**e, "correction": None, "ceiling": {"source": "автор", "basis": None, "attempted_revision": "x"}},
+    )
+    for damage in damages:
+        run.journal_path.write_text(good, encoding="utf-8")
+        _rewrite_last(run, damage)
+        with pytest.raises(S.StateError):
+            S.RunStore(run.directory, TABLES).load()
+    run.journal_path.write_text(good, encoding="utf-8")
+    assert S.RunStore(run.directory, TABLES).load().round_number == 2
+
+
+def test_bu3_the_store_checks_the_correction_itself(tmp_path):
+    run, frame, _ = _with_set(tmp_path)
+    size = run.journal_path.read_bytes()
+    fresh = _arguments(frame)["candidates"]
+
+    def attempt(**changes):
+        return run._record_correction(**_arguments(frame, **changes))
+
+    for changes, why in (
+        ({"to_revision": "d" * 64}, "хеш байтов карточки"),                          # the revision is the hash of the card bytes
+        ({"to_revision": "0" * 64}, "хеш байтов карточки"),
+        ({"input_pin": {"content_hash": "a" * 64, "frame_hash": "0" * 64}}, "рамка входа"),
+        ({"candidates": [fresh[0], S.IdeaCandidate("n1", "claude", _card(7)), fresh[2]]}, "неизменны"),
+        ({"candidates": [S.IdeaCandidate("c0", "автор", _card(9)), fresh[1], fresh[2]]}, "ID нового набора"),
+        ({"candidates": [S.IdeaCandidate("n0", "автор", _card(1)), fresh[1], fresh[2]],
+          "to_revision": _revision(_card(1))}, "дубль"),
+        ({"source": "критик"}, "источник"),
+        ({"basis": None}, "без слова Антона"),
+        ({"basis": _basis(session="не идентификатор")}, "идентификаторами"),
+        ({"basis": _basis(native_uuid="тоже нет")}, "идентификаторами"),
+        ({"basis": _basis(words_hash="12")}, "хеш слов"),
+        ({"basis": _basis(words_clip="я" * 201)}, "хеш слов"),
+        ({"package_pin": {"content_hash": "b" * 64, "hidden_hash": "0" * 64}}, "закрепление пакета"),
+        ({"package_pin": {"content_hash": "9" * 64, "hidden_hash": "8" * 64}}, "не может совпасть"),
+        ({"from_candidate": "нет-такого"}, "в журнале нет"),
+    ):
+        with pytest.raises(S.Refusal, match=why):
+            attempt(**changes)
+        assert run.journal_path.read_bytes() == size, why
+    with pytest.raises(S.StateError):
+        attempt(permutation=[0, 0, 1])
+    with pytest.raises(S.StateError):
+        run.record_event("поправка", {"turns_left": True})
+    assert attempt(from_candidate="c1").state == "идёт_круг"                          # positive control
+    assert run.load().corrections[0].from_candidate == ("c1", "claude")
+    with pytest.raises(S.Refusal, match="состоянии"):                                  # now it is running: not from here
+        run._record_correction(**_arguments(frame, basis=_basis(2), to_revision=_revision(_card(8)), candidates=[
+            S.IdeaCandidate("m0", "автор", _card(8)), S.IdeaCandidate("n1", "claude", _card(1)),
+            S.IdeaCandidate("n2", "codex", _card(2))]))
+
+
+def test_bu3_a_reply_serves_one_correction_only_and_only_from_the_runs_own_session(tmp_path):
+    run, frame, _ = _with_set(tmp_path / "a")
+    run._record_anton_ok(**OK_FIELDS)                                                  # this reply was an OK already
+    with pytest.raises(S.Refusal, match="уже использована"):
+        run._record_correction(**_arguments(frame, basis=_basis(1)))
+    own = OK_FIELDS["session"]
+    other_run, other_frame, _ = _with_set(tmp_path / "b", session=own)
+    size = other_run.journal_path.read_bytes()
+    with pytest.raises(S.Refusal, match="другой сессии"):
+        other_run._record_correction(**_arguments(other_frame, basis=_basis(3, session="99999999-2222-3333-4444-555555555555")))
+    assert other_run.journal_path.read_bytes() == size
+    assert other_run._record_correction(**_arguments(other_frame, basis=_basis(3, session=own))).state == "идёт_круг"
+
+
+def test_bu3_the_input_pin_has_one_frame_and_one_door(tmp_path):
+    run = _started(_idea_run(tmp_path))
+    first = run.pin("вход_закреплён", round_number=1, revision="a" * 64, content_hash="c" * 64, frame_hash="f" * 64)
+    assert first.frame_hash == "f" * 64 and first.hidden_hash is None
+    with pytest.raises(S.StateError):                                                  # no frame, no input pin
+        run.pin("вход_закреплён", round_number=1, revision="a" * 64, content_hash="c" * 64)
+    with pytest.raises(S.StateError):
+        run.pin("вход_закреплён", round_number=1, revision="a" * 64, content_hash="c" * 64, frame_hash="f" * 64,
+                hidden_hash="h" * 64)
+    with pytest.raises(S.StateError):
+        run.pin("пакет_закреплён", round_number=1, revision="a" * 64, content_hash="c" * 64, frame_hash="f" * 64)
+    with pytest.raises(S.Refusal) as other_frame:
+        run.pin("вход_закреплён", round_number=1, revision="b" * 64, content_hash="c" * 64, frame_hash="0" * 64)
+    assert other_frame.value.code == "КОНФЛИКТ_ВХОДА" and "рамка" in other_frame.value.detail
+    with pytest.raises(S.Refusal, match="только операция поправки"):                   # another round: the correction alone
+        run.pin("вход_закреплён", round_number=2, revision="b" * 64, content_hash="c" * 64, frame_hash="f" * 64)
+    assert run.pin("вход_закреплён", round_number=1, revision="a" * 64, content_hash="c" * 64, frame_hash="f" * 64) == first
+    assert not hasattr(S.RunStore, "start_round")                                       # a round is opened by the correction only
+
+
+def test_bu3_a_run_whose_first_pin_has_no_frame_says_so(tmp_path):
+    run = _started(_idea_run(tmp_path))
+    _forge(run, {"kind": "event", "event": "вход_закреплён", "conditions": {}, "refusal": None,
+                 "outcome": {"to": "создан", "actions": [], "refusal": None, "moved": True},
+                 "pin": {"round": 1, "revision": "a" * 64, "content_hash": "c" * 64, "frame_hash": None}})
+    with pytest.raises(S.Refusal, match="не закреплена"):
+        run.pin("вход_закреплён", round_number=1, revision="b" * 64, content_hash="c" * 64, frame_hash="f" * 64)

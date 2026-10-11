@@ -245,6 +245,7 @@ class IdeaCandidate:
 
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+WORDS_CLIP = 200                       # how much of Anton's own words a correction keeps next to their hash
 
 
 @dataclass(frozen=True)
@@ -278,9 +279,10 @@ class Pin:
     round_number: int
     revision: str
     content_hash: str
-    hidden_hash: str | None
+    hidden_hash: str | None            # the package pin: hash of the hidden names
     at: str
     position: int = -1                 # its place in the journal: what came before it and after is decided by that
+    frame_hash: str | None = None      # the input pin: hash of the frame (task, criteria, critics, hidden names) -- all but the card
 
 
 @dataclass(frozen=True)
@@ -306,6 +308,26 @@ class AntonOk:
     def same_as(self, other: "AntonOk") -> bool:
         return all(getattr(self, n) == getattr(other, n) for n in (
             "session", "native_uuid", "reply_at", "run_id", "stage", "artifact", "revision", "round_number"))
+
+
+@dataclass(frozen=True)
+class Correction:
+    """БУ-3, БУ-6: one turn of the refinement cycle -- who proposed it, what changed, where it sits in the journal.
+
+    `basis` is the reference to Anton's reply (session, uuid, time of the reply) for his own correction;
+    `from_candidate` is (candidate id, its source) when the new revision grew from a candidate of a past
+    round -- the source is the journal's, not the caller's.
+    """
+
+    turn: int
+    round_number: int
+    source: str
+    basis: tuple
+    from_candidate: tuple | None
+    from_revision: str
+    to_revision: str
+    position: int
+    at: str
 
 
 _OK_FIELDS = ("session", "native_uuid", "reply_at", "run_id", "stage", "artifact", "revision", "round_number")
@@ -350,6 +372,11 @@ class RunState:
     anton_oks: list = field(default_factory=list)
     stage_exit_position: int = -1
     session: str | None = None
+    corrections: list = field(default_factory=list)
+    ceiling_stop: dict | None = None
+    stale_rounds: list = field(default_factory=list)
+    idea_candidate_history: list = field(default_factory=list)
+    verdicts: list = field(default_factory=list)
 
     @property
     def input_revision(self) -> str | None:
@@ -378,8 +405,13 @@ class RunState:
             "anton_oks": [{**{n: getattr(o, n) for n in _OK_FIELDS}, "position": o.position, "at": o.at}
                           for o in self.anton_oks],
             "stage_exit_position": self.stage_exit_position,
+            "corrections": [{"turn": c.turn, "round": c.round_number, "source": c.source, "basis": c.basis,
+                             "from_candidate": c.from_candidate, "from_revision": c.from_revision,
+                             "to_revision": c.to_revision, "position": c.position} for c in self.corrections],
+            "ceiling_stop": self.ceiling_stop, "stale_rounds": list(self.stale_rounds),
             "pins": [{"event": p.event, "round": p.round_number, "revision": p.revision,
-                      "content_hash": p.content_hash, "hidden_hash": p.hidden_hash, "at": p.at}
+                      "content_hash": p.content_hash, "hidden_hash": p.hidden_hash,
+                      "frame_hash": p.frame_hash, "at": p.at}
                      for p in self.pins],
             "operations": [
                 {"operation_id": o.operation_id, "key": list(o.key),
@@ -701,6 +733,7 @@ class RunStore:
                     state.last_verdict = (entry.get("conditions") or {}).get("verdict")
                     state.last_verdict_position = position
                     state.last_verdict_at = entry["at"]
+                    state.verdicts.append((position, state.last_verdict))
             if entry.get("ok") is not None:
                 state.anton_oks.append(self._ok_of(entry, position))
             if entry.get("event") == "этап_пройден" and (entry.get("outcome") or {}).get("moved"):
@@ -710,6 +743,8 @@ class RunStore:
                 state.state = outcome["to"]
                 for action in outcome.get("actions", []):
                     self._apply_action(state, action, entry)
+            if entry.get("event") == self.tables.vocabulary["цикл_уточнений"]["событие"]:
+                self._fold_correction(state, entry, position)       # after the actions: they see the OLD round
         elif kind == "revocation":
             state.operations = [
                 replace(o, revoked=True) if o.operation_id == entry["operation_id"] else o
@@ -759,6 +794,94 @@ class RunStore:
             raise StateError(f"неизвестная запись журнала: {kind!r}")
 
     @staticmethod
+    def _basis_of(basis) -> tuple:
+        """Anton's reply behind a correction as the journal holds it: (session, uuid, reply_at, words_hash, words_clip)."""
+        names = {"session", "native_uuid", "reply_at", "words_hash", "words_clip"}
+        if not isinstance(basis, dict) or set(basis) != names or not all(
+                isinstance(v, str) and v.strip() for v in basis.values()):
+            raise StateError(f"журнал: основание поправки должно быть из {sorted(names)}")
+        if not _HEX64.fullmatch(basis["words_hash"]) or len(basis["words_clip"]) > WORDS_CLIP:
+            raise StateError("журнал: хеш слов Антона — sha256, клип не длиннее 200 знаков")
+        return (basis["session"], basis["native_uuid"], basis["reply_at"], basis["words_hash"], basis["words_clip"])
+
+    def _fold_correction(self, state: RunState, entry: dict, position: int) -> None:
+        """A turn of the cycle as the journal holds it -- or `StateError`, never a bare `KeyError`.
+
+        A real correction opens a NEW round: the round number moves, the set of cards is replaced by the new
+        one (the old set stays in `idea_candidate_history`), the new pins are added. A stop at the ceiling only
+        records who tried and what -- and, as every turn, on whose word.
+        """
+        if "ceiling" in entry:
+            stop = entry["ceiling"]
+            if not isinstance(stop, dict) or set(stop) != {"source", "basis", "attempted_revision"}:
+                raise StateError("журнал: остановка по потолку должна быть из source, basis, attempted_revision")
+            self._basis_of(stop["basis"])
+            state.ceiling_stop = {**stop, "position": position, "at": entry["at"]}
+            return
+        raw = entry.get("correction")
+        names = {"turn", "round", "source", "basis", "from_candidate", "from_revision", "to_revision",
+                 "candidates", "permutation", "pins"}
+        if not isinstance(raw, dict) or set(raw) != names:
+            raise StateError(f"журнал: поправка должна быть из {sorted(names)}")
+        source = raw["source"]
+        if source not in self.tables.vocabulary["цикл_уточнений"]["источники"]:
+            raise StateError(f"журнал: источник поправки {source!r}")
+        for name in ("from_revision", "to_revision"):
+            if not isinstance(raw[name], str) or not raw[name].strip():
+                raise StateError(f"журнал: в поправке пусто {name}")
+        for name in ("turn", "round"):
+            if isinstance(raw[name], bool) or not isinstance(raw[name], int) or raw[name] < 1:
+                raise StateError(f"журнал: в поправке {name} = {raw[name]!r}")
+        if raw["turn"] != len(state.corrections) + 1:
+            raise StateError(f"журнал: номер оборота {raw['turn']}, а должен быть {len(state.corrections) + 1}")
+        if raw["round"] != max(state.round_number, 1) + 1:
+            raise StateError(f"журнал: круг поправки {raw['round']}, а должен быть {max(state.round_number, 1) + 1}")
+        basis = self._basis_of(raw["basis"])                       # no correction without Anton's word
+        origin = raw["from_candidate"]
+        if origin is not None:
+            if not isinstance(origin, dict) or set(origin) != {"id", "source"} or not all(
+                    isinstance(v, str) and v.strip() for v in origin.values()):
+                raise StateError("журнал: кандидат-источник должен быть из id, source")
+            origin = (origin["id"], origin["source"])
+        cards, order = raw["candidates"], raw["permutation"]
+        if not isinstance(cards, list) or not isinstance(order, list) or not cards:
+            raise StateError("журнал: у поправки нет нового набора карточек")
+        if not all(isinstance(c, dict) and set(c) == {"candidate_id", "source", "canonical_bytes_b64"}
+                   and isinstance(c["candidate_id"], str) and c["candidate_id"].strip()
+                   and isinstance(c["source"], str) and c["source"].strip() for c in cards):
+            raise StateError("журнал: карточка набора должна быть из candidate_id, source, canonical_bytes_b64")
+        if len({c["candidate_id"] for c in cards}) != len(cards) or [c["source"] for c in cards].count("автор") != 1:
+            raise StateError("журнал: в наборе повторяются ID или авторских карточек не одна")
+        if not all(isinstance(i, int) and not isinstance(i, bool) for i in order) or sorted(order) != list(range(len(cards))):
+            raise StateError("журнал: перестановка не соответствует набору")
+        old = (max(state.round_number, 1), state.idea_candidates, state.idea_candidates_permutation)
+        new_cards = tuple(
+            IdeaCandidate(candidate_id=c["candidate_id"], source=c["source"],
+                          canonical_bytes=_card_bytes(c.get("canonical_bytes_b64")))
+            for c in cards)
+        pins = raw["pins"]
+        if not isinstance(pins, list) or [p.get("event") if isinstance(p, dict) else None for p in pins] != [
+                "вход_закреплён", "пакет_закреплён"]:
+            raise StateError("журнал: у поправки закрепления входа и пакета, по порядку")
+        made = []
+        for pin in pins:
+            extra = "frame_hash" if pin["event"] == "вход_закреплён" else "hidden_hash"
+            if set(pin) != {"event", "content_hash", extra}:
+                raise StateError(f"журнал: закрепление поправки должно быть из event, content_hash, {extra}")
+            made.append(self._pin_of({"event": pin["event"], "at": entry["at"], "pin": {
+                "round": raw["round"], "revision": raw["to_revision"], "content_hash": pin["content_hash"],
+                extra: pin[extra]}}, position))
+        state.idea_candidates = new_cards
+        state.idea_candidates_permutation = tuple(order)
+        state.idea_candidate_history.append(old)
+        state.round_number = raw["round"]
+        state.round_mark_position = position
+        state.incomplete_cause = None
+        state.pins.extend(made)
+        state.corrections.append(Correction(raw["turn"], raw["round"], source, basis, origin, raw["from_revision"],
+                                            raw["to_revision"], position, entry["at"]))
+
+    @staticmethod
     def _ok_of(entry: dict, position: int) -> AntonOk:
         """An OK as the journal holds it -- or `StateError`, never a bare `KeyError`."""
         raw = entry["ok"]
@@ -775,19 +898,27 @@ class RunStore:
 
     @staticmethod
     def _pin_of(entry: dict, position: int = -1) -> Pin:
-        """A pin as the journal holds it -- or `StateError`, never a bare `KeyError`."""
+        """A pin as the journal holds it -- or `StateError`, never a bare `KeyError`.
+
+        An input pin carries `frame_hash` (all of the input but the card), a package pin `hidden_hash`.
+        """
         pin = entry["pin"]
-        names = ("round", "revision", "content_hash", "hidden_hash")
+        input_pin = entry.get("event") == "вход_закреплён"
+        extra = "frame_hash" if input_pin else "hidden_hash"
+        names = ("round", "revision", "content_hash", extra)
         if not isinstance(pin, dict) or set(pin) != set(names):
-            raise StateError("журнал: закрепление должно быть из round, revision, content_hash, hidden_hash")
+            raise StateError(f"журнал: закрепление должно быть из round, revision, content_hash, {extra}")
         number = pin["round"]
         if isinstance(number, bool) or not isinstance(number, int) or number < 1:
             raise StateError(f"журнал: круг закрепления {number!r}")
         for name in ("revision", "content_hash"):
             if not isinstance(pin[name], str) or not pin[name].strip():
                 raise StateError(f"журнал: закрепление без {name}")
-        if pin["hidden_hash"] is not None and not isinstance(pin["hidden_hash"], str):
-            raise StateError("журнал: hidden_hash закрепления — строка или None")
+        if pin[extra] is not None and not isinstance(pin[extra], str):
+            raise StateError(f"журнал: {extra} закрепления — строка или None")
+        if input_pin:
+            return Pin(entry["event"], number, pin["revision"], pin["content_hash"], None, entry["at"], position,
+                       pin["frame_hash"])
         return Pin(entry["event"], number, pin["revision"], pin["content_hash"], pin["hidden_hash"], entry["at"],
                    position)
 
@@ -795,6 +926,8 @@ class RunStore:
         """One pure effect per action code, exactly as run.yaml names them."""
         if action == "reset_round_counter":
             state.round_number = 0          # бюджет НЕ обнуляется — это не наше поле
+        elif action == "mark_results_stale":
+            state.stale_rounds.append(max(state.round_number, 1))     # the marks are events; no score is rewritten
         elif action == "mark_run_superseded":
             state.validity = "superseded"
         elif action == "spawn_linked_run":
@@ -907,9 +1040,9 @@ class RunStore:
         if event in self.tables.vocabulary["операции"]:
             raise StateError(f"{event!r} — операция, ей нужен submit с ключом повтора")
         spec = self.tables.vocabulary["ок_антона"]
-        if event in (spec["событие"], spec["переход"]):
+        if event in (spec["событие"], spec["переход"], self.tables.vocabulary["цикл_уточнений"]["событие"]):
             raise StateError(f"{event!r} пишется только своим методом хранилища "
-                             "(record_stage_exit; запись ОК закрыта): условия считает журнал")
+                             "(record_stage_exit; запись ОК и поправки закрыты): условия считает журнал")
         state = self.load()
         extra = {"kind": "event", "event": event}
         if data:
@@ -1364,13 +1497,199 @@ class RunStore:
         self._apply(state, spec["переход"], conditions, extra={"kind": "event", "event": spec["переход"]})
         return self.load()
 
+    # -- the refinement cycle (БУ-1 … БУ-8) ---------------------------------------
+    def turns_left(self, state: RunState | None = None) -> bool:
+        """Whether the ceiling (`цикл_уточнений.потолок_оборотов`) allows one more turn: counted from the journal."""
+        state = state or self.load()
+        return len(state.corrections) < self.tables.vocabulary["цикл_уточнений"]["потолок_оборотов"]
+
+    def _blind_cards_ready(self, state: RunState, candidates: list) -> bool:
+        """Without a past set: the critics' cards of the new one are their VALID blind proposals recorded in the journal."""
+        from . import contracts            # imported late: contracts imports this module
+
+        critics = sorted(c.source for c in candidates if c.source != "автор")
+        if len(critics) != 2 or len(set(critics)) != 2:
+            return False
+        round_number = max(state.round_number, 1)
+        for card in (c for c in candidates if c.source != "автор"):
+            good = False
+            for key, attempt in state.attempts.items():
+                if key[1:4] == (contracts.BLIND_STAGE, round_number, card.source) and attempt.receipt is not None \
+                        and attempt.validation is not None and attempt.validation.accepted:
+                    try:
+                        recorded = json.loads(self.read_answer(*key[1:]))
+                        good = contracts.card_bytes(recorded) == card.canonical_bytes
+                    except (ValueError, KeyError, TypeError, tables_module.ContractError):
+                        good = False
+                    if good:
+                        break
+            if not good:
+                return False
+        return True
+
+    def _record_correction(self, *, source: str, basis: dict | None, from_candidate: str | None, to_revision: str,
+                           candidates: list, permutation: list, input_pin: dict, package_pin: dict) -> RunState:
+        """Open a new round with a corrected card of the author -- or, at the ceiling, stop the run. CLOSED.
+
+        The proof from the transcript (Anton's reply) is made by `contracts.submit_correction` before this.
+        Here the journal's own rules are made again, so that the door cannot be used on its own: the state is
+        `ждёт_Антона` or an incomplete run; the basis is a reply of Anton (uuid-shaped session and record, the hash
+        and clip of his words), used once; the revision is the hash of the new author card's bytes and is new to
+        the run; the frame of the input is the pinned one; the card is not a copy of a critic's card; the critics'
+        cards are the old ones byte for byte (or, with no past set, their valid blind proposals); the IDs are new;
+        the package pin fits the set. The conditions of the table are counted here.
+        One journal entry carries all of it, so a crash leaves either the whole turn or none of it.
+        """
+        self._require_live("_record_correction")
+        spec = self.tables.vocabulary["цикл_уточнений"]
+        state = self.load()
+        if source not in spec["источники"]:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", f"источник поправки {source!r}")
+        if not isinstance(basis, dict) or set(basis) != {"session", "native_uuid", "reply_at", "words_hash", "words_clip"}:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "поправка без слова Антона не засчитывается: нужно основание — его реплика "
+                                                   "(session, native_uuid, reply_at, words_hash, words_clip)")
+        if not (tables_module._is_uuid(basis["session"]) and tables_module._is_uuid(basis["native_uuid"])):
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "основание: сессия и запись должны быть идентификаторами переписки")
+        if not (isinstance(basis["reply_at"], str) and basis["reply_at"].strip()
+                and isinstance(basis["words_hash"], str) and _HEX64.fullmatch(basis["words_hash"])
+                and isinstance(basis["words_clip"], str) and basis["words_clip"].strip()
+                and len(basis["words_clip"]) <= WORDS_CLIP):
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "основание: время реплики, хеш слов (sha256) и клип слов до 200 знаков")
+        used = [(o.session, o.native_uuid) for o in state.anton_oks] + [(c.basis[0], c.basis[1]) for c in state.corrections]
+        if state.ceiling_stop is not None:
+            used.append((state.ceiling_stop["basis"]["session"], state.ceiling_stop["basis"]["native_uuid"]))
+        if (basis["session"], basis["native_uuid"]) in used:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "эта реплика уже использована (как ОК или как поправка)")
+        if state.session is not None and basis["session"] != state.session:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "реплика из другой сессии, чем та, в которой начат прогон")
+        current = state.input_revision
+        if current is None:
+            raise Refusal("ПОПРАВКА_НЕВОЗМОЖНА", "нет закреплённого входа: править нечего")
+        if state.state not in ("ждёт_Антона", "неполный"):
+            raise Refusal("ПОПРАВКА_НЕВОЗМОЖНА", f"прогон в состоянии {state.state!r}: поправка возможна после показа Антону "
+                                                  "или в неполном прогоне")
+        if not isinstance(to_revision, str) or not to_revision.strip():
+            raise StateError("_record_correction: пустая редакция")
+        authors = [c for c in candidates if c.source == "автор"]
+        if len(authors) != 1:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "в новом наборе должна быть ровно одна карточка автора")
+        if hashlib.sha256(authors[0].canonical_bytes).hexdigest() != to_revision:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "редакция — не хеш байтов карточки автора из нового набора")
+        if to_revision == current:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "та же редакция, что текущая: поправка без изменения")
+        inputs = [p for p in state.pins if p.event == "вход_закреплён"]
+        if to_revision in {p.revision for p in inputs}:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "возврат к прежней редакции прогона: она уже была судима, оборот не тратится")
+        if any(c.source != "автор" and c.canonical_bytes == authors[0].canonical_bytes for c in candidates):
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "карточка автора побайтово равна карточке критика: дубль в наборе "
+                                                   "для сравнения бессмыслен")
+        if inputs[0].frame_hash is None:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "рамка входа не закреплена в этом прогоне: сверить, что она не менялась, нечем")
+        if input_pin.get("frame_hash") != inputs[0].frame_hash:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "изменилась рамка входа (задача, ограничения, критерии, критики, "
+                                                   "скрытые имена): это новый прогон, а не поправка")
+        known = list(state.idea_candidates) + [c for _, cards, _ in state.idea_candidate_history for c in cards]
+        origin = None
+        if from_candidate is not None:
+            found = [c for c in known if c.candidate_id == from_candidate]
+            if not found:
+                raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", f"кандидата {from_candidate!r} в журнале нет")
+            origin = {"id": found[0].candidate_id, "source": found[0].source}          # the source is the journal's
+        if state.idea_candidates:
+            old_critics = sorted((c.source, c.canonical_bytes) for c in state.idea_candidates if c.source != "автор")
+            new_critics = sorted((c.source, c.canonical_bytes) for c in candidates if c.source != "автор")
+            if old_critics != new_critics:
+                raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "карточки критиков неизменны: правится только карточка автора")
+            ready = True
+        else:
+            ready = self._blind_cards_ready(state, candidates)
+        seen_ids = {c.candidate_id for c in known}
+        ids = [c.candidate_id for c in candidates]
+        if len(set(ids)) != len(ids) or seen_ids & set(ids):
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "ID нового набора должны быть новыми и не повторяться")
+        if sorted(permutation) != list(range(len(candidates))):
+            raise StateError("_record_correction: перестановка не соответствует набору")
+        for pin in (input_pin, package_pin):
+            if not isinstance(pin.get("content_hash"), str) or not pin["content_hash"].strip():
+                raise StateError("_record_correction: закрепление без content_hash")
+        packages = [p for p in state.pins if p.event == "пакет_закреплён"]
+        if package_pin.get("hidden_hash") is None or (packages and package_pin["hidden_hash"] != packages[-1].hidden_hash):
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "закрепление пакета не сходится с прогоном: скрытые имена те же и записаны")
+        if package_pin["content_hash"] in {p.content_hash for p in packages}:
+            raise Refusal("ПОПРАВКА_НЕ_ЗАСЧИТАНА", "пакет нового набора не может совпасть с прежним: ID и порядок новые")
+
+        conditions = {"turns_left": self.turns_left(state), "blind_cards_ready": ready}
+        if state.state == "неполный":
+            conditions.update(self.resume_conditions())
+        outcome = self.tables.decide(state.state, spec["событие"], conditions)
+        if outcome.refusal is not None:
+            raise Refusal(outcome.refusal, "продолжение неполного прогона возможно и без поправки"
+                          if outcome.refusal == "КОРРЕКЦИЯ_НЕ_НУЖНА" else "слепых предложений обоих критиков нет: поправлять не из чего")
+        if outcome.to == spec["терминальное"]:                       # the ceiling: stop, no new revision is written
+            self._apply(state, spec["событие"], conditions, extra={
+                "kind": "event", "event": spec["событие"],
+                "ceiling": {"source": source, "basis": dict(basis), "attempted_revision": to_revision}})
+            return self.load()
+        payload = [{"candidate_id": c.candidate_id, "source": c.source,
+                    "canonical_bytes_b64": base64.b64encode(c.canonical_bytes).decode("ascii")} for c in candidates]
+        self._apply(state, spec["событие"], conditions, extra={
+            "kind": "event", "event": spec["событие"],
+            "correction": {
+                "turn": len(state.corrections) + 1, "round": max(state.round_number, 1) + 1, "source": source,
+                "basis": dict(basis), "from_candidate": origin, "from_revision": current, "to_revision": to_revision,
+                "candidates": payload, "permutation": list(permutation),
+                "pins": [{"event": "вход_закреплён", "content_hash": input_pin["content_hash"],
+                          "frame_hash": input_pin["frame_hash"]},
+                         {"event": "пакет_закреплён", "content_hash": package_pin["content_hash"],
+                          "hidden_hash": package_pin["hidden_hash"]}]}})
+        return self.load()
+
+    def refinement_history(self) -> list:
+        """БУ-6: every turn of the cycle, read from the journal -- who proposed it, what changed, how it ended.
+
+        Turn 0 is the first revision (the author's own). Each later turn: `proposed_by` (антон / автор) with
+        the `basis` of Anton's reply, `from_revision` -> `to_revision`, the `from_candidate` (id, source) if it
+        grew from a candidate, the round it opened, and `ended`: `вердикт:<V>` of its round, `ок_и_выход`,
+        `потолок` for the stop at the ceiling, `идёт` while nothing has ended it yet.
+        """
+        state = self.load()
+        inputs = [p for p in state.pins if p.event == "вход_закреплён"]
+        marks = [c.position for c in state.corrections] + [10 ** 12]
+
+        def ended(start: int, end: int) -> str:
+            if start < state.stage_exit_position < end:
+                return "ок_и_выход"
+            verdicts = [v for position, v in state.verdicts if start < position < end]
+            return f"вердикт:{verdicts[-1]}" if verdicts else "идёт"
+
+        history = []
+        if inputs:
+            first = state.corrections[0].from_revision if state.corrections else inputs[0].revision
+            history.append({"turn": 0, "round": 1, "proposed_by": "автор", "basis": None, "from_revision": None,
+                            "to_revision": first, "from_candidate": None, "ended": ended(-1, marks[0])})
+        for index, c in enumerate(state.corrections):
+            history.append({"turn": c.turn, "round": c.round_number, "proposed_by": c.source,
+                            "basis": {"session": c.basis[0], "native_uuid": c.basis[1], "reply_at": c.basis[2],
+                                      "words_hash": c.basis[3], "words_clip": c.basis[4]},
+                            "from_revision": c.from_revision, "to_revision": c.to_revision,
+                            "from_candidate": ({"id": c.from_candidate[0], "source": c.from_candidate[1]}
+                                               if c.from_candidate else None),
+                            "ended": ended(c.position, marks[index + 1])})
+        if state.ceiling_stop is not None:
+            stop = state.ceiling_stop
+            history.append({"turn": len(state.corrections) + 1, "round": None, "proposed_by": stop["source"],
+                            "basis": stop["basis"], "from_revision": inputs[-1].revision if inputs else None,
+                            "to_revision": stop["attempted_revision"], "from_candidate": None, "ended": "потолок"})
+        return history
+
     # -- pins (БУ-12) --------------------------------------------------------
     @staticmethod
     def pin_status(state: RunState, event: str, *, round_number: int, revision: str,
-                   content_hash: str, hidden_hash: str | None = None):
+                   content_hash: str, hidden_hash: str | None = None, frame_hash: str | None = None):
         """What `pin` would do, without writing: the same `Pin` (a repeat), None (a new event) or a refusal text."""
         for old in (p for p in state.pins if p.event == event):
-            same = (old.revision, old.content_hash, old.hidden_hash) == (revision, content_hash, hidden_hash)
+            same = (old.revision, old.content_hash, old.hidden_hash, old.frame_hash) == (
+                revision, content_hash, hidden_hash, frame_hash)
             if old.round_number == round_number:
                 if same:
                     return old
@@ -1380,12 +1699,14 @@ class RunStore:
         return None
 
     def pin(self, event: str, *, round_number: int, revision: str, content_hash: str,
-            hidden_hash: str | None = None) -> Pin:
+            hidden_hash: str | None = None, frame_hash: str | None = None) -> Pin:
         """Pin the input of the stage or its second package for one round as a journal event.
 
-        The same pin again — no duplicate, the old event comes back. Other content in the same
-        round, or other content under the same revision in another round, is refused with the
-        table's code. A new revision in a new round gets a new event; the old one stays.
+        The same pin again -- no duplicate, the old event comes back. Other content in the same round, or
+        other content under the same revision in another round, is refused with the table's code.
+        The input pin (`вход_закреплён`) carries `frame_hash` and is taken only for the CURRENT round while the
+        run is being started or worked on; a pin in another round, or after the show to Anton, is the business of
+        the correction alone. Its frame is the same in EVERY input pin of the run -- compared with the first.
         """
         self._require_live("pin")
         spec = self.tables.vocabulary["закрепление"]
@@ -1396,23 +1717,36 @@ class RunStore:
         for name, value in (("revision", revision), ("content_hash", content_hash)):
             if not isinstance(value, str) or not value.strip():
                 raise StateError(f"закрепление: {name} пусто")
-        if hidden_hash is not None and (not isinstance(hidden_hash, str) or not hidden_hash.strip()):
+        extra_name, extra = ("frame_hash", frame_hash) if event == "вход_закреплён" else ("hidden_hash", hidden_hash)
+        other = hidden_hash if event == "вход_закреплён" else frame_hash
+        if other is not None:
+            raise StateError(f"закрепление: у {event!r} нет поля {'hidden_hash' if event == 'вход_закреплён' else 'frame_hash'}")
+        if event == "вход_закреплён" and (not isinstance(extra, str) or not extra.strip()):
+            raise StateError("закрепление входа: frame_hash обязателен")
+        if event != "вход_закреплён" and extra is not None and (not isinstance(extra, str) or not extra.strip()):
             raise StateError("закрепление: hidden_hash — строка или None")
         state = self.load()
         status = self.pin_status(state, event, round_number=round_number, revision=revision,
-                                 content_hash=content_hash, hidden_hash=hidden_hash)
+                                 content_hash=content_hash, hidden_hash=hidden_hash, frame_hash=frame_hash)
         if isinstance(status, Pin):
-            return status                                              # безопасный повтор
+            return status                                              # безопасный повтор — в любом состоянии
+        if event == "вход_закреплён":
+            if state.state not in ("создан", "идёт_круг") or round_number != max(state.round_number, 1):
+                raise Refusal("ПОПРАВКА_НЕВОЗМОЖНА", "вход другого круга или после показа Антону закрепляет только операция поправки")
+            first = next((p for p in state.pins if p.event == event), None)
+            if first is not None and extra != first.frame_hash:
+                raise Refusal(spec["иное_содержимое"], "рамка входа не закреплена в прогоне" if first.frame_hash is None
+                              else "рамка входа (задача, критерии, критики, скрытые имена) не та, что в первом закреплении")
         if status is not None:
             raise Refusal(spec["иное_содержимое"], status)
         self._apply(state, event, {}, extra={
             "kind": "event", "event": event,
-            "pin": {"round": round_number, "revision": revision, "content_hash": content_hash,
-                    "hidden_hash": hidden_hash}})
+            "pin": {"round": round_number, "revision": revision, "content_hash": content_hash, extra_name: extra}})
         return next(p for p in reversed(self.load().pins) if p.event == event)
 
-    def start_round(self, number: int) -> RunState:
-        self._require_live("start_round")
+    def _start_round(self, number: int) -> RunState:
+        """Write a round mark. CLOSED: a round is opened by the correction, never by a caller (kept for crafting a journal in tests)."""
+        self._require_live("_start_round")
         self._append({"kind": "round_started", "round": number})
         state = self.load()
         self._write_snapshot(state)

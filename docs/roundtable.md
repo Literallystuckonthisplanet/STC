@@ -1013,7 +1013,12 @@ Roundtable, ни произвольного пакета там нет. Ревь
 | идёт_круг | `вердикт` | `verdict`=НЕПОЛНЫЙ_ПРОГОН | `неполный` | — | — |
 | ждёт_автора | `submit-revision` | `budget_allows_round`=true | `идёт_круг` | — | — |
 | ждёт_автора | `submit-revision` | `budget_allows_round`=false | `ждёт_Антона` | — | — |
-| неполный | `resume` | — | `идёт_круг` | — | — |
+| неполный | `resume` | `budget_remains`=true, `input_can_progress`=true | `идёт_круг` | — | — |
+| неполный | `resume` | `budget_remains`=false | `неполный` | — | `ПРОДОЛЖИТЬ_НЕЧЕМ` |
+| неполный | `resume` | `budget_remains`=true, `input_can_progress`=false | `неполный` | — | `НУЖНА_КОРРЕКЦИЯ_ВХОДА` |
+| создан | `вход_закреплён` | — | `создан` | — | — |
+| идёт_круг | `вход_закреплён` | — | `идёт_круг` | — | — |
+| идёт_круг | `пакет_закреплён` | — | `идёт_круг` | — | — |
 | создан | `cancel-run` | — | `отменён` | `record_reason` | — |
 | идёт_круг | `cancel-run` | — | `отменён` | `kill_process_group`, `mark_results_stale`, `record_reason` | — |
 | ждёт_автора | `cancel-run` | — | `отменён` | `record_reason` | — |

@@ -86,6 +86,7 @@ TOP_LEVEL = {
         "состояния_блока", "внешние_действия",
         "оценка_критерия", "состояния_кандидата", "выбор_кандидата_sentinel",
         "отношение_механизмов", "повтор_невалидного_ответа",
+        "ответ_критика", "закрепление",
         "операции", "операции_без_бюджета",
         "коды_условий", "коды_действий", "коды_отказа",
         "схемы_контрактов", "схемы_вне_контрактов",
@@ -676,6 +677,8 @@ SHAPES = {
                                              "журнал_необязательные")),
         "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
         "коды_условий": Mapping(LIST),
+        "ответ_критика": Record("каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов", "почему"),
+        "закрепление": Record("события", "на_круг", "иное_содержимое"),
         "повтор_невалидного_ответа": Record(
             "максимум_на_ответ", "область", "тратит_бюджет", "порядок", "оба_невалидны",
             "сохранённый_валидный_ответ_не_повторять", "после_исчерпания",
@@ -1776,11 +1779,58 @@ class Tables:
 
         self._check_idea_outcomes()
         self._check_idea_execution()
+        self._check_answer_records()
         checked.append("исходы идеи: коды, порядок и приоритеты закрыты, причины сходятся со списком")
 
         self._check_shapes()
         checked.append(f"{len(SHAPES)} таблиц: выдуманных полей нет ни на какой глубине")
         return checked
+
+    def _check_answer_records(self) -> None:
+        """vocabulary.ответ_критика и vocabulary.закрепление (БУ-11, БУ-12): то, что читают state.py и contracts.py."""
+        answer = self.vocabulary.get("ответ_критика")
+        where = "vocabulary.ответ_критика"
+        if not isinstance(answer, dict):
+            raise ContractError(f"{where}: ожидалась карта")
+        _require(answer, {"каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов", "почему"},
+                 set(), where)
+        folder = answer["каталог"]
+        if not isinstance(folder, str) or not re.fullmatch(r"[\w-]{1,32}", folder):
+            raise ContractError(f"{where}.каталог: простое имя каталога, получено {folder!r}")
+        if answer["имя_файла"] != "sha256":
+            raise ContractError(f"{where}.имя_файла: движок умеет только sha256")
+        if answer["порядок_записи"] != ["файл_ответа_на_диск", "событие_получена"]:
+            raise ContractError(f"{where}.порядок_записи: ожидалось [файл_ответа_на_диск, событие_получена]")
+        limit = answer["предел_причины"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ContractError(f"{where}.предел_причины: целое от 1, получено {limit!r}")
+        size = answer["предел_байтов"]
+        section = self.vocabulary.get("пакет", {}).get("предел_раздела_байт")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 1 or (
+                isinstance(section, int) and size < section):
+            raise ContractError(f"{where}.предел_байтов: целое не меньше пакет.предел_раздела_байт ({section!r}), "
+                                f"получено {size!r}")
+        _nonempty_string(answer["почему"], f"{where}.почему")
+
+        pins = self.vocabulary.get("закрепление")
+        where = "vocabulary.закрепление"
+        if not isinstance(pins, dict):
+            raise ContractError(f"{where}: ожидалась карта")
+        _require(pins, {"события", "на_круг", "иное_содержимое"}, set(), where)
+        if pins["события"] != ["вход_закреплён", "пакет_закреплён"]:
+            raise ContractError(f"{where}.события: ожидалось [вход_закреплён, пакет_закреплён]")
+        if pins["на_круг"] != "одно":
+            raise ContractError(f"{where}.на_круг: движок умеет только «одно»")
+        if pins["иное_содержимое"] not in self.vocabulary["коды_отказа"]:
+            raise ContractError(f"{where}.иное_содержимое: {pins['иное_содержимое']!r} не код отказа")
+        operations = set(self.vocabulary["операции"])
+        for event in pins["события"]:
+            rows = [t for t in self.transitions if t.event == event]
+            if event in operations or not rows:
+                raise ContractError(f"{where}.события: {event!r} — не событие движка из run.yaml")
+            if any(t.source != t.target or t.refusal or t.actions or t.conditions for t in rows):
+                raise ContractError(f"{where}.события: {event!r} не должно менять состояние, "
+                                    "зависеть от условий или отказывать")
 
     def _check_idea_execution(self) -> None:
         """stages.исполнение_идеи: предел вызовов критика, прерванных до ответа (БИ, аудит безопасности)."""

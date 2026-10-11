@@ -7,8 +7,10 @@ a second process. A mocked crash proves the mock.
 """
 
 import base64
+import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -43,6 +45,7 @@ class _TestRun:
     _MUTATING = {
         "submit", "record_event", "revoke", "start_round", "set_flag",
         "record_attempt", "mark_possible_duplicate", "assign_idea_candidates",
+        "record_received", "record_validation", "pin",
     }
 
     def __init__(self, directory, tables):
@@ -352,7 +355,10 @@ def test_the_history_is_never_rewritten(run):
 def test_an_attempt_walks_the_declared_states_and_never_backwards(run):
     order = TABLES.vocabulary["попытка"]["состояния"]
     for status in order:
-        attempt = run.record_attempt("план", 1, "claude", 1, status)
+        if status == "получена":                  # БУ-11: an answer is counted only together with its bytes
+            attempt = run.record_received("план", 1, "claude", 1, b"{}", QUESTION)
+        else:
+            attempt = run.record_attempt("план", 1, "claude", 1, status)
         assert attempt.status == status
     with pytest.raises(S.StateError):
         run.record_attempt("план", 1, "claude", 1, "запущена")
@@ -909,3 +915,475 @@ def test_a_journal_planted_as_a_link_is_neither_read_nor_appended(tmp_path):
         with S.RunLock(directory) as lock:
             S.RunStore(directory, TABLES, _lock=lock).submit("start")
     assert victim.read_bytes() == before, "по ссылке дописан чужой файл"
+
+
+# --------------------------------------------------------------------------
+# БУ-11 — the bytes of a received answer
+# --------------------------------------------------------------------------
+
+QUESTION = "a" * 64
+ANSWERS = "ответы"
+
+
+def _launched(run, stage="идея:слепой", critic="claude", number=1):
+    run.record_attempt(stage, 1, critic, number, "подготовлена")
+    run.record_attempt(stage, 1, critic, number, "запущена")
+
+
+def test_bu11_the_bytes_come_back_exactly_after_a_restart_and_are_not_in_the_journal(run):
+    raw = "ответ \u0000 с кириллицей и переводом\r\nстроки".encode("utf-8") + bytes(range(200, 256))
+    _launched(run)
+    attempt = run.record_received("идея:слепой", 1, "claude", 1, raw, QUESTION)
+    assert attempt.status == "получена" and attempt.receipt.length == len(raw)
+    assert attempt.receipt.sha256 == hashlib.sha256(raw).hexdigest() and attempt.receipt.question_hash == QUESTION
+    cold = S.RunStore(run.directory, TABLES)                                   # the restart: nothing cached
+    assert cold.read_answer("идея:слепой", 1, "claude", 1) == raw
+    assert (run.directory / ANSWERS / attempt.receipt.sha256).read_bytes() == raw
+    assert base64.b64encode(raw).decode() not in run.journal_path.read_text(encoding="utf-8")
+    assert cold.load().attempts[attempt.key].receipt == attempt.receipt
+
+
+def test_bu11_the_file_is_on_the_disk_before_the_journal_learns_of_it(run, monkeypatch):
+    _launched(run)
+    seen = {}
+    real = S.RunStore._append
+
+    def probe(self, entry):
+        if "answer" in entry:
+            seen["file_first"] = (self.directory / ANSWERS / entry["answer"]["sha256"]).is_file()
+        return real(self, entry)
+
+    monkeypatch.setattr(S.RunStore, "_append", probe)
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    assert seen == {"file_first": True}
+
+
+def test_bu11_a_failure_between_the_file_and_the_entry_does_not_count_the_answer(run, monkeypatch):
+    _launched(run)
+    real = S.RunStore._append
+
+    def failing(self, entry):
+        if "answer" in entry:
+            raise OSError("диск")
+        return real(self, entry)
+
+    monkeypatch.setattr(S.RunStore, "_append", failing)
+    with pytest.raises(OSError):
+        run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    monkeypatch.undo()
+    attempt = run.load().attempts[("run-1", "идея:слепой", 1, "claude", 1)]
+    assert attempt.status == "запущена" and attempt.receipt is None               # not counted
+    with pytest.raises(T.ContractError):
+        run.read_answer("идея:слепой", 1, "claude", 1)
+    assert run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION).status == "получена"   # positive control
+
+
+def test_bu11_the_same_answer_again_is_a_repeat_and_another_one_is_refused(run):
+    _launched(run)
+    first = run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    entries = len(run.journal_path.read_text(encoding="utf-8").splitlines())
+    assert run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION) == first
+    assert len(run.journal_path.read_text(encoding="utf-8").splitlines()) == entries
+    for raw, question in ((b"abd", QUESTION), (b"abc", "b" * 64)):
+        with pytest.raises(S.StateError):
+            run.record_received("идея:слепой", 1, "claude", 1, raw, question)
+    with pytest.raises(S.StateError):                                           # no attempt, no answer
+        run.record_received("идея:слепой", 1, "codex", 1, b"abc", QUESTION)
+    with pytest.raises(S.StateError):
+        run.record_received("идея:слепой", 1, "claude", 1, "text", QUESTION)    # bytes, not text
+
+
+@pytest.mark.parametrize("damage", ["подмена", "обрезан", "удалён", "ссылка"])
+def test_bu11_a_changed_missing_or_linked_file_is_a_contract_error_on_reading(run, tmp_path, damage):
+    _launched(run)
+    receipt = run.record_received("идея:слепой", 1, "claude", 1, b"original answer", QUESTION).receipt
+    path = run.directory / ANSWERS / receipt.sha256
+    assert run.read_answer("идея:слепой", 1, "claude", 1) == b"original answer"       # positive control
+    if damage == "подмена":
+        path.write_bytes(b"another answer!")                                          # same length, other bytes
+    elif damage == "обрезан":
+        path.write_bytes(b"original")
+    elif damage == "удалён":
+        path.unlink()
+    else:
+        outside = tmp_path / "outside"
+        outside.write_bytes(b"original answer")
+        path.unlink()
+        path.symlink_to(outside)
+    with pytest.raises(T.ContractError):
+        run.read_answer("идея:слепой", 1, "claude", 1)
+
+
+def test_bu11_the_result_of_the_check_is_kept_with_the_clipped_reason_and_written_once(run):
+    _launched(run)
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    limit = TABLES.vocabulary["ответ_критика"]["предел_причины"]
+    result = run.record_validation("идея:слепой", 1, "claude", 1, False, "п" * 5000)
+    assert result.accepted is False and len(result.reason) == limit + 1 and result.reason.endswith("…")
+    assert result.question_hash == QUESTION
+    assert run.record_validation("идея:слепой", 1, "claude", 1, False, "п" * 5000) == result      # a repeat
+    stored = S.RunStore(run.directory, TABLES).load().attempts[("run-1", "идея:слепой", 1, "claude", 1)]
+    assert stored.validation == result                                                          # after the restart
+    with pytest.raises(S.StateError):
+        run.record_validation("идея:слепой", 1, "claude", 1, True)                               # another result
+    with pytest.raises(S.StateError):
+        run.record_validation("идея:слепой", 1, "codex", 1, True)                                # no answer to judge
+    _launched(run, number=2)
+    run.record_received("идея:слепой", 1, "claude", 2, b"abc2", QUESTION)
+    for accepted, reason in ((True, "причина у принятого"), (False, "  ")):
+        with pytest.raises(S.StateError):
+            run.record_validation("идея:слепой", 1, "claude", 2, accepted, reason)
+    assert run.record_validation("идея:слепой", 1, "claude", 2, True).reason == ""
+
+
+def test_bu11_later_statuses_and_the_duplicate_mark_keep_the_receipt(run):
+    _launched(run)
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    run.record_validation("идея:слепой", 1, "claude", 1, True)
+    run.record_attempt("идея:слепой", 1, "claude", 1, "провалидирована")
+    run.mark_possible_duplicate("идея:слепой", 1, "claude", 1)
+    attempt = S.RunStore(run.directory, TABLES).load().attempts[("run-1", "идея:слепой", 1, "claude", 1)]
+    assert attempt.status == "провалидирована" and attempt.possible_duplicate
+    assert attempt.receipt is not None and attempt.validation.accepted
+
+
+def test_bu11_a_receipt_of_another_run_or_a_second_different_one_in_the_journal_is_corruption(run):
+    _launched(run)
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    lines = run.journal_path.read_text(encoding="utf-8").splitlines()
+    forged = json.loads(lines[-1])
+    forged["answer"] = {**forged["answer"], "length": 99}
+    run.journal_path.write_text("\n".join(lines + [json.dumps(forged, ensure_ascii=False)]) + "\n", encoding="utf-8")
+    with pytest.raises(S.StateError, match="квитанция"):
+        S.RunStore(run.directory, TABLES).load()
+
+
+# --------------------------------------------------------------------------
+# БУ-12 — pins
+# --------------------------------------------------------------------------
+
+def _started(run):
+    run.submit("start")
+    return run
+
+
+def _pin(run, event="пакет_закреплён", round_number=1, revision="r" * 64, content="c" * 64, hidden="h" * 64):
+    return run.pin(event, round_number=round_number, revision=revision, content_hash=content, hidden_hash=hidden)
+
+
+def test_bu12_a_pin_is_a_journal_event_and_survives_a_restart(tmp_path):
+    run = _started(_idea_run(tmp_path))
+    run.record_event("пакет_собран")
+    pin = _pin(run)
+    assert (pin.event, pin.round_number, pin.revision, pin.content_hash, pin.hidden_hash) == (
+        "пакет_закреплён", 1, "r" * 64, "c" * 64, "h" * 64)
+    assert S.RunStore(run.directory, TABLES).load().pins == [pin]
+    assert run.load().state == "идёт_круг"                                         # a pin moves nothing
+    events = [json.loads(line) for line in run.journal_path.read_text(encoding="utf-8").splitlines()]
+    assert [e["event"] for e in events if e.get("kind") == "event"][-1] == "пакет_закреплён"
+
+
+def _idea_run(tmp_path):
+    directory = tmp_path / "run"
+    S.RunStore(directory, TABLES).create("run-1", "идея")
+    return _TestRun(directory, TABLES)
+
+
+def test_bu12_the_same_pin_again_comes_back_without_a_second_event(tmp_path):
+    run = _started(_idea_run(tmp_path))
+    run.record_event("пакет_собран")
+    first = _pin(run)
+    size = run.journal_path.read_bytes()
+    assert _pin(run) == first and run.journal_path.read_bytes() == size
+    assert _pin(run, event="вход_закреплён") != first                              # the other kind is its own event
+
+
+def test_bu12_other_content_in_the_same_round_is_refused_and_the_old_event_stays(tmp_path):
+    run = _started(_idea_run(tmp_path))
+    run.record_event("пакет_собран")
+    first = _pin(run)
+    size = run.journal_path.read_bytes()
+    for kwargs in ({"content": "d" * 64}, {"hidden": "i" * 64}, {"revision": "q" * 64}):
+        with pytest.raises(S.Refusal) as refused:
+            _pin(run, **kwargs)
+        assert refused.value.code == "КОНФЛИКТ_ВХОДА"
+    assert run.journal_path.read_bytes() == size and run.load().pins == [first]
+
+
+def test_bu12_a_new_revision_in_a_new_round_gets_a_new_event_and_the_old_one_stays(tmp_path):
+    run = _started(_idea_run(tmp_path))
+    run.record_event("пакет_собран")
+    first = _pin(run)
+    second = _pin(run, round_number=2, revision="n" * 64, content="e" * 64)
+    assert run.load().pins == [first, second]
+    assert _pin(run, round_number=2, revision="n" * 64, content="e" * 64) == second
+    with pytest.raises(S.Refusal):                                                  # the old revision with other content
+        _pin(run, round_number=3, revision="r" * 64, content="f" * 64)
+    assert run.load().pins == [first, second]
+    same_again = _pin(run, round_number=3, revision="r" * 64)                       # the same revision and content: its own event
+    assert same_again.round_number == 3 and len(run.load().pins) == 3
+
+
+def test_bu12_the_closed_shape_of_a_pin(tmp_path):
+    run = _started(_idea_run(tmp_path))
+    run.record_event("пакет_собран")
+    for kwargs in ({"event": "придуманное"}, {"round_number": 0}, {"round_number": True}, {"revision": " "},
+                   {"content": ""}):
+        with pytest.raises(S.StateError):
+            _pin(run, **kwargs)
+    assert run.load().pins == []
+    created = _idea_run(tmp_path / "other")
+    with pytest.raises(T.ContractError):                                           # a run not started has no pin to make
+        _pin(created)
+
+
+def test_bu13_resume_is_one_operation_per_journal_position(run):
+    run.submit("start")
+    run.record_event("пакет_собран")
+    run.record_event("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"})
+    first = run.submit("resume", body={"reason": "1"})
+    assert first.moved_the_run and run.load().state == "идёт_круг"
+    assert run.submit("resume", body={"reason": "1"}) == first      # the same command again: one operation
+    assert len([o for o in run.load().operations if o.key[3] == "resume"]) == 1
+    run.record_event("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"})                              # incomplete again, the same round
+    second = run.submit("resume", body={"reason": "1"})
+    assert second.operation_id != first.operation_id and second.key != first.key
+    assert run.load().state == "идёт_круг"                                                    # it really moved the run
+
+
+def _exhausted_incomplete(run):
+    """An incomplete run whose critic used both of the retries on rejected answers."""
+    run.submit("start")
+    run.record_event("пакет_собран")
+    for number in (1, 2):
+        _launched(run, number=number)
+        run.record_received("идея:слепой", 1, "claude", number, b"x%d" % number, QUESTION)
+        run.record_validation("идея:слепой", 1, "claude", number, False, "не json")
+    run.record_event("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"})
+    assert run.load().state == "неполный"
+
+
+def test_bu13_resume_without_budget_is_the_named_refusal_and_does_not_move_the_run(run):
+    _exhausted_incomplete(run)
+    refused = run.submit("resume", body={"reason": "нечем"})
+    assert refused.refusal == "ПРОДОЛЖИТЬ_НЕЧЕМ" and not refused.moved_the_run
+    assert run.load().state == "неполный"
+    # the same command at the same position is the same operation, not a second refusal in the journal
+    assert run.submit("resume", body={"reason": "нечем"}) == refused
+
+
+@pytest.mark.parametrize("forged", [{"budget_remains": True}, {"budget_remains": False}, {"input_can_progress": True},
+                                    {"verdict": "ОДОБРЕНО"}])
+def test_bu13_conditions_of_a_resume_come_from_the_journal_a_forged_one_is_refused(run, forged):
+    """The caller cannot buy budget: a passed condition is refused, whatever it says, and nothing is written."""
+    _exhausted_incomplete(run)
+    size = run.journal_path.read_bytes()
+    with pytest.raises(S.StateError):
+        run.submit("resume", forged, body={"reason": "подделка"})
+    assert run.journal_path.read_bytes() == size and run.load().state == "неполный"
+    refused = run.submit("resume", body={"reason": "честно"})                      # positive control: counted by the journal
+    assert refused.refusal == "ПРОДОЛЖИТЬ_НЕЧЕМ" and run.load().state == "неполный"
+
+
+def test_bu13_an_unjudged_answer_keeps_the_critic_in_unless_the_reading_found_it_invalid(run):
+    run.submit("start")
+    run.record_event("пакет_собран")
+    for number in (1, 2):
+        _launched(run, number=number)
+        run.record_received("идея:слепой", 1, "claude", number, b"x%d" % number, QUESTION)
+        if number == 1:
+            run.record_validation("идея:слепой", 1, "claude", number, False, "не json")
+    key = ("run-1", "идея:слепой", 1, "claude", 2)
+    assert run.resume_conditions()["budget_remains"] is True                      # the last answer may still be valid
+    assert run.resume_conditions([key])["budget_remains"] is False                # ... unless it was found invalid
+    assert run.resume_conditions([("run-1", "идея:слепой", 1, "claude", 9)])["budget_remains"] is True
+
+
+def test_bu13_the_cause_of_an_input_that_does_not_build_stops_the_continuation(run):
+    run.submit("start")
+    run.record_event("пакет_собран")
+    run.record_event("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"}, {"cause": S.CAUSE_INPUT_NOT_BUILT})
+    assert run.load().incomplete_cause == S.CAUSE_INPUT_NOT_BUILT
+    assert run.resume_conditions() == {"budget_remains": True, "input_can_progress": False}
+    refused = run.submit("resume", body={"reason": "ещё раз"})
+    assert refused.refusal == "НУЖНА_КОРРЕКЦИЯ_ВХОДА" and run.load().state == "неполный"
+    with pytest.raises(S.StateError):
+        run.record_event("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"}, {"cause": "выдумка"})
+
+
+def test_bu13_a_new_round_without_a_pinned_input_does_not_progress(run):
+    run.submit("start")
+    run.record_event("пакет_собран")
+    run.record_event("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"})
+    assert run.resume_conditions()["input_can_progress"] is True
+    run.start_round(2)
+    assert run.resume_conditions()["input_can_progress"] is False
+    assert run.submit("resume").refusal == "НУЖНА_КОРРЕКЦИЯ_ВХОДА"
+
+
+# --------------------------------------------------------------------------
+# БУ-11, hardening: the order bytes -> event, the size, the answers directory
+# --------------------------------------------------------------------------
+
+def _answers_dir(run):
+    return run.directory / ANSWERS
+
+
+def test_bu11_an_answer_status_is_never_set_without_a_receipt(run):
+    _launched(run)
+    for status in ("получена", "провалидирована", "зафиксирована"):
+        with pytest.raises(S.StateError, match="без квитанции"):
+            run.record_attempt("идея:слепой", 1, "claude", 1, status)
+    with pytest.raises(S.StateError):                                    # nor for an attempt that does not exist
+        run.record_attempt("идея:слепой", 1, "codex", 1, "получена")
+    assert run.load().attempts[("run-1", "идея:слепой", 1, "claude", 1)].status == "запущена"
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)           # positive control
+    assert run.record_attempt("идея:слепой", 1, "claude", 1, "провалидирована").status == "провалидирована"
+
+
+def _rewrite_last(run, mutate):
+    lines = run.journal_path.read_text(encoding="utf-8").splitlines()
+    lines[-1] = json.dumps(mutate(json.loads(lines[-1])), ensure_ascii=False, sort_keys=True)
+    run.journal_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_bu11_a_journal_entry_with_an_answer_and_another_status_is_corruption(run):
+    _launched(run)
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    _rewrite_last(run, lambda e: {**e, "status": "зафиксирована"})
+    with pytest.raises(S.StateError, match="не «получена»"):
+        S.RunStore(run.directory, TABLES).load()
+
+
+@pytest.mark.parametrize("damage", [
+    lambda e: {k: v for k, v in e.items() if k != "reason"},
+    lambda e: {**e, "reason": 5},
+    lambda e: {**e, "accepted": "да"},
+    lambda e: {k: v for k, v in e.items() if k != "question_hash"},
+    lambda e: {**e, "accepted": True, "reason": "не пусто"},
+])
+def test_bu11_a_damaged_validation_entry_is_a_state_error_not_a_key_error(run, damage):
+    _launched(run)
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    run.record_validation("идея:слепой", 1, "claude", 1, False, "причина")
+    _rewrite_last(run, damage)
+    with pytest.raises(S.StateError):
+        S.RunStore(run.directory, TABLES).load()
+
+
+@pytest.mark.parametrize("damage", [
+    lambda e: {**e, "pin": {k: v for k, v in e["pin"].items() if k != "hidden_hash"}},
+    lambda e: {**e, "pin": {**e["pin"], "round": 0}},
+    lambda e: {**e, "pin": {**e["pin"], "revision": ""}},
+    lambda e: {**e, "pin": {**e["pin"], "hidden_hash": 7}},
+    lambda e: {**e, "pin": "не словарь"},
+])
+def test_bu12_a_damaged_pin_entry_is_a_state_error_not_a_key_error(tmp_path, damage):
+    run = _started(_idea_run(tmp_path))
+    run.record_event("пакет_собран")
+    _pin(run)
+    _rewrite_last(run, damage)
+    with pytest.raises(S.StateError):
+        S.RunStore(run.directory, TABLES).load()
+
+
+def test_bu11_the_size_of_a_stored_answer_is_bounded_by_the_table(run):
+    limit = TABLES.vocabulary["ответ_критика"]["предел_байтов"]
+    assert limit >= TABLES.vocabulary["пакет"]["предел_раздела_байт"]
+    _launched(run)
+    with pytest.raises(S.StateError, match="предел"):
+        run.record_received("идея:слепой", 1, "claude", 1, b"x" * (limit + 2), QUESTION)
+    assert not _answers_dir(run).exists() and run.load().attempts[("run-1", "идея:слепой", 1, "claude", 1)].receipt is None
+    attempt = run.record_received("идея:слепой", 1, "claude", 1, b"x" * (limit + 1), QUESTION)     # the cut-off form is kept
+    assert attempt.receipt.length == limit + 1
+    assert run.read_answer("идея:слепой", 1, "claude", 1) == b"x" * (limit + 1)
+
+
+def test_bu11_only_length_plus_one_bytes_are_read_from_a_file_that_grew(run):
+    _launched(run)
+    receipt = run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION).receipt
+    (_answers_dir(run) / receipt.sha256).write_bytes(b"abc" + b"z" * 10_000_000)
+    with pytest.raises(T.ContractError, match="не совпал"):
+        run.read_answer("идея:слепой", 1, "claude", 1)
+
+
+def test_bu11_the_answers_directory_is_owner_only_and_tightened_if_it_was_not(run):
+    _launched(run)
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    assert (os.stat(_answers_dir(run)).st_mode & 0o777) == 0o700
+    receipt = run.load().attempts[("run-1", "идея:слепой", 1, "claude", 1)].receipt
+    assert (os.stat(_answers_dir(run) / receipt.sha256).st_mode & 0o077) == 0
+    os.chmod(_answers_dir(run), 0o755)
+    _launched(run, number=2)
+    run.record_received("идея:слепой", 1, "claude", 2, b"abd", QUESTION)
+    assert (os.stat(_answers_dir(run)).st_mode & 0o777) == 0o700
+
+
+def test_bu11_a_symlinked_answers_directory_is_refused_for_writing_and_reading_without_the_path(run, tmp_path):
+    _launched(run)
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    outside = tmp_path / "outside"
+    shutil.copytree(_answers_dir(run), outside)
+    shutil.rmtree(_answers_dir(run))
+    _answers_dir(run).symlink_to(outside)
+    _launched(run, number=2)
+    with pytest.raises(S.StateError) as error:
+        run.record_received("идея:слепой", 1, "claude", 2, b"abd", QUESTION)
+    assert str(tmp_path) not in str(error.value) and not list(outside.glob("*abd*"))
+    assert len(list(outside.iterdir())) == 1                                      # nothing was written through the link
+    with pytest.raises(T.ContractError) as error:
+        run.read_answer("идея:слепой", 1, "claude", 1)
+    assert str(tmp_path) not in str(error.value)
+
+
+@pytest.mark.parametrize("kind", ["симлинк", "каталог", "канал"])
+def test_bu11_a_link_a_directory_or_a_pipe_in_place_of_the_file_is_a_named_refusal_not_a_hang(run, tmp_path, kind):
+    _launched(run)
+    digest = hashlib.sha256(b"abc").hexdigest()
+    _answers_dir(run).mkdir(mode=0o700)
+    place = _answers_dir(run) / digest
+    if kind == "симлинк":
+        place.symlink_to(tmp_path / "nowhere")
+    elif kind == "каталог":
+        place.mkdir()
+    else:
+        os.mkfifo(place)
+    with pytest.raises(S.StateError) as error:
+        run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    assert str(tmp_path) not in str(error.value) and digest[:12] in str(error.value)
+    assert run.load().attempts[("run-1", "идея:слепой", 1, "claude", 1)].receipt is None
+    if kind == "канал":
+        with pytest.raises(T.ContractError):
+            S.RunStore(run.directory, TABLES).read_answer("идея:слепой", 1, "claude", 1)
+    place.unlink() if kind != "каталог" else place.rmdir()                          # positive control: the place cleared
+    assert run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION).status == "получена"
+
+
+def test_bu11_a_damaged_regular_file_under_the_digest_name_is_replaced(run):
+    _launched(run)
+    digest = hashlib.sha256(b"abc").hexdigest()
+    _answers_dir(run).mkdir(mode=0o700)
+    (_answers_dir(run) / digest).write_bytes("\x00 битый сирота".encode("utf-8"))
+    run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    assert (_answers_dir(run) / digest).read_bytes() == b"abc"
+
+
+def test_bu11_a_failed_rename_leaves_no_temp_file_and_the_leftovers_of_a_crash_are_swept(run, monkeypatch):
+    _launched(run)
+    _answers_dir(run).mkdir(mode=0o700)
+    (_answers_dir(run) / ".answer-прошлое-падение").write_bytes(b"obsolete")
+    real = os.replace
+    calls = []
+
+    def failing(src, dst, *args, **kwargs):
+        calls.append(kwargs)
+        raise OSError("диск")
+
+    monkeypatch.setattr(os, "replace", failing)
+    with pytest.raises(OSError):
+        run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION)
+    monkeypatch.setattr(os, "replace", real)
+    assert list(_answers_dir(run).iterdir()) == []                                   # the leftover swept, no new temp
+    assert calls and "src_dir_fd" in calls[0] and "dst_dir_fd" in calls[0]            # by descriptor, not by path
+    assert run.load().attempts[("run-1", "идея:слепой", 1, "claude", 1)].receipt is None
+    assert run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION).status == "получена"

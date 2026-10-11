@@ -751,9 +751,8 @@ def test_retry_counter_survives_cold_load(directory):
 
     again = Asker({("codex", "compare"): ["мусор"], ("claude", "compare"): [answer],
                    ("claude", "blind"): [], ("codex", "blind"): []})
-    result = stage(directory, again, saved_comparisons={"claude": json.dumps(comparison(
-        IDS, ALL_PASS, "cand_a"))}, new_id=None)
-    # claude не переспрашивается. Вызов 1 codex оборван до ответа: в бюджет повтора он не идёт
+    result = stage(directory, again, new_id=None)
+    # claude не переспрашивается: его сравнение берётся из журнала (БУ-14). Вызов 1 codex оборван до ответа: в бюджет повтора он не идёт
     # (ответа не было), поэтому codex получает ответ (2) и свой ровно один повтор (3)
     assert [c for c in again.calls if c[0] == "claude"] == []
     assert [c for c in again.calls if c[0] == "codex"] == [("codex", "compare", 2), ("codex", "compare", 3)]
@@ -903,26 +902,43 @@ def test_hostile_answer_gets_the_ordinary_retry(directory):
     assert result.outcome.reason == "подтверждён" and ask.count() == 6
 
 
-# 2 — сохранённые ответы проверяются
-@pytest.mark.parametrize("bad", ["мусор", {"variant": "x"}, None, json.dumps({"x": 1})])
-def test_saved_proposal_is_validated_and_breakage_is_ours(directory, bad):
-    ask = _blind_ask([cmp_answer(ALL_PASS, "cand_a")])
-    with pytest.raises(C.ContractError):
-        stage(directory, ask, saved_proposals={"claude": bad})
-    assert ask.count("compare") == 0
+# 2 — ответы, принятые журналом, перечитываются и проверяются заново (БУ-14; прежние saved_* убраны)
+def test_a_recorded_answer_judged_differently_now_is_our_breakage(directory):
+    _crash_in_compare_run(directory)
+    key = _compare_key(_state(directory), "claude")
+    _tamper(directory, lambda e: {**e, "accepted": False, "reason": "подделка"}
+            if e.get("kind") == "answer_checked" and tuple(e["key"]) == key else e)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="проверен в журнале иначе"):
+        stage(directory, ask)
+    assert ask.count() == 0 and _journal(directory) == before
 
 
-def test_saved_comparison_of_foreign_set_is_contract_error(directory):
-    foreign = comparison(["x1", "x2", "x3"], {"x1": "pass", "x2": "pass", "x3": "pass"}, "x1")
-    ask = _blind_ask([cmp_answer(ALL_PASS, "cand_a")])
-    with pytest.raises(C.ContractError):
-        stage(directory, ask, saved_comparisons={"claude": foreign})
+def test_a_recorded_answer_for_another_question_is_our_breakage(directory):
+    _crash_in_compare_run(directory)
+    key = _compare_key(_state(directory), "claude")
+    other = "f" * 64
+
+    def swap(entry):
+        if entry.get("kind") == "attempt" and tuple(entry["key"]) == key and "answer" in entry:
+            return {**entry, "answer": {**entry["answer"], "question_hash": other}}
+        if entry.get("kind") == "answer_checked" and tuple(entry["key"]) == key:
+            return {**entry, "question_hash": other}
+        return entry
+    _tamper(directory, swap)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="другой вопрос"):
+        stage(directory, ask)
+    assert ask.count() == 0 and _journal(directory) == before
 
 
-def test_valid_saved_proposal_is_used_without_a_call(directory):
-    ask = _blind_ask([cmp_answer(ALL_PASS, "cand_a")])
-    stage(directory, ask, saved_proposals={"claude": proposal(ONE, "сохр")})
-    assert ("claude", "blind", 1) not in ask.calls
+def test_a_valid_recorded_answer_is_used_without_a_call(directory):
+    _crash_in_compare_run(directory)                            # claude blind, codex blind and claude compare are in the journal
+    ask = _happy()
+    result = stage(directory, ask)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [c for c in ask.calls if c[0] == "claude"] == []
+    assert [c for c in ask.calls if c[0] == "codex"] == [("codex", "compare", 2)]
 
 
 # 3 — критерии в запросе сравнения
@@ -1181,10 +1197,11 @@ def test_reentry_on_finished_stage_is_contract_error_with_zero_calls(directory, 
     other = started(tmp_path / "inc", "run-inc")
     stage(other, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
     again = Asker({})
-    with pytest.raises(C.ContractError, match="возобновление — операция блока уточнений") as info:
+    before = _journal(other)
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ") as info:
         stage(other, again)
     assert "стадия завершена" not in str(info.value)          # неполный прогон не «завершён»
-    assert again.count() == 0
+    assert again.count() == 0 and _journal(other) == before
 
 
 # 16 — значения критика в исключениях обрезаны
@@ -1703,6 +1720,7 @@ def test_audit_h2_the_abort_limit_is_read_from_the_table(tmp_path):
 
 
 def test_audit_h2_a_valid_answer_without_its_bytes_is_an_explicit_contract_error(tmp_path):
+    """БУ-11: an answer the journal counted without its bytes (no receipt) is never taken on trust."""
     directory = _new_run(tmp_path / "run")
     ask = _Ask({("claude", "blind"): [_CARD_C], ("codex", "blind"): [_CARD_X],
                 ("claude", "compare"): [_ANSWERS["критик_1"]]})
@@ -1714,15 +1732,27 @@ def test_audit_h2_a_valid_answer_without_its_bytes_is_an_explicit_contract_error
 
     with pytest.raises(_Crash):
         _run(directory, dying, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
-    again = _Ask({("codex", "blind"): [_CARD_X]})
-    with pytest.raises(C.ContractError, match="байтов нет"):
-        _run(directory, again, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
-    assert again.count() == 0
+    # positive control: the bytes are in the journal now, so claude is not asked again
     saved = _Ask({("codex", "blind"): [_CARD_X], ("claude", "compare"): [_ANSWERS["критик_1"]],
                   ("codex", "compare"): [_ANSWERS["критик_2"]]})
-    result = _run(directory, saved, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"],
-                  saved_proposals={"claude": _CARD_C})                      # the caller's own copy is trusted and used
+    other = _new_run(tmp_path / "forged", "run-f")
+    state = _state(other)                                           # a "validated" attempt whose bytes were never stored:
+    path = Path(other) / S.JOURNAL                                  # the store refuses to write it, so the journal is forged
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for status in TABLES.vocabulary["попытка"]["состояния"]:
+        lines.append(json.dumps({"kind": "attempt", "key": [state.run_id, C.BLIND_STAGE, 1, "claude", 1],
+                                 "status": status, "at": "2026-10-11T00:00:00+00:00", "seq": len(lines) + 1}))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with _locked(other) as store:
+        with pytest.raises(S.StateError, match="без квитанции"):
+            store.record_attempt(C.BLIND_STAGE, 1, "codex", 1, "получена")      # the honest door is shut
+    again = _Ask({("codex", "blind"): [_CARD_X]})
+    with pytest.raises(C.ContractError, match="байтов в журнале нет"):
+        _run(other, again, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert again.count() == 0
+    result = _run(directory, saved, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
     assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ("claude", "blind", 2) not in saved.calls
+    assert [c for c in saved.calls if c[:2] == ("claude", "blind")] == []
 
 
 # -- M4: the second package is pinned in the journal -----------------------------------
@@ -1742,11 +1772,11 @@ def _crash_in_compare(tmp_path, name="run"):
 
 def test_audit_m4_the_hash_of_the_second_package_is_pinned_and_checked_on_resume(tmp_path):
     directory = _crash_in_compare(tmp_path)
-    pinned = [f for f in S.RunStore(directory, TABLES).load().flags if f.startswith(C.PACKAGE_FLAG)]
-    assert len(pinned) == 1 and len(pinned[0]) == len(C.PACKAGE_FLAG) + 64
+    pinned = [p for p in S.RunStore(directory, TABLES).load().pins if p.event == C.PIN_PACKAGE]
+    assert len(pinned) == 1 and len(pinned[0].content_hash) == 64 and len(pinned[0].hidden_hash) == 64
     ask, result = _resume(directory)                                    # positive control: the same inputs
     assert result.verdict == "РЕШЕНИЕ_АНТОНА"
-    assert [f for f in S.RunStore(directory, TABLES).load().flags if f.startswith(C.PACKAGE_FLAG)] == pinned
+    assert [p for p in S.RunStore(directory, TABLES).load().pins if p.event == C.PIN_PACKAGE] == pinned
 
 
 @pytest.mark.parametrize("change", ["section", "criteria", "registries", "withheld"])
@@ -1775,10 +1805,8 @@ def test_audit_m4_a_changed_input_on_resume_is_a_contract_error_with_no_call(tmp
 
 def test_audit_m4_a_stale_package_pin_is_a_contract_error_before_any_call(tmp_path):
     directory = _crash_in_compare(tmp_path)
-    with _locked(directory) as store:
-        for flag in [f for f in store.load().flags if f.startswith(C.PACKAGE_FLAG)]:
-            store.set_flag(flag, False)
-        store.set_flag(C.PACKAGE_FLAG + "0" * 64)
+    _tamper(directory, lambda e: {**e, "pin": {**e["pin"], "content_hash": "0" * 64}}
+            if e.get("event") == C.PIN_PACKAGE else e)
     ask = _Ask({})
     with pytest.raises(C.ContractError, match="второй пакет"):
         _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
@@ -1844,7 +1872,7 @@ def _happy(over=None):
 
 def _journal_clean(directory):
     state = S.RunStore(directory, TABLES).load()
-    return not state.idea_candidates and not [f for f in state.flags if f.startswith(C.PACKAGE_FLAG)]
+    return not state.idea_candidates and not [p for p in state.pins if p.event == C.PIN_PACKAGE]
 
 
 # -- 1: the point of no return needs the whole second package -------------------------------
@@ -1983,10 +2011,10 @@ def test_r2_an_incomplete_result_keeps_the_valid_comparison_and_names_the_reason
 
 def test_r2_reentry_on_an_incomplete_run_does_not_say_finished(directory):
     stage(directory, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
-    with pytest.raises(C.ContractError) as info:
+    with pytest.raises(C.ResumeImpossible) as info:
         stage(directory, Asker({}))
-    assert "возобновление" in str(info.value) and "завершена" not in str(info.value)
-    assert "clarification block" in (C.run_idea_stage.__doc__ or "")
+    assert info.value.code == "ПРОДОЛЖИТЬ_НЕЧЕМ" and "завершена" not in str(info.value)
+    assert "ResumeImpossible" in (C.run_idea_stage.__doc__ or "")
 
 
 # -- 7: the shape of the caller's inputs is OUR error, the content is the author's -------------------
@@ -2037,12 +2065,10 @@ def test_r2_a_changed_withheld_on_resume_is_refused_and_the_run_stays_fit_for_th
     with pytest.raises(Boom):
         stage(directory, _happy({("codex", "compare"): [boom]}))
     ask = _happy()
-    saved = {"claude": comparison(IDS, ALL_PASS, "cand_a")}
     with pytest.raises(C.ContractError, match="вход стадии"):
-        stage(directory, ask, withheld={"автор": "Колобок", "второй_критик": "Бибигон"},
-              saved_comparisons=saved)
+        stage(directory, ask, withheld={"автор": "Колобок", "второй_критик": "Бибигон"})
     assert ask.count() == 0 and S.RunStore(directory, TABLES).load().state == "идёт_круг"
-    result = stage(directory, _happy(), saved_comparisons=saved)
+    result = stage(directory, _happy())
     assert result.verdict == "РЕШЕНИЕ_АНТОНА"
 
 
@@ -2253,27 +2279,51 @@ def _journal(directory):
     return (Path(directory) / S.JOURNAL).read_bytes()
 
 
-@pytest.mark.parametrize("name,kw", [
-    ("список вместо словаря", {"saved_proposals": [("claude", "x")]}),
-    ("список сравнений", {"saved_comparisons": ["x"]}),
-    ("строка", {"saved_proposals": "claude"}),
-    ("чужой ключ", {"saved_proposals": {"третий": json.dumps(proposal(ONE, "с"))}}),
-    ("чужой ключ сравнений", {"saved_comparisons": {"третий": "{}"}}),
-    ("ключ не строка", {"saved_proposals": {1: "{}"}}),
-    ("значение число", {"saved_proposals": {"claude": 42}}),
-    ("значение None", {"saved_comparisons": {"codex": None}}),
-])
-def test_critic1_saved_answers_of_a_wrong_shape_are_a_contract_error_before_any_write(directory, name, kw):
+class _Boom(Exception):
+    pass
+
+
+def _boom(_request):
+    raise _Boom
+
+
+def _state(directory):
+    return S.RunStore(directory, TABLES).load()
+
+
+def _compare_key(state, critic, number=1):
+    return (state.run_id, C.COMPARE_STAGE, 1, critic, number)
+
+
+def _tamper(directory, mutate):
+    """Rewrite the journal entry by entry through `mutate(entry) -> entry` (same line format)."""
+    path = Path(directory) / S.JOURNAL
+    lines = [json.dumps(mutate(json.loads(line)), ensure_ascii=False, sort_keys=True)
+             for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _crash_in_compare_run(directory):
+    """Both blind answers and claude's comparison are in the journal; codex's comparison call dies."""
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("codex", "compare"): [_boom]}))
+
+
+def _answer_file(directory, critic, stage_name, number=1):
+    state = _state(directory)
+    receipt = state.attempts[(state.run_id, stage_name, 1, critic, number)].receipt
+    return Path(directory) / TABLES.vocabulary["ответ_критика"]["каталог"] / receipt.sha256
+
+
+@pytest.mark.parametrize("name", ["saved_proposals", "saved_comparisons"])
+def test_critic1_saved_answers_of_a_wrong_shape_are_a_contract_error_before_any_write(directory, name):
+    """БУ-14: no parameter carries an answer into the stage (it was `saved_*`): handing one in is a TypeError
+    with the journal untouched. The name of this test is pinned by a finding; what it stands for changed."""
     before, ask = _journal(directory), _happy()
-    with pytest.raises(C.ContractError):
-        stage(directory, ask, **kw)
+    with pytest.raises(TypeError):
+        stage(directory, ask, **{name: {"claude": json.dumps(proposal(ONE, "с"))}})
     assert _journal(directory) == before and ask.count() == 0
-
-
-def test_critic1_saved_answers_positive_control(directory):
-    ask = _happy()
-    result = stage(directory, ask, saved_proposals={"claude": json.dumps(proposal(ONE, "с"))}, saved_comparisons=None)
-    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ("claude", "blind", 1) not in ask.calls
+    assert stage(directory, ask).verdict == "РЕШЕНИЕ_АНТОНА"                # positive control
 
 
 @pytest.mark.parametrize("foreign", ["план", "ревью"])
@@ -2302,31 +2352,22 @@ def _refused_with_no_trace(directory, kw):
     assert _journal(directory) == before and ask.count() == 0
 
 
-@pytest.mark.parametrize("name,raw", [
-    ("не json", "{не json"),
-    ("чужие критерии", proposal(_crit("К9"), "с")),
-    ("след скрытого", {**proposal(ONE, "с"), "variant": "про Лунтика рассказ"}),
-])
-def test_critic1_saved_proposals_of_a_broken_content_are_refused_before_the_first_write(directory, name, raw):
-    _refused_with_no_trace(directory, {"saved_proposals": {"claude": raw}})
-    ask = _happy()                                                       # positive control: the good one is used
-    assert stage(directory, ask, saved_proposals={"claude": proposal(ONE, "с")}).verdict == "РЕШЕНИЕ_АНТОНА"
-
-
-def test_critic1_saved_comparisons_on_a_fresh_run_are_a_contract_error_with_no_write(directory):
-    _refused_with_no_trace(directory, {"saved_comparisons": {"claude": comparison(IDS, ALL_PASS, "cand_a")}})
-
-
-def test_critic1_broken_saved_comparisons_on_a_resumed_run_are_refused_with_no_write(tmp_path):
-    directory = _crash_in_compare(tmp_path)
-    for raw in ("{не json", {"assessments": []}):
-        before, ask = _journal(directory), _Ask({})
-        with pytest.raises(C.ContractError):
-            _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"],
-                 saved_comparisons={"claude": raw})
-        assert _journal(directory) == before and ask.count() == 0
-    ask, result = _resume(directory)                                     # positive control
-    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+@pytest.mark.parametrize("name", ["подменён другим ответом", "обрезан", "удалён"])
+def test_critic1_a_damaged_answer_file_is_refused_before_the_first_write(directory, name):
+    """БУ-11/14: the bytes behind a receipt are checked against its hash and length; nothing else stands in."""
+    _crash_in_compare_run(directory)
+    blob = _answer_file(directory, "claude", C.COMPARE_STAGE)
+    original = blob.read_bytes()
+    if name == "удалён":
+        blob.unlink()
+    else:
+        blob.write_bytes(json.dumps(proposal(ONE, "чужой")).encode() if name.startswith("подменён") else original[:-3])
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="файл ответа|файла ответа"):
+        stage(directory, ask)
+    assert _journal(directory) == before and ask.count() == 0
+    blob.write_bytes(original)                                          # positive control: the file back, the run goes on
+    assert stage(directory, _happy()).verdict == "РЕШЕНИЕ_АНТОНА"
 
 
 def test_critic1_the_input_print_is_written_before_the_event_so_a_crash_between_them_admits_no_other_input(directory):
@@ -2347,7 +2388,7 @@ def test_critic1_the_input_print_is_written_before_the_event_so_a_crash_between_
             C.run_idea_stage(Failing(), ask=_happy(), criteria=_crit("BASE_A"),
                              author_card=proposal(_crit("BASE_A"), "автор"), sections=SECTIONS, withheld=WITHHELD,
                              new_id=fixed_ids(), shuffle=lambda o: None, tables=TABLES)
-    assert any(f.startswith(C.INPUT_FLAG) for f in S.RunStore(directory, TABLES).load().flags)
+    assert [p.event for p in S.RunStore(directory, TABLES).load().pins] == [C.PIN_INPUT]
     ask = _answering_from_the_package()
     with pytest.raises(C.ContractError, match="вход стадии"):
         stage(directory, ask, criteria=_crit("BASE_B"), author_card=proposal(_crit("BASE_B"), "автор"))
@@ -2387,8 +2428,443 @@ def test_critic1_not_started_incomplete_and_finished_runs_are_refused_with_the_j
     stage(incomplete, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
     finished = started(tmp_path / "fin", "run-fin")
     stage(finished, _happy())
-    for directory, text in ((created, "не запущен"), (incomplete, "неполный прогон"), (finished, "стадия завершена")):
+    for directory, text in ((created, "не запущен"), (finished, "стадия завершена")):
         before, ask = _journal(directory), _happy()
         with pytest.raises(C.ContractError, match=text):
             stage(directory, ask)
         assert _journal(directory) == before and ask.count() == 0
+    before, ask = _journal(incomplete), _happy()                          # БУ-13: an exhausted run is a named outcome
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ"):
+        stage(incomplete, ask)
+    assert _journal(incomplete) == before and ask.count() == 0
+
+
+# ==========================================================================
+# БУ, часть 1: байты ответов, закрепление, продолжение (БУ-11 … БУ-14)
+# ==========================================================================
+
+def _events(directory, name):
+    return [e for e in (json.loads(line) for line in _journal(directory).decode("utf-8").splitlines() if line.strip())
+            if e.get("event") == name]
+
+
+def _spy(inner, log):
+    """`ask` that remembers what it handed back, per (critic, phase, attempt)."""
+    def ask(critic, request):
+        raw = inner(critic, request)
+        log[(critic, request["phase"], request["attempt"])] = raw
+        return raw
+    return ask
+
+
+def _supervisor_marks_incomplete(directory):
+    """Whoever supervises a broken run closes the round as incomplete (a legal `вердикт` of the table)."""
+    with locked(directory) as store:
+        return store.record_event("вердикт", {"verdict": C.INCOMPLETE_VERDICT})
+
+
+# -- БУ-11: the bytes and the result of the check stay with the attempt -------------------------------------
+
+def test_bu11_the_exact_bytes_of_every_answer_and_the_result_of_its_check_are_kept(directory):
+    log = {}
+    ask = Asker({("claude", "blind"): ["мусор не json", good_blind("c")], ("codex", "blind"): [good_blind("x")],
+                 ("claude", "compare"): [_from_request(ALL_PASS, "cand_a")],
+                 ("codex", "compare"): [_from_request(ALL_PASS, "cand_a")]})
+    assert stage(directory, _spy(ask, log)).verdict == "РЕШЕНИЕ_АНТОНА"
+    cold = _state(directory)                                           # a fresh store: the restart
+    stages = {"blind": C.BLIND_STAGE, "compare": C.COMPARE_STAGE}
+    store = S.RunStore(directory, TABLES)
+    for (critic, phase, number), raw in log.items():
+        attempt = cold.attempts[(cold.run_id, stages[phase], 1, critic, number)]
+        assert store.read_answer(stages[phase], 1, critic, number) == raw.encode("utf-8")
+        assert attempt.receipt.length == len(raw.encode("utf-8")) and len(attempt.receipt.question_hash) == 64
+        assert attempt.validation.question_hash == attempt.receipt.question_hash
+    rejected = cold.attempts[(cold.run_id, C.BLIND_STAGE, 1, "claude", 1)]
+    accepted = cold.attempts[(cold.run_id, C.BLIND_STAGE, 1, "claude", 2)]
+    assert store.read_answer(C.BLIND_STAGE, 1, "claude", 1) == "мусор не json".encode()    # the rejected one too
+    assert rejected.validation.accepted is False and rejected.validation.reason
+    assert accepted.validation.accepted is True and accepted.validation.reason == ""
+    # one question for both tries of one critic; another critic is another question
+    assert rejected.receipt.question_hash == accepted.receipt.question_hash
+    assert rejected.receipt.question_hash != cold.attempts[(cold.run_id, C.BLIND_STAGE, 1, "codex", 1)].receipt.question_hash
+    assert "мусор не json" not in _journal(directory).decode("utf-8")          # the bytes are not in the journal itself
+
+
+def test_bu11_a_failure_between_the_file_and_the_journal_entry_leaves_the_attempt_uncounted(directory, monkeypatch):
+    real = S.RunStore._append
+
+    def failing(self, entry):
+        if "answer" in entry:
+            raise _Boom
+        return real(self, entry)
+
+    monkeypatch.setattr(S.RunStore, "_append", failing)
+    ask = _happy()
+    with pytest.raises(_Boom):
+        stage(directory, ask)
+    monkeypatch.undo()
+    state = _state(directory)
+    key = (state.run_id, C.BLIND_STAGE, 1, "claude", 1)
+    assert state.attempts[key].status == "запущена" and state.attempts[key].receipt is None
+    answers = Path(directory) / TABLES.vocabulary["ответ_критика"]["каталог"]
+    assert len(list(answers.iterdir())) == 1                          # the bytes are on the disk, the journal does not know
+    answered, aborted = C._split_attempts(state, TABLES, C.BLIND_STAGE, 1, "claude")
+    assert answered == [] and len(aborted) == 1                        # the budget is not spent
+    again = _happy()                                                   # positive control: without the failure it is counted
+    assert stage(directory, again).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert _state(directory).attempts[key].possible_duplicate and ("claude", "blind", 2) in again.calls
+
+
+def test_bu11_a_failure_writing_the_file_leaves_no_trace_of_a_received_answer(directory, monkeypatch):
+    def failing(self, raw):
+        raise _Boom
+
+    monkeypatch.setattr(S.RunStore, "_store_blob", failing)
+    with pytest.raises(_Boom):
+        stage(directory, _happy())
+    monkeypatch.undo()
+    state = _state(directory)
+    assert all(a.receipt is None and a.status == "запущена" for a in state.attempts.values())
+    assert not (Path(directory) / TABLES.vocabulary["ответ_критика"]["каталог"]).exists()
+
+
+def test_bu11_a_reason_of_a_rejection_survives_a_restart_and_travels_into_the_retry(directory):
+    ask = _happy({("claude", "blind"): ["мусор", _boom]})
+    with pytest.raises(_Boom):
+        stage(directory, ask)
+    state = _state(directory)
+    reason = state.attempts[(state.run_id, C.BLIND_STAGE, 1, "claude", 1)].validation.reason
+    assert reason and len(reason) <= C.REASON_CLIP + 1
+    seen = []
+    again = _happy({("claude", "blind"): [lambda request: seen.append(request["previous_rejection"]) or good_blind("c")(request)]})
+    assert stage(directory, again).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert seen == [reason]                                            # the retry is asked with the recorded reason
+
+
+def test_bu11_the_reason_limit_comes_from_the_table():
+    assert C.REASON_CLIP == REAL.vocabulary["ответ_критика"]["предел_причины"]
+
+
+# -- БУ-12: the pin is a journal event --------------------------------------------------------------------
+
+def test_bu12_the_input_and_the_package_are_pinned_before_the_first_comparison_call(directory):
+    seen_at_call = []
+
+    def probe(request):
+        seen_at_call.append([e["event"] for e in map(json.loads, _journal(directory).decode().splitlines())
+                             if e.get("kind") == "event"])
+        raise _Boom
+
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "compare"): [probe]}))
+    assert seen_at_call[0].index("вход_закреплён") < seen_at_call[0].index("пакет_собран") < seen_at_call[0].index("пакет_закреплён")
+    state = _state(directory)
+    pins = {p.event: p for p in state.pins}
+    assert set(pins) == {C.PIN_INPUT, C.PIN_PACKAGE} and all(p.round_number == 1 for p in pins.values())
+    assert len(pins[C.PIN_PACKAGE].content_hash) == 64 and pins[C.PIN_PACKAGE].hidden_hash == C.digest(
+        C.canonical_json(WITHHELD))
+    assert pins[C.PIN_PACKAGE].revision == pins[C.PIN_INPUT].revision
+    assert not [f for f in state.flags if f.startswith(("пакет_сравнения:", "вход_стадии_идея:"))]
+
+
+def test_bu12_a_repeated_pin_of_the_same_package_makes_no_second_event(directory):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "compare"): [_boom]}))
+    first = [_events(directory, C.PIN_INPUT), _events(directory, C.PIN_PACKAGE)]
+    assert [len(x) for x in first] == [1, 1]
+    assert stage(directory, _happy()).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [_events(directory, C.PIN_INPUT), _events(directory, C.PIN_PACKAGE)] == first
+
+
+def test_bu12_another_package_in_the_same_round_is_refused_and_the_old_pin_is_not_rewritten(directory):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "compare"): [_boom]}))
+    before = _journal(directory)
+    ask = _happy()
+    with pytest.raises(C.ContractError, match="вход стадии"):
+        stage(directory, ask, sections={**SECTIONS, "задача": "совсем другая задача"})
+    assert ask.count() == 0 and _journal(directory) == before
+    state = _state(directory)
+    with locked(directory) as store:                                    # the package pin itself, asked for another package
+        with pytest.raises(S.Refusal) as refused:
+            store.pin(C.PIN_PACKAGE, round_number=1, revision=state.pins[0].revision, content_hash="1" * 64,
+                      hidden_hash=state.pins[1].hidden_hash)
+    assert refused.value.code == "КОНФЛИКТ_ВХОДА" and _journal(directory) == before
+
+
+# -- БУ-13: an incomplete run goes on in the same run and round -----------------------------------------------
+
+def test_bu13_a_broken_run_goes_on_with_its_cards_pins_answers_and_spent_attempts(directory):
+    _crash_in_compare_run(directory)
+    marked = _supervisor_marks_incomplete(directory)
+    assert marked.state == "неполный"
+    before = _state(directory)
+    ask = _happy()
+    result = stage(directory, ask)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and result.run_state == "ждёт_Антона"
+    after = _state(directory)
+    assert after.run_id == before.run_id and after.round_number == before.round_number
+    assert after.idea_candidates == before.idea_candidates and after.pins == before.pins    # the same cards, the same pins
+    assert [c for c in ask.calls if c[0] == "claude"] == []                                  # valid answers are not asked again
+    assert ask.calls == [("codex", "compare", 2)]                                           # codex's cut-off call stays spent
+    assert after.attempts[_compare_key(after, "codex", 1)].possible_duplicate
+    names = [(e.get("event") or e.get("operation"), (e.get("conditions") or {}))
+             for e in map(json.loads, _journal(directory).decode().splitlines())
+             if e.get("kind") in ("event", "operation")][-3:]
+    assert names == [("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"}), ("resume", {"budget_remains": True, "input_can_progress": True}),
+                     ("вердикт", {"verdict": "РЕШЕНИЕ_АНТОНА"})]
+
+
+def test_bu13_spent_attempts_are_not_reset_and_the_rejection_is_remembered(directory):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "blind"): ["мусор", _boom]}))
+    _supervisor_marks_incomplete(directory)
+    seen = []
+
+    def garbage_again(request):
+        seen.append(request["previous_rejection"])
+        return "опять мусор"
+
+    ask = _happy({("claude", "blind"): [garbage_again]})
+    result = stage(directory, ask)
+    # one answer spent (rejected), one call cut off: the third call is the last retry, and it is garbage again
+    assert [c for c in ask.calls if c[0] == "claude"] == [("claude", "blind", 3)]
+    assert seen and seen[0]
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный")
+    state = _state(directory)
+    assert len([k for k in state.attempts if k[3] == "claude" and k[1] == C.BLIND_STAGE]) == 3
+    again = _happy()
+    with pytest.raises(C.ResumeImpossible):                              # the spent attempts really are spent
+        stage(directory, again)
+    assert again.count() == 0
+
+
+def test_bu13_an_exhausted_budget_is_a_named_outcome_and_changes_nothing(directory):
+    stage(directory, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ResumeImpossible) as info:
+        stage(directory, ask)
+    assert info.value.code == "ПРОДОЛЖИТЬ_НЕЧЕМ" and info.value.code in REAL.vocabulary["коды_отказа"]
+    assert ask.count() == 0 and _journal(directory) == before and _state(directory).state == "неполный"
+
+
+def test_bu13_calls_cut_off_up_to_the_limit_leave_nothing_to_continue_with(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    for _ in range(C.abort_limit(TABLES)):
+        with pytest.raises(_Boom):
+            stage(directory, _happy({("claude", "blind"): [_boom]}))
+    assert stage(directory, _happy()).run_state == "неполный"            # the loop gives up on claude
+    before = _journal(directory)
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ"):
+        stage(directory, _happy())
+    assert _journal(directory) == before
+
+
+def test_bu13_a_substituted_input_is_refused_before_any_write_or_call_and_the_right_one_goes_on(directory):
+    _crash_in_compare_run(directory)
+    _supervisor_marks_incomplete(directory)
+    before, ask = _journal(directory), _happy()
+    for change in ({"withheld": {"автор": "Колобок", "второй_критик": "Бибигон"}},
+                   {"sections": {**SECTIONS, "задача": "другая задача"}},
+                   {"author_card": proposal(ONE, "другой автор")},
+                   {"criteria": [{"id": "К1", "текст": "иначе", "обязательный": True}]}):
+        with pytest.raises(C.ContractError, match="вход стадии"):
+            stage(directory, ask, **change)
+        assert ask.count() == 0 and _journal(directory) == before
+    assert stage(directory, ask).verdict == "РЕШЕНИЕ_АНТОНА"              # positive control
+
+
+def test_bu13_continuing_is_a_row_of_the_table_not_a_branch_of_the_code():
+    refused = REAL.decide("неполный", "resume", {"budget_remains": False, "input_can_progress": True})
+    allowed = REAL.decide("неполный", "resume", {"budget_remains": True, "input_can_progress": True})
+    assert (allowed.to, allowed.refusal) == ("идёт_круг", None)
+    assert (refused.to, refused.refusal) == ("неполный", "ПРОДОЛЖИТЬ_НЕЧЕМ")
+
+
+# -- БУ-14: only what the journal received is accepted ------------------------------------------------------------
+
+def test_bu14_a_receipt_copied_to_another_critics_attempt_is_not_accepted(directory):
+    _crash_in_compare_run(directory)
+    state = _state(directory)
+    claude, codex = _compare_key(state, "claude"), _compare_key(state, "codex")
+    receipt = next(e["answer"] for e in map(json.loads, _journal(directory).decode().splitlines())
+                   if e.get("kind") == "attempt" and tuple(e["key"]) == claude and "answer" in e)
+    _tamper(directory, lambda e: {**e, "status": "получена", "answer": receipt}
+            if e.get("kind") == "attempt" and tuple(e["key"]) == codex and e["status"] == "запущена" else e)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="другой вопрос"):
+        stage(directory, ask)                                              # the question names the critic
+    assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_bu14_a_receipt_pointing_at_another_valid_answer_is_not_accepted(directory):
+    _crash_in_compare_run(directory)
+    state = _state(directory)
+    key = _compare_key(state, "claude")
+    other = _answer_file(directory, "claude", C.BLIND_STAGE).name         # claude's own blind card: a real, stored answer
+    blob = (Path(directory) / TABLES.vocabulary["ответ_критика"]["каталог"] / other).read_bytes()
+
+    def swap(entry):
+        if entry.get("kind") == "attempt" and tuple(entry["key"]) == key and "answer" in entry:
+            return {**entry, "answer": {**entry["answer"], "sha256": other, "length": len(blob)}}
+        return entry
+    _tamper(directory, swap)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="проверен в журнале иначе"):
+        stage(directory, ask)                                              # the card is not a comparison of this set
+    assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_bu14_the_stage_has_no_door_for_a_caller_supplied_answer_or_hash():
+    import inspect
+    names = set(inspect.signature(C.run_idea_stage).parameters)
+    assert not {n for n in names if "saved" in n or "answer" in n or "hash" in n}
+    assert "saved_proposals" not in (C.run_idea_stage.__doc__ or "").split("Errors:")[0]
+
+
+# -- БУ-13 доработка: условия считает журнал, продолжение должно вести вперёд ----------------------------------
+
+def _gave_up_on_claude_blind(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    for _ in range(C.abort_limit(TABLES)):
+        with pytest.raises(_Boom):
+            stage(directory, _happy({("claude", "blind"): [_boom]}))
+    assert stage(directory, _happy()).run_state == "неполный"
+    return directory
+
+
+def test_bu13_a_forged_condition_on_the_exhausted_run_is_refused_and_changes_nothing(directory):
+    stage(directory, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
+    before = _journal(directory)
+    with locked(directory) as store:
+        for forged in ({"budget_remains": True}, {"budget_remains": True, "input_can_progress": True}):
+            with pytest.raises(S.StateError):
+                store.submit("resume", forged, body={"reason": "обход"})
+    assert _journal(directory) == before and _state(directory).state == "неполный"
+    with locked(directory) as store:                                  # honest: the journal's count says "nothing to go on with"
+        refused = store.submit("resume", body={"reason": "честно"})
+        again = store.submit("resume", body={"reason": "честно"})
+    assert refused.refusal == "ПРОДОЛЖИТЬ_НЕЧЕМ" and again == refused         # one position, one operation
+    assert _state(directory).state == "неполный"
+    assert len([e for e in map(json.loads, _journal(directory).decode().splitlines())
+                if e.get("operation") == "resume"]) == 1
+
+
+def _two_garbage_the_second_unjudged(directory, second, monkeypatch):
+    """claude's blind answers: the first judged invalid, the second received but never judged (the process died)."""
+    real = S.RunStore.record_validation
+    calls = {"n": 0}
+
+    def dying(self, *args, **kwargs):
+        calls["n"] += args[2] == "claude"                          # (stage, round, critic, attempt, ...)
+        if calls["n"] == 2:
+            raise _Boom
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(S.RunStore, "record_validation", dying)
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "blind"): ["мусор", second]}))
+    monkeypatch.undo()
+    _supervisor_marks_incomplete(directory)
+
+
+def test_bu13_the_last_received_but_unjudged_answer_counts_only_if_it_is_valid(tmp_path, monkeypatch):
+    bad = _new_run(tmp_path / "bad")
+    _two_garbage_the_second_unjudged(bad, "опять мусор", monkeypatch)
+    before, ask = _journal(bad), _happy()
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ"):          # it is invalid, the retries are used up
+        stage(bad, ask)
+    assert ask.count() == 0 and _journal(bad) == before
+    good = _new_run(tmp_path / "good")                                          # positive control: the same, but valid
+    _two_garbage_the_second_unjudged(good, good_blind("c"), monkeypatch)
+    ask = _happy()
+    assert stage(good, ask).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [c for c in ask.calls if c[:2] == ("claude", "blind")] == []         # judged from the journal, not asked again
+
+
+def test_bu13_a_run_that_cannot_build_its_input_does_not_resume_forever(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    texts = [X.canonical_json(C.normalize_card(_edit(_AUTHOR, variant="значение ≥ 5"))),
+             X.canonical_json(C.normalize_card(_CARD_C)), X.canonical_json(C.normalize_card(_CARD_X))]
+    with _locked(directory) as store:
+        store.assign_idea_candidates([S.IdeaCandidate(f"cand_{i}", src, text)
+                                      for i, (src, text) in enumerate(zip(("автор", "claude", "codex"), texts))])
+    first = _run(directory, _Ask({}), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert first.run_state == "неполный" and _state(directory).incomplete_cause == S.CAUSE_INPUT_NOT_BUILT
+    before = _journal(directory)
+    for _ in range(2):                                                          # however many times it is entered
+        ask = _Ask({})
+        with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА"):
+            _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+        assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_bu13_a_package_too_big_for_the_set_is_the_same_named_outcome(tmp_path):
+    small = dict(REAL.vocabulary["пакет"], предел_пакета_байт=2400)
+    tables = _table_patch(("vocabulary", "пакет"), small)
+    pad = "п" * 120
+    directory = started(tmp_path / "big", "run-big")
+    options = dict(tables=tables, author_card={**proposal(ONE, "а"), "variant": pad})
+    result = stage(directory, Asker({("claude", "blind"): [good_blind_with(pad)], ("codex", "blind"): [good_blind_with(pad)]}),
+                   **options)
+    assert result.run_state == "неполный" and "превышение_размера" in result.incomplete_reason
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА"):
+        stage(directory, ask, **options)
+    assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_bu13_a_new_round_of_an_incomplete_run_without_a_changed_input_is_a_named_refusal_before_any_write(directory):
+    _crash_in_compare_run(directory)
+    _supervisor_marks_incomplete(directory)
+    with locked(directory) as store:
+        store.start_round(2)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА") as info:
+        stage(directory, ask)
+    assert "коррекция" in str(info.value) and ask.count() == 0 and _journal(directory) == before
+    assert len([p for p in _state(directory).pins if p.event == C.PIN_INPUT]) == 1      # the spent budget was not renewed
+
+
+def test_bu13_an_incomplete_run_in_the_same_round_returns_its_pin_without_a_write_before_the_resume(directory):
+    _crash_in_compare_run(directory)
+    _supervisor_marks_incomplete(directory)
+    before_pins = _state(directory).pins
+    ask = _happy()
+    assert stage(directory, ask).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert _state(directory).pins == before_pins
+
+
+# -- БУ-11 доработка: размер ответа, причина из журнала -----------------------------------------------------------
+
+def test_bu11_an_over_long_answer_is_cut_to_the_limit_plus_one_and_refused_by_its_length(directory):
+    limit = TABLES.vocabulary["ответ_критика"]["предел_байтов"]
+    huge = "{" + " " * (limit * 3)
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "blind"): [huge, _boom]}))
+    state = _state(directory)
+    attempt = state.attempts[(state.run_id, C.BLIND_STAGE, 1, "claude", 1)]
+    assert attempt.receipt.length == limit + 1 and attempt.validation.accepted is False
+    assert "длиннее" in attempt.validation.reason
+    assert len(_answer_file(directory, "claude", C.BLIND_STAGE).read_bytes()) == limit + 1
+    ok = _happy()                                                          # positive control: the budget goes on as for any bad answer
+    assert stage(directory, ok).verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+def test_bu11_the_reason_that_travels_on_is_the_recorded_one_and_a_divergence_is_our_breakage(directory):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "blind"): ["мусор", _boom]}))
+    state = _state(directory)
+    key = (state.run_id, C.BLIND_STAGE, 1, "claude", 1)
+    recorded = state.attempts[key].validation.reason
+    _tamper(directory, lambda e: {**e, "reason": "записано иначе"}
+            if e.get("kind") == "answer_checked" and tuple(e["key"]) == key else e)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="расходится с записанной"):
+        stage(directory, ask)
+    assert ask.count() == 0 and _journal(directory) == before
+    _tamper(directory, lambda e: {**e, "reason": recorded}
+            if e.get("kind") == "answer_checked" and tuple(e["key"]) == key else e)
+    seen = []
+    again = _happy({("claude", "blind"): [lambda request: seen.append(request["previous_rejection"]) or good_blind("c")(request)]})
+    assert stage(directory, again).verdict == "РЕШЕНИЕ_АНТОНА" and seen == [recorded]

@@ -3192,7 +3192,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert ISSUES["допустимые_решения"] == {'блокер_правкой_круги_исчерпаны': ['принять_риск', 'остановить', 'запросить_ещё_правку'], 'блокер_сменой_решения': ['сменить_решение', 'принять_риск', 'остановить'], 'блокер_только_сменой_цели': ['изменить_цель', 'принять_риск', 'остановить'], 'неизвестное_высокой_существенности': ['принять_риск', 'запросить_ещё_правку', 'остановить']}, (
         "допустимое решение по типу замечания убрано — Антон лишился варианта")
     assert VOCAB["состояния_блока"] == {'рабочие': ['идёт', 'переоткрыт', 'неполный'], 'терминальные': ['сделано', 'объединён_с']}
-    assert {key: VOCAB["коды_условий"][key] for key in VOCAB["коды_условий"]} == {'verdict': ['ОДОБРЕНО', 'НУЖНЫ_ПРАВКИ', 'РЕШЕНИЕ_АНТОНА', 'НЕПОЛНЫЙ_ПРОГОН'], 'decision': ['принять_риск', 'остановить', 'сменить_решение', 'изменить_цель', 'запросить_ещё_правку'], 'framing_decision': ['подтвердить_постановку', 'изменить_цель', 'сменить_решение', 'остановить'], 'budget_allows_round': [True, False], 'budget_fits_quorum': [True, False], 'change_index': ['первая', 'вторая'], 'round_running': [True, False], 'run_finished': [True, False], 'all_verdict_blocking_resolved': [True, False]}
+    assert {key: VOCAB["коды_условий"][key] for key in VOCAB["коды_условий"]} == {'verdict': ['ОДОБРЕНО', 'НУЖНЫ_ПРАВКИ', 'РЕШЕНИЕ_АНТОНА', 'НЕПОЛНЫЙ_ПРОГОН'], 'decision': ['принять_риск', 'остановить', 'сменить_решение', 'изменить_цель', 'запросить_ещё_правку'], 'framing_decision': ['подтвердить_постановку', 'изменить_цель', 'сменить_решение', 'остановить'], 'budget_allows_round': [True, False], 'budget_fits_quorum': [True, False], 'change_index': ['первая', 'вторая'], 'round_running': [True, False], 'run_finished': [True, False], 'all_verdict_blocking_resolved': [True, False], 'budget_remains': [True, False], 'input_can_progress': [True, False]}
     assert STAGES["слепой_вопрос"]["прячем"] == ['предложенное_решение', 'автор', 'второй_критик'], (
         "из слепого вопроса убрано то, что прячется от критика")
     assert STAGES["слепой_вопрос"]["показываем"] == ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения']
@@ -3214,11 +3214,15 @@ def test_closed_code_lists_are_pinned_whole():
     assert set(VOCAB["коды_отказа"]) == {
         "БЮДЖЕТ_НЕ_ВМЕЩАЕТ_КВОРУМ", "КОНФЛИКТ_ВХОДА",
         "РЕШЕНИЕ_ВНЕ_ТИПА", "ЕСТЬ_ЗАВИСИМЫЕ_СОБЫТИЯ", "ПРОГОН_ЗАНЯТ",
+        "ПРОДОЛЖИТЬ_НЕЧЕМ",     # БУ-13: added — a named outcome for continuing an exhausted run
+        "НУЖНА_КОРРЕКЦИЯ_ВХОДА",  # БУ-13: added — the budget is there but the continuation changes nothing
     }
     assert set(VOCAB["коды_условий"]) == {
         "verdict", "decision", "framing_decision", "budget_allows_round",
         "budget_fits_quorum", "change_index", "round_running",
         "run_finished", "all_verdict_blocking_resolved",
+        "budget_remains",       # БУ-13: added — whether the critics without a valid answer have attempts left
+        "input_can_progress",   # БУ-13: added — whether the continuation can change anything (input builds, round pinned)
     }
     assert set(VOCAB["решения_по_возражению"]) == {
         "подтвердить_постановку", "изменить_цель", "сменить_решение", "остановить",
@@ -4575,3 +4579,67 @@ def test_idea_outcome_oracle_fixtures_run_through_the_real_table():
             want["вердикт"], want["состояние_прогона"]), path.name
         seen[outcome.reason] = outcome.priority
     assert seen == IDEA_ORACLE, "приоритеты и причины в таблице разошлись с §4.5"
+
+
+# --------------------------------------------------------------------------
+# БУ-11 .. БУ-13: the rows and sections the journal records read
+# --------------------------------------------------------------------------
+
+def _tables_with(mutate):
+    module = import_tables_module()
+    real = module.load()
+    raw = copy.deepcopy(real.raw)
+    mutate(raw)
+    return module.Tables.from_raw(raw)
+
+
+REAL_TABLES = import_tables_module().load()
+
+
+def test_bu_the_answer_and_pin_sections_are_declared_and_checked():
+    answer, pins = VOCAB["ответ_критика"], VOCAB["закрепление"]
+    assert answer["порядок_записи"] == ["файл_ответа_на_диск", "событие_получена"]
+    assert answer["имя_файла"] == "sha256" and answer["предел_причины"] == 300
+    assert pins["события"] == ["вход_закреплён", "пакет_закреплён"] and pins["иное_содержимое"] in VOCAB["коды_отказа"]
+    REAL_TABLES.check()                                                       # positive control
+    for mutate in (
+        lambda r: r["vocabulary"]["ответ_критика"].update(порядок_записи=["событие_получена", "файл_ответа_на_диск"]),
+        lambda r: r["vocabulary"]["ответ_критика"].update(каталог="../выше"),
+        lambda r: r["vocabulary"]["ответ_критика"].update(предел_причины=0),
+        lambda r: r["vocabulary"]["ответ_критика"].update(предел_байтов=0),
+        lambda r: r["vocabulary"]["ответ_критика"].update(предел_байтов=r["vocabulary"]["пакет"]["предел_раздела_байт"] - 1),
+        lambda r: r["vocabulary"]["ответ_критика"].update(предел_байтов=True),
+        lambda r: r["vocabulary"]["ответ_критика"].update(имя_файла="md5"),
+        lambda r: r["vocabulary"]["ответ_критика"].update(выдумка=1),
+        lambda r: r["vocabulary"]["закрепление"].update(иное_содержимое="НЕТ_ТАКОГО"),
+        lambda r: r["vocabulary"]["закрепление"].update(события=["вход_закреплён"]),
+        lambda r: r["vocabulary"]["закрепление"].update(на_круг="много"),
+    ):
+        with pytest.raises(_MODULE.ContractError):
+            _tables_with(lambda r: mutate(r)).check()
+
+
+def test_bu_a_pin_event_may_not_move_the_run_or_depend_on_conditions():
+    def moving(raw):
+        for row in raw["run"]["переходы"]:
+            if row["событие"] == "пакет_закреплён":
+                row["в"] = "ждёт_автора"
+    with pytest.raises(_MODULE.ContractError, match="не должно менять состояние"):
+        _tables_with(moving).check()
+    for event in ("вход_закреплён", "пакет_закреплён"):
+        assert REAL_TABLES.decide("идёт_круг", event).to == "идёт_круг"
+    assert REAL_TABLES.decide("создан", "вход_закреплён").to == "создан"
+
+
+def test_bu_continuing_an_incomplete_run_is_three_rows_of_one_operation():
+    rows = [r for r in RUN["переходы"] if r["событие"] == "resume" and r["из"] == "неполный"]
+    got = {(r["условия"].get("budget_remains"), r["условия"].get("input_can_progress")): (r["в"], r.get("отказ"))
+           for r in rows}
+    assert got == {(True, True): ("идёт_круг", None),
+                   (False, None): ("неполный", "ПРОДОЛЖИТЬ_НЕЧЕМ"),
+                   (True, False): ("неполный", "НУЖНА_КОРРЕКЦИЯ_ВХОДА")}
+    assert "resume" in VOCAB["операции"]
+    assert not [r for r in RUN["переходы"] if r["событие"] == "продолжение"]       # one row family, not two ways in
+    for budget in (True, False):                                                    # every combination has exactly one outcome
+        for progress in (True, False):
+            REAL_TABLES.decide("неполный", "resume", {"budget_remains": budget, "input_can_progress": progress})

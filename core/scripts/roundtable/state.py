@@ -30,6 +30,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 import uuid
@@ -54,6 +55,20 @@ LOCK = "lock"
 # known boundary, not a fix — a block that owns the vocabulary should absorb
 # this list into it.
 OPERATIONS_REQUIRING_TARGET = ("submit-decision", "submit-framing-decision")
+
+# БУ-13: operations whose repeat key carries the journal position. A run can be
+# incomplete, continued and incomplete again inside one round; without the
+# position the second `resume` would read as a repeat of the first. The position
+# is the number of journal entries that are not records of these operations, so
+# the same command in the same state (even after it was applied) stays one
+# operation, and one after any new event is a new one. Not read from a table, the
+# same known boundary as the list above.
+OPERATIONS_KEYED_BY_POSITION = ("resume",)
+
+# БУ-13: why a run closed as incomplete when it was not the budget. Recorded as data of
+# the `вердикт` event; `resume` reads it back (`input_can_progress`).
+CAUSE_INPUT_NOT_BUILT = "вход_не_собирается"
+INCOMPLETE_CAUSES = (CAUSE_INPUT_NOT_BUILT,)
 
 
 class StateError(Exception):
@@ -229,6 +244,44 @@ class IdeaCandidate:
         return {"candidate_id": self.candidate_id, "canonical_bytes": self.canonical_bytes}
 
 
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class Receipt:
+    """БУ-11: what the journal holds about the bytes of one received answer.
+
+    The bytes themselves live in a file named by `sha256` next to the journal; the
+    attempt key (run, phase, round, critic, attempt) is the key of the entry this
+    receipt sits in, `question_hash` is the hash of the question that was asked.
+    """
+
+    sha256: str
+    length: int
+    question_hash: str
+
+
+@dataclass(frozen=True)
+class Validation:
+    """БУ-11: the result of checking a received answer; `reason` is clipped and empty when accepted."""
+
+    accepted: bool
+    reason: str
+    question_hash: str
+
+
+@dataclass(frozen=True)
+class Pin:
+    """БУ-12: one pinned input or package of a round (an event of the journal)."""
+
+    event: str
+    round_number: int
+    revision: str
+    content_hash: str
+    hidden_hash: str | None
+    at: str
+
+
 @dataclass(frozen=True)
 class Attempt:
     """One critic call attempt, keyed as §8.1 requires."""
@@ -237,6 +290,8 @@ class Attempt:
     status: str
     at: str
     possible_duplicate: bool = False
+    receipt: Receipt | None = None
+    validation: Validation | None = None
 
 
 @dataclass
@@ -256,6 +311,8 @@ class RunState:
     created_at: str = ""
     idea_candidates: tuple = ()
     idea_candidates_permutation: tuple = ()
+    pins: list = field(default_factory=list)
+    incomplete_cause: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -274,6 +331,10 @@ class RunState:
                 for c in self.idea_candidates
             ],
             "idea_candidates_permutation": list(self.idea_candidates_permutation),
+            "incomplete_cause": self.incomplete_cause,
+            "pins": [{"event": p.event, "round": p.round_number, "revision": p.revision,
+                      "content_hash": p.content_hash, "hidden_hash": p.hidden_hash, "at": p.at}
+                     for p in self.pins],
             "operations": [
                 {"operation_id": o.operation_id, "key": list(o.key),
                  "input_hash": o.input_hash, "outcome": o.outcome,
@@ -282,7 +343,11 @@ class RunState:
             ],
             "attempts": [
                 {"key": list(a.key), "status": a.status, "at": a.at,
-                 "возможен_дубль": a.possible_duplicate}
+                 "возможен_дубль": a.possible_duplicate,
+                 "ответ": a.receipt and {"sha256": a.receipt.sha256, "length": a.receipt.length,
+                                         "question_hash": a.receipt.question_hash},
+                 "проверка": a.validation and {"accepted": a.validation.accepted,
+                                               "reason": a.validation.reason}}
                 for a in self.attempts.values()
             ],
         }
@@ -304,6 +369,18 @@ def _card_bytes(encoded) -> bytes:
     if base64.b64encode(decoded).decode("ascii") != encoded:
         raise StateError(f"журнал: байты карточки идеи записаны не канонично — {encoded!r}")
     return decoded
+
+
+def _receipt(raw, where: str) -> Receipt:
+    """The receipt of an answer as the journal holds it — or a refusal, never a half-read record."""
+    if not isinstance(raw, dict) or set(raw) != {"sha256", "length", "question_hash"}:
+        raise StateError(f"журнал: квитанция ответа {where} должна быть из sha256, length, question_hash")
+    length = raw["length"]
+    if (not isinstance(raw["sha256"], str) or not _HEX64.fullmatch(raw["sha256"])
+            or not isinstance(raw["question_hash"], str) or not _HEX64.fullmatch(raw["question_hash"])
+            or isinstance(length, bool) or not isinstance(length, int) or length < 0):
+        raise StateError(f"журнал: квитанция ответа {where} повреждена")
+    return Receipt(raw["sha256"], length, raw["question_hash"])
 
 
 # --------------------------------------------------------------------------
@@ -540,6 +617,13 @@ class RunStore:
                     operation_id=entry["operation_id"], key=tuple(entry["key"]),
                     input_hash=entry["input_hash"], outcome=entry.get("outcome"),
                     refusal=entry.get("refusal"), at=entry["at"]))
+            if entry.get("pin") is not None:
+                state.pins.append(self._pin_of(entry))
+            if entry.get("event") == "вердикт":
+                cause = (entry.get("data") or {}).get("cause")
+                if cause is not None and cause not in INCOMPLETE_CAUSES:
+                    raise StateError(f"журнал: неизвестная причина неполного прогона {cause!r}")
+                state.incomplete_cause = cause
             outcome = entry.get("outcome") or {}
             if outcome.get("moved"):
                 state.state = outcome["to"]
@@ -551,9 +635,30 @@ class RunStore:
                 for o in state.operations]
         elif kind == "attempt":
             key = tuple(entry["key"])
+            previous = state.attempts.get(key)
+            receipt = previous.receipt if previous else None
+            if "answer" in entry:
+                if entry.get("status") != "получена":
+                    raise StateError(f"журнал: ответ {key} записан со статусом {entry.get('status')!r}, а не «получена»")
+                if key[:1] != (state.run_id,) or (receipt is not None and receipt != _receipt(entry["answer"], key)):
+                    raise StateError(f"журнал: квитанция ответа {key} чужая или записана дважды по-разному")
+                receipt = _receipt(entry["answer"], key)
             state.attempts[key] = Attempt(
                 key=key, status=entry["status"], at=entry["at"],
-                possible_duplicate=entry.get("возможен_дубль", False))
+                possible_duplicate=entry.get("возможен_дубль", False),
+                receipt=receipt, validation=previous.validation if previous else None)
+        elif kind == "answer_checked":
+            key = tuple(entry["key"])
+            previous = state.attempts.get(key)
+            if previous is None or previous.receipt is None:
+                raise StateError(f"журнал: проверка ответа {key}, которого журнал не получал")
+            if previous.validation is not None:
+                raise StateError(f"журнал: проверка ответа {key} записана дважды")
+            accepted, reason = entry.get("accepted"), entry.get("reason")
+            if (entry.get("question_hash") != previous.receipt.question_hash or not isinstance(accepted, bool)
+                    or not isinstance(reason, str) or (accepted and reason) or (not accepted and not reason.strip())):
+                raise StateError(f"журнал: проверка ответа {key} не сходится с его квитанцией или повреждена")
+            state.attempts[key] = replace(previous, validation=Validation(accepted, reason, entry["question_hash"]))
         elif kind == "round_started":
             state.round_number = entry["round"]
         elif kind == "flag":
@@ -570,6 +675,23 @@ class RunStore:
             state.idea_candidates_permutation = tuple(entry["permutation"])
         else:
             raise StateError(f"неизвестная запись журнала: {kind!r}")
+
+    @staticmethod
+    def _pin_of(entry: dict) -> Pin:
+        """A pin as the journal holds it -- or `StateError`, never a bare `KeyError`."""
+        pin = entry["pin"]
+        names = ("round", "revision", "content_hash", "hidden_hash")
+        if not isinstance(pin, dict) or set(pin) != set(names):
+            raise StateError("журнал: закрепление должно быть из round, revision, content_hash, hidden_hash")
+        number = pin["round"]
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise StateError(f"журнал: круг закрепления {number!r}")
+        for name in ("revision", "content_hash"):
+            if not isinstance(pin[name], str) or not pin[name].strip():
+                raise StateError(f"журнал: закрепление без {name}")
+        if pin["hidden_hash"] is not None and not isinstance(pin["hidden_hash"], str):
+            raise StateError("журнал: hidden_hash закрепления — строка или None")
+        return Pin(entry["event"], number, pin["revision"], pin["content_hash"], pin["hidden_hash"], entry["at"])
 
     def _apply_action(self, state: RunState, action: str, entry: dict) -> None:
         """One pure effect per action code, exactly as run.yaml names them."""
@@ -615,7 +737,7 @@ class RunStore:
 
     def submit(self, operation: str, conditions: dict | None = None,
                target_kind: str | None = None, target_id: str | None = None,
-               body=None) -> Operation:
+               body=None, *, invalid_attempts=()) -> Operation:
         """Apply one operation under the repeat contract of §7.1.
 
         Same key and same input hash → idempotent: the stored result comes
@@ -638,8 +760,19 @@ class RunStore:
             # or whitespace-only `target_id` through as if it named a real
             # issue or framing — a decision recorded against nothing.
             raise StateError(f"{operation!r} без цели (вид_цели/ID_цели) — отказ (Б1-5)")
+        if operation in OPERATIONS_KEYED_BY_POSITION:
+            # БУ-13: the conditions of a continuation are the journal's, never the caller's.
+            if conditions:
+                raise StateError(f"{operation!r}: условия продолжения считает журнал, переданные отвергнуты")
+            conditions = self.resume_conditions(invalid_attempts)
+        elif invalid_attempts:
+            raise StateError(f"{operation!r}: invalid_attempts есть только у продолжения")
         state = self.load()
         key = self.operation_key(state, operation, target_kind, target_id)
+        if operation in OPERATIONS_KEYED_BY_POSITION:
+            key += (len([e for e in self._entries()
+                         if not (e.get("kind") == "operation"
+                                 and e.get("operation") in OPERATIONS_KEYED_BY_POSITION)]),)
         input_hash = canonical_hash({
             "operation": operation, "conditions": conditions or {},
             "target_kind": target_kind, "target_id": target_id, "body": body,
@@ -662,7 +795,7 @@ class RunStore:
         })
         return self.load().operations[-1]
 
-    def record_event(self, event: str, conditions: dict | None = None) -> RunState:
+    def record_event(self, event: str, conditions: dict | None = None, data: dict | None = None) -> RunState:
         """Apply an engine-internal event — `пакет_собран`, `вердикт`.
 
         These are not operations: nobody submits them, so the repeat contract
@@ -673,7 +806,12 @@ class RunStore:
         if event in self.tables.vocabulary["операции"]:
             raise StateError(f"{event!r} — операция, ей нужен submit с ключом повтора")
         state = self.load()
-        self._apply(state, event, conditions or {}, extra={"kind": "event", "event": event})
+        extra = {"kind": "event", "event": event}
+        if data:
+            if set(data) != {"cause"} or data["cause"] not in INCOMPLETE_CAUSES or event != "вердикт":
+                raise StateError(f"record_event: данные {sorted(data)} не из {INCOMPLETE_CAUSES} у «вердикт»")
+            extra["data"] = dict(data)
+        self._apply(state, event, conditions or {}, extra=extra)
         return self.load()
 
     def _apply(self, state: RunState, event: str, conditions: dict, extra: dict) -> None:
@@ -759,6 +897,9 @@ class RunStore:
         if current is not None and order.index(status) <= order.index(current.status):
             raise StateError(
                 f"попытка {key}: {current.status} → {status} — движение назад запрещено")
+        if order.index(status) >= order.index("получена") and (current is None or current.receipt is None):
+            # БУ-11: the order is bytes, then the entry -- an answer is counted only through `record_received`
+            raise StateError(f"попытка {key}: состояние {status} без квитанции ответа (record_received)")
         self._append({"kind": "attempt", "key": list(key), "status": status,
                       "возможен_дубль": possible_duplicate})
         state = self.load()
@@ -783,6 +924,307 @@ class RunStore:
                       "возможен_дубль": True})
         self._append({"kind": "flag", "flag": spec["флаг_неопределённого_окна"], "on": True})
         self._write_snapshot(self.load())
+
+    # -- the bytes of the answers (БУ-11) ------------------------------------
+    def _answer_limit(self) -> int:
+        return self.tables.vocabulary["ответ_критика"]["предел_байтов"]
+
+    def _answers_fd(self, create: bool) -> int | None:
+        """The answers directory as a descriptor, opened relative to the run directory without following links.
+
+        Owner-only (0700) and ours: a directory that is a link, not a directory, or another user's is
+        refused with a named reason (never the full path); a looser mode is tightened. None if it
+        does not exist and `create` is off.
+        """
+        name = self.tables.vocabulary["ответ_критика"]["каталог"]
+        try:
+            run_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            raise StateError("каталог прогона недоступен") from None
+        try:
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=run_fd)
+                    os.fsync(run_fd)
+                except FileExistsError:
+                    pass
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=run_fd)
+            except FileNotFoundError:
+                return None
+            except OSError:
+                raise StateError(f"каталог {name}: ссылка или не каталог, открывать нельзя") from None
+        finally:
+            os.close(run_fd)
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid():
+            os.close(fd)
+            raise StateError(f"каталог {name}: принадлежит другому пользователю")
+        if info.st_mode & 0o077:
+            os.fchmod(fd, 0o700)
+        return fd
+
+    def _read_blob_in(self, dfd: int, digest: str, limit: int) -> bytes | None:
+        """One answer file by name inside the opened directory; at most `limit + 1` bytes are read.
+
+        Nothing but a regular file of ours is read: a link, a directory, a pipe or another user's
+        file in its place is a named refusal (`StateError`).
+        """
+        try:
+            descriptor = os.open(digest, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise StateError(f"файл ответа {digest[:12]}: на его месте ссылка или недоступный объект") from None
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            os.close(descriptor)
+            raise StateError(f"файл ответа {digest[:12]}: не обычный файл или чужой")
+        with os.fdopen(descriptor, "rb") as handle:
+            return handle.read(limit + 1)
+
+    def _store_blob(self, raw: bytes) -> str:
+        """Put the bytes of an answer on the disk under their sha256 and return it (БУ-11, step one).
+
+        Written inside the owner-only answers directory by a temp name, fsync'd, renamed within the
+        directory descriptor, and both directories fsync'd -- only then may the journal say the answer
+        was received. Leftovers of an earlier failed write are removed first (we hold the lock). A file
+        already there with the right content is kept; a damaged regular one is replaced; a link or a
+        directory in its place is a named refusal.
+        """
+        if len(raw) > self._answer_limit() + 1:
+            raise StateError("ответ длиннее предела хранения (предел + 1)")
+        digest = hashlib.sha256(raw).hexdigest()
+        dfd = self._answers_fd(create=True)
+        try:
+            for leftover in os.listdir(dfd):
+                if leftover.startswith(".answer-"):
+                    try:
+                        os.unlink(leftover, dir_fd=dfd)
+                    except OSError:
+                        pass
+            if self._read_blob_in(dfd, digest, len(raw)) != raw:
+                temp = ".answer-" + uuid.uuid4().hex
+                descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+                try:
+                    with os.fdopen(descriptor, "wb") as handle:
+                        handle.write(raw)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    try:
+                        os.replace(temp, digest, src_dir_fd=dfd, dst_dir_fd=dfd)
+                    except (IsADirectoryError, NotADirectoryError):
+                        raise StateError(f"файл ответа {digest[:12]}: на его месте каталог") from None
+                except BaseException:
+                    try:
+                        os.unlink(temp, dir_fd=dfd)
+                    except OSError:
+                        pass
+                    raise
+            os.fsync(dfd)
+            self._fsync_directory(self.directory)
+        finally:
+            os.close(dfd)
+        return digest
+
+    def _fsync_directory(self, path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def record_received(self, stage: str, round_number: int, critic: str, attempt: int,
+                        raw: bytes, question_hash: str) -> Attempt:
+        """The answer arrived: keep its exact bytes, then — and only then — count it (БУ-11).
+
+        Order is the contract (`vocabulary.ответ_критика.порядок_записи`): the file is on the
+        disk before the journal learns the hash. A failure between the two leaves the attempt
+        where it was (not received, budget not spent) and an unreferenced file behind.
+        Repeating the same answer for the same attempt changes nothing; another one is refused.
+        """
+        self._require_live("record_received")
+        if not isinstance(raw, (bytes, bytearray)):
+            raise StateError("record_received: ответ — байты")
+        if not isinstance(question_hash, str) or not _HEX64.fullmatch(question_hash):
+            raise StateError("record_received: хеш вопроса — sha256 в шестнадцатеричном виде")
+        order = self.tables.vocabulary["попытка"]["состояния"]
+        state = self.load()
+        key = (state.run_id, stage, round_number, critic, attempt)
+        current = state.attempts.get(key)
+        if current is None:
+            raise StateError(f"попытки {key} в журнале нет")
+        raw = bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        if current.receipt is not None:
+            if (current.receipt.sha256, current.receipt.length, current.receipt.question_hash) == (
+                    digest, len(raw), question_hash):
+                return current                                        # идемпотентный повтор
+            raise StateError(f"попытка {key}: ответ уже записан, другой не принимается")
+        if order.index(current.status) >= order.index("получена"):
+            raise StateError(f"попытка {key}: состояние {current.status} без квитанции ответа")
+        self._store_blob(raw)                                         # step one: the bytes
+        self._append({"kind": "attempt", "key": list(key), "status": "получена",
+                      "возможен_дубль": current.possible_duplicate,
+                      "answer": {"sha256": digest, "length": len(raw), "question_hash": question_hash}})
+        state = self.load()
+        self._write_snapshot(state)                                   # step two is the entry above
+        return state.attempts[key]
+
+    def record_validation(self, stage: str, round_number: int, critic: str, attempt: int,
+                          accepted: bool, reason: str = "") -> Validation:
+        """The result of checking a received answer, with the (clipped) reason of a refusal (БУ-11).
+
+        Kept with the receipt's question hash. Written once: the same result again changes
+        nothing, a different one is refused.
+        """
+        self._require_live("record_validation")
+        if not isinstance(accepted, bool) or not isinstance(reason, str):
+            raise StateError("record_validation: accepted — bool, reason — строка")
+        if accepted and reason:
+            raise StateError("record_validation: у принятого ответа причины отказа нет")
+        if not accepted and not reason.strip():
+            raise StateError("record_validation: отказ без причины")
+        limit = self.tables.vocabulary["ответ_критика"]["предел_причины"]
+        reason = reason if len(reason) <= limit else reason[:limit] + "…"
+        state = self.load()
+        key = (state.run_id, stage, round_number, critic, attempt)
+        current = state.attempts.get(key)
+        if current is None or current.receipt is None:
+            raise StateError(f"попытка {key}: ответа в журнале нет, проверять нечего")
+        result = Validation(accepted, reason, current.receipt.question_hash)
+        if current.validation is not None:
+            if current.validation == result:
+                return current.validation
+            raise StateError(f"попытка {key}: результат проверки уже записан, другой не принимается")
+        self._append({"kind": "answer_checked", "key": list(key), "accepted": accepted,
+                      "reason": reason, "question_hash": result.question_hash})
+        self._write_snapshot(self.load())
+        return result
+
+    def read_answer(self, stage: str, round_number: int, critic: str, attempt: int) -> bytes:
+        """The exact bytes of a received answer, checked against the journal's hash and length (БУ-11).
+
+        A missing, altered, linked or foreign file is `ContractError`: the journal says one thing, the
+        disk another. At most `length + 1` bytes are read.
+        """
+        state = self.load()
+        key = (state.run_id, stage, round_number, critic, attempt)
+        current = state.attempts.get(key)
+        if current is None or current.receipt is None:
+            raise tables_module.ContractError(f"попытка {key}: квитанции ответа в журнале нет")
+        receipt = current.receipt
+        try:
+            dfd = self._answers_fd(create=False)
+            if dfd is None:
+                data = None
+            else:
+                try:
+                    data = self._read_blob_in(dfd, receipt.sha256, receipt.length)
+                finally:
+                    os.close(dfd)
+        except StateError as error:
+            raise tables_module.ContractError(f"попытка {key}: {error}") from None
+        if data is None:
+            raise tables_module.ContractError(f"попытка {key}: файла ответа {receipt.sha256[:12]} нет")
+        if hashlib.sha256(data).hexdigest() != receipt.sha256 or len(data) != receipt.length:
+            raise tables_module.ContractError(f"попытка {key}: файл ответа не совпал с хешем и длиной из журнала")
+        return data
+
+    # -- the continuation of an incomplete run (БУ-13) -----------------------
+    def resume_conditions(self, invalid_attempts=()) -> dict:
+        """The two conditions of `resume`, counted from the journal -- the only source of them.
+
+        `invalid_attempts`: keys of received answers that no one has judged yet and that the caller's
+        single reading of the journal found invalid. A forged list can only take budget away, never add.
+        """
+        state = self.load()
+        return {"budget_remains": self._budget_remains(state, frozenset(map(tuple, invalid_attempts))),
+                "input_can_progress": self._input_can_progress(state)}
+
+    def _input_can_progress(self, state: RunState) -> bool:
+        """False when resuming cannot change anything: the input did not build, or a new round has no pinned input."""
+        if state.incomplete_cause is not None:
+            return False
+        number = state.round_number
+        return number <= 1 or any(p.event == "вход_закреплён" and p.round_number == number for p in state.pins)
+
+    def _budget_remains(self, state: RunState, invalid: frozenset) -> bool:
+        """Whether every critic of the open phase without a valid answer can still be asked.
+
+        The open phase is the stage and round of the latest attempt. A critic is out of budget when the
+        answers received without a valid one reached the retry limit or the calls cut off before an answer
+        reached the abort limit. A received answer nobody has judged yet keeps the critic in, unless the
+        caller's reading found it invalid. The limits come from the tables through the stage's own readers.
+        """
+        from . import contracts            # imported late: contracts imports this module
+
+        if not state.attempts:
+            return True
+        _, stage, round_number, _, _ = next(reversed(state.attempts))
+        tables = self.tables
+        order = contracts._attempt_states(tables)
+        settled = order.index("провалидирована")
+        limit = 1 + contracts.retry_budget(tables)
+        cutoff = contracts.abort_limit(tables)
+        for critic in sorted({k[3] for k in state.attempts if k[1] == stage and k[2] == round_number}):
+            mine = [a for k, a in state.attempts.items() if k[1:4] == (stage, round_number, critic)]
+            if any((a.validation is not None and a.validation.accepted) or contracts._rank(order, a) >= settled
+                   for a in mine):
+                continue
+            answered, aborted = contracts._split_attempts(state, tables, stage, round_number, critic)
+            if any(a.validation is None and a.key not in invalid for a in answered):
+                continue
+            if len(answered) >= limit or len(aborted) >= cutoff:
+                return False
+        return True
+
+    # -- pins (БУ-12) --------------------------------------------------------
+    @staticmethod
+    def pin_status(state: RunState, event: str, *, round_number: int, revision: str,
+                   content_hash: str, hidden_hash: str | None = None):
+        """What `pin` would do, without writing: the same `Pin` (a repeat), None (a new event) or a refusal text."""
+        for old in (p for p in state.pins if p.event == event):
+            same = (old.revision, old.content_hash, old.hidden_hash) == (revision, content_hash, hidden_hash)
+            if old.round_number == round_number:
+                if same:
+                    return old
+                return f"{event}: в круге {round_number} уже закреплено другое содержимое"
+            if old.revision == revision and not same:
+                return f"{event}: редакция та же, содержимое другое (круг {old.round_number})"
+        return None
+
+    def pin(self, event: str, *, round_number: int, revision: str, content_hash: str,
+            hidden_hash: str | None = None) -> Pin:
+        """Pin the input of the stage or its second package for one round as a journal event.
+
+        The same pin again — no duplicate, the old event comes back. Other content in the same
+        round, or other content under the same revision in another round, is refused with the
+        table's code. A new revision in a new round gets a new event; the old one stays.
+        """
+        self._require_live("pin")
+        spec = self.tables.vocabulary["закрепление"]
+        if event not in spec["события"]:
+            raise StateError(f"закрепление: {event!r} не из vocabulary.закрепление.события")
+        if isinstance(round_number, bool) or not isinstance(round_number, int) or round_number < 1:
+            raise StateError(f"закрепление: круг — целое от 1, получено {round_number!r}")
+        for name, value in (("revision", revision), ("content_hash", content_hash)):
+            if not isinstance(value, str) or not value.strip():
+                raise StateError(f"закрепление: {name} пусто")
+        if hidden_hash is not None and (not isinstance(hidden_hash, str) or not hidden_hash.strip()):
+            raise StateError("закрепление: hidden_hash — строка или None")
+        state = self.load()
+        status = self.pin_status(state, event, round_number=round_number, revision=revision,
+                                 content_hash=content_hash, hidden_hash=hidden_hash)
+        if isinstance(status, Pin):
+            return status                                              # безопасный повтор
+        if status is not None:
+            raise Refusal(spec["иное_содержимое"], status)
+        self._apply(state, event, {}, extra={
+            "kind": "event", "event": event,
+            "pin": {"round": round_number, "revision": revision, "content_hash": content_hash,
+                    "hidden_hash": hidden_hash}})
+        return next(p for p in reversed(self.load().pins) if p.event == event)
 
     def start_round(self, number: int) -> RunState:
         self._require_live("start_round")

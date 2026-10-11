@@ -35,14 +35,14 @@ import secrets
 import tempfile
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import tables as tables_module
 from .context import (PackageRefused, build_comparison_package, build_package, canonical_json,
                       check_candidate_card, check_comparison_inputs, check_withheld, comparison_sections,
                       digest, fold_identifier, same_package)
-from .state import IdeaCandidate
+from .state import CAUSE_INPUT_NOT_BUILT, IdeaCandidate, Refusal
 from .tables import ContractError
 
 __all__ = [
@@ -53,7 +53,7 @@ __all__ = [
     "outcome_rules", "decide_outcome", "IdeaOutcome", "retry_budget", "retry_order", "abort_limit",
     "calls_made", "incomplete_verdict", "run_idea_stage", "StageResult",
     "require_anton_ok", "leave_idea_stage",
-    "ANTON_OK_FLAG", "OBJECTION_FLAG", "PACKAGE_FLAG", "INPUT_FLAG", "AUTHOR_SOURCE", "BLIND_STAGE",
+    "ResumeImpossible", "ANTON_OK_FLAG", "OBJECTION_FLAG", "PIN_INPUT", "PIN_PACKAGE", "AUTHOR_SOURCE", "BLIND_STAGE",
     "COMPARE_STAGE", "STAGE", "IDEA_VERDICT", "INCOMPLETE_VERDICT", "CRITERION_ID", "SCHEMAS_DIR",
 ]
 
@@ -63,8 +63,8 @@ AUTHOR_SOURCE = "автор"
 BLIND_STAGE = "идея:слепой"
 COMPARE_STAGE = "идея:сравнение"
 STAGE = "идея"
-PACKAGE_FLAG = "пакет_сравнения:"       # + sha256 of the second package: it is pinned once, in the journal
-INPUT_FLAG = "вход_стадии_идея:"        # + sha256 of the caller's inputs: pinned at the first entry
+PIN_INPUT = "вход_закреплён"            # journal events (vocabulary.закрепление.события): the caller's inputs, pinned at the first entry
+PIN_PACKAGE = "пакет_закреплён"         # ... and the second package, pinned before the first comparison call
 OBJECTION_FLAG = "есть_открытые_возражения_к_постановке"
 # БИ-13: evidence of Anton's explicit OK. The real operation belongs to БУ;
 # until it exists the evidence is a run flag, and the guard reads only that.
@@ -123,6 +123,15 @@ class AuthorCardRefused(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(reason)
+
+
+class ResumeImpossible(Exception):
+    """БУ-13: an incomplete run has nothing left to continue with (the table's refusal code)."""
+
+    def __init__(self, code: str, detail: str = ""):
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}" if detail else code)
 
 
 class AntonOkRequired(Exception):
@@ -764,31 +773,140 @@ class _Run:
     registries: dict
     withheld: dict
     round_number: int
+    revision: str                 # the author's card hash: the identity of the revision this round judges
+    snapshot: dict = field(default_factory=dict)   # phase 0's one reading of the journal's answers: (stage, critic) -> [_Seen]
 
 
-def _collect(run: _Run, *, stage: str, phase: str, package: str, check, saved) -> tuple:
+def _answer_bytes(raw, tables) -> bytes:
+    """The bytes the journal keeps for an answer: what came, or its canonical JSON when it came as a value.
+
+    A text is kept as UTF-8, bytes as they are; a dict or a list has no bytes of its own, so its
+    canonical form stands in. Anything else (or a value that does not serialise) is kept as nothing:
+    the check of the stored bytes then rejects it, on the first call and on every resume alike.
+    What is kept is cut to `ответ_критика.предел_байтов + 1` bytes: the check refuses an over-long answer
+    by its length either way, and the disk does not grow with a hostile answer.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        data = bytes(raw)
+    elif isinstance(raw, str):
+        data = raw.encode("utf-8", "surrogatepass")
+    elif isinstance(raw, (dict, list)):
+        try:
+            data = canonical_json(raw)
+        except _HOSTILE:
+            data = b""
+    else:
+        data = b""
+    return data[:tables.vocabulary["ответ_критика"]["предел_байтов"] + 1]
+
+
+def _question(phase: str, critic: str, package: str) -> str:
+    """The hash of what was asked: phase, critic and the package. The attempt number and the
+    previous rejection are not in it -- they are the retry, not the question."""
+    return digest(canonical_json({"phase": phase, "critic": critic, "package": package}))
+
+
+def _reason(error: AnswerRejected) -> str:
+    """The clipped reason of a rejected answer; the journal does not take a refusal without one."""
+    return _clip(error.reason, REASON_CLIP).strip() or "ответ отвергнут без названной причины"
+
+
+@dataclass(frozen=True)
+class _Seen:
+    """An answer the journal holds, judged again from its stored bytes."""
+
+    number: int
+    accepted: bool
+    value: object
+    reason: str
+
+
+def _recorded(store, state, tables, stage: str, round_number: int, critic: str, check, question: str) -> list:
+    """БУ-14: the answers the journal has for one critic in one phase, read back from their receipts.
+
+    Only an attempt the journal counted as received (the receipt written after the bytes) is
+    read. Its bytes come from the store with the hash and length checked; the receipt must name
+    THIS question; the bytes are judged again by the same check, and the result must agree with the
+    recorded one. Whatever disagrees is our breakage (`ContractError`) -- never silently accepted,
+    never replaced by anything the caller hands in. Writes nothing.
+    """
+    order = _attempt_states(tables)
+    floor = order.index("получена")
+    seen = []
+    for key in sorted((k for k in state.attempts if k[1] == stage and k[2] == round_number and k[3] == critic),
+                      key=lambda k: k[4]):
+        attempt = state.attempts[key]
+        if _rank(order, attempt) < floor:
+            continue
+        number = key[4]
+        if attempt.receipt is None:
+            raise ContractError(f"{critic}: ответ попытки {number} учтён, а его байтов в журнале нет")
+        if attempt.receipt.question_hash != question:
+            raise ContractError(f"{critic}: ответ попытки {number} записан на другой вопрос")
+        data = store.read_answer(stage, round_number, critic, number)
+        try:
+            judged = _Seen(number, True, check(data, critic), "")
+        except AnswerRejected as error:
+            judged = _Seen(number, False, None, _reason(error))
+        recorded = attempt.validation
+        if recorded is not None:
+            if recorded.accepted != judged.accepted:
+                raise ContractError(f"{critic}: ответ попытки {number} проверен в журнале иначе, чем проверяется сейчас")
+            if not judged.accepted:
+                if recorded.reason != judged.reason:
+                    raise ContractError(f"{critic}: причина отказа ответа попытки {number} расходится с записанной")
+                judged = _Seen(number, False, None, recorded.reason)          # the recorded one is what travels on
+        seen.append(judged)
+    return seen
+
+
+def _settle(store, tables, stage: str, round_number: int, critic: str, seen) -> None:
+    """Bring the journal up to what the saved answers say: the missing result of the check, the missing states."""
+    order = _attempt_states(tables)
+    for item in seen:
+        state = store.load()
+        key = (state.run_id, stage, round_number, critic, item.number)
+        if state.attempts[key].validation is None:
+            store.record_validation(stage, round_number, critic, item.number, item.accepted, item.reason)
+        if item.accepted:
+            for status in ("провалидирована", "зафиксирована"):
+                if _rank(order, store.load().attempts[key]) < order.index(status):
+                    store.record_attempt(stage, round_number, critic, item.number, status)
+
+
+def _collect(run: _Run, *, stage: str, phase: str, package: str, check) -> tuple:
     """Ask every critic once, then retry invalid answers within the table budget.
 
-    A valid answer is never re-requested: it comes from `saved` (the caller's
-    own durable copy — the journal records that an answer was valid, not its
-    bytes). Only an ANSWER spends the retry budget; a call cut off before its answer
-    is marked a possible duplicate and bounded by its own limit. A rejected answer's
-    reason (clipped) goes into the retry's request as `previous_rejection`.
+    A valid answer is never re-requested: it is read back from the journal (БУ-11, БУ-14) --
+    the answer the critic gave, byte for byte, with the attempt, the question and the result of
+    the check. Only an ANSWER spends the retry budget; a call cut off before its answer is marked a
+    possible duplicate and bounded by its own limit. A rejected answer's reason (clipped) goes into
+    the retry's request as `previous_rejection`; the journal keeps it too, so a resumed run
+    asks the retry with the same reason.
+
+    A received answer is stored (bytes on the disk, then the journal entry) BEFORE it is judged.
 
     Returns `(results, rejections)`: critic -> validated value or None (budget exhausted),
-    and critic -> the reasons of this call's rejected answers (the journal has no place for
-    them: a resumed run starts with none — a finding for БУ).
+    and critic -> the reasons of the rejected answers of this phase, those of earlier calls included.
     """
     store, tables, critics = run.store, run.tables, run.critics
     round_number = run.round_number
     limit = 1 + retry_budget(tables)
     cutoff = abort_limit(tables)
-    results = {c: saved[c] for c in critics if c in saved}
+    results: dict = {}
     rejections = {c: [] for c in critics}
     state = store.load()
     for critic in critics:
-        if critic not in results and _valid_recorded(state, tables, stage, round_number, critic):
-            raise ContractError(f"{critic}: в журнале валидный ответ, а его байтов нет")
+        seen = run.snapshot.get((stage, critic))
+        if seen is None:
+            seen = _recorded(store, state, tables, stage, round_number, critic, check,
+                             _question(phase, critic, package))
+        _settle(store, tables, stage, round_number, critic, seen)
+        rejections[critic] = [item.reason for item in seen if not item.accepted]
+        valid = [item for item in seen if item.accepted]
+        if valid:
+            results[critic] = valid[0].value
+        state = store.load()
         for attempt in _split_attempts(state, tables, stage, round_number, critic)[1]:
             if not attempt.possible_duplicate:
                 store.mark_possible_duplicate(stage, round_number, critic, attempt.key[4])
@@ -806,15 +924,19 @@ def _collect(run: _Run, *, stage: str, phase: str, package: str, check, saved) -
             store.record_attempt(stage, round_number, critic, number, "запущена")
             request = {"phase": phase, "critic": critic, "attempt": number, "package": package,
                        "previous_rejection": rejections[critic][-1] if rejections[critic] else None}
-            raw = run.ask(critic, request)
-            store.record_attempt(stage, round_number, critic, number, "получена")
+            data = _answer_bytes(run.ask(critic, request), tables)
+            store.record_received(stage, round_number, critic, number, data, _question(phase, critic, package))
             try:
-                results[critic] = check(raw, critic)
+                value = check(data, critic)
             except AnswerRejected as error:
-                rejections[critic].append(_clip(error.reason, REASON_CLIP))
+                reason = _reason(error)
+                store.record_validation(stage, round_number, critic, number, False, reason)
+                rejections[critic].append(reason)
             else:
+                store.record_validation(stage, round_number, critic, number, True)
                 store.record_attempt(stage, round_number, critic, number, "провалидирована")
                 store.record_attempt(stage, round_number, critic, number, "зафиксирована")
+                results[critic] = value
             progressed = True
         iteration += 1
         if not progressed:
@@ -845,34 +967,31 @@ class StageResult:
     incomplete_reason: str | None = None
 
 
-def _finish(run: _Run, outcome, proposals, comparisons, rejections, incomplete_reason=None) -> StageResult:
+def _finish(run: _Run, outcome, proposals, comparisons, rejections, incomplete_reason=None,
+            cause=None) -> StageResult:
+    """`cause`: why a run is incomplete when it is not the budget (the input does not build) -- kept with the verdict."""
     verdict = outcome.verdict if outcome is not None else incomplete_verdict(run.tables)
-    state = run.store.record_event("вердикт", {"verdict": verdict})
+    state = run.store.record_event("вердикт", {"verdict": verdict}, {"cause": cause} if cause else None)
     return StageResult(verdict, outcome, state.state, proposals, comparisons, rejections, incomplete_reason)
 
 
-def _trusted(check, raw, who: str):
-    """A saved answer is our own input: if it no longer fits, that is our breakage."""
-    try:
-        return check(raw)
-    except AnswerRejected as error:
-        raise ContractError(f"сохранённый ответ {who} не проходит проверку: {error.reason}") from None
+def _package_pin(run_round: int, revision: str, package, withheld) -> dict:
+    """What the second package is pinned by: its hash and the hash of the hidden names (never the names)."""
+    return dict(round_number=run_round, revision=revision, content_hash=package.hash,
+                hidden_hash=digest(canonical_json(withheld)))
 
 
-def _pin_package(store, package, withheld) -> None:
-    """The second package is pinned in the journal once; a resumed run must rebuild the same print.
+def _pin_package(store, round_number: int, revision: str, package, withheld) -> None:
+    """БУ-12: the second package is pinned in the journal before the first comparison call.
 
-    The print is sha256 over the package hash and the sha256 of the canonical `withheld`
-    (the hash only, never the text): a changed hidden name is not passed over silently.
+    The same package again (a resume) comes back as the same event, with no second one; another
+    package in the same round is refused; a changed hidden name is not passed over silently.
     """
-    print_ = digest(canonical_json({"пакет": package.hash, "withheld": digest(canonical_json(withheld))}))
-    state = store.load()
-    pinned = sorted(f for f in state.flags if f.startswith(PACKAGE_FLAG))
-    if not pinned:
-        store.set_flag(PACKAGE_FLAG + print_)
-    elif pinned != [PACKAGE_FLAG + print_]:
+    try:
+        store.pin(PIN_PACKAGE, **_package_pin(round_number, revision, package, withheld))
+    except Refusal:
         raise ContractError("второй пакет при возобновлении не совпал с записанным в журнале "
-                            "(изменились разделы, критерии, имена скрытого или карточки)")
+                            "(изменились разделы, критерии, имена скрытого или карточки)") from None
 
 
 def _permutation_ok(order, size: int) -> bool:
@@ -913,25 +1032,6 @@ def _check_shape(sections, registries, withheld, tables) -> None:
     _withheld_checked(tables, withheld, True)
 
 
-def _check_saved(saved, owner: str, critics) -> dict | None:
-    """The caller's saved answers: a mapping (or None) of critic name -> what `parse_answer` reads.
-
-    Checked before any write; returns ONE copy (a `dict`) that the rest of the stage works with,
-    so a caller's mapping that changes after the check changes nothing.
-    """
-    if saved is None:
-        return None
-    if not isinstance(saved, Mapping):
-        raise ContractError(f"сохранённые {owner}: нужно отображение критик -> ответ или None")
-    foreign = [k for k in saved if not isinstance(k, str) or k not in critics]
-    if foreign:
-        raise ContractError(f"сохранённые {owner}: чужие критики {_listed(sorted(map(str, foreign)))}")
-    bad = [k for k, v in saved.items() if not isinstance(v, (str, bytes, bytearray, dict, list))]
-    if bad:
-        raise ContractError(f"сохранённые {owner}: ответ не текст, не байты и не JSON-значение у {_listed(sorted(bad))}")
-    return dict(saved)
-
-
 def _blind_checker(criteria, tables, withheld):
     """The check of a blind card: the answer's own validation and what the second package will judge."""
     def blind_card(raw, critic=None):
@@ -947,27 +1047,35 @@ def _compare_checker(ids, criteria, tables):
     return compare
 
 
-def _check_saved_content(state, saved_proposals, saved_comparisons, criteria, tables, withheld) -> None:
-    """Phase 0: the CONTENT of the saved answers, by the same checks the phases apply, before any write.
+def _check_recorded(store, state, run: "_Run", blind_package, tables) -> dict:
+    """Phase 0: whatever the journal already holds for the phase that is open is read back and judged
+    -- hash, receipt, question, content -- before the first write or call (БУ-14).
 
-    Saved proposals are read only while the set of cards does not exist yet, so only then are they
-    judged. Saved comparisons need a set to compare: on a fresh run there is none -- `ContractError`;
-    on a resumed one they are judged against the journal's candidates in the recorded order.
+    Blind answers are read only while the set of cards does not exist; once it does, only the
+    comparisons are (against the recorded candidates in the recorded order). A second package that
+    does not build here is left to the phase itself, which closes the run as incomplete.
+
+    Returns the one reading: (stage, critic) -> the judged answers of the open phase (empty if the phase never
+    reads the journal). The phase and the resume decision use it; the bytes are not judged again.
     """
+    round_number = run.round_number
     if not state.idea_candidates:
-        if saved_comparisons:
-            raise ContractError("сохранённые сравнения: набора кандидатов в журнале нет, сравнивать нечего")
-        check = _blind_checker(criteria, tables, withheld)
-        for critic, raw in (saved_proposals or {}).items():
-            _trusted(check, raw, critic)
-        return
+        check = _blind_checker(run.criteria, tables, run.withheld)
+        return {(BLIND_STAGE, critic): _recorded(store, state, tables, BLIND_STAGE, round_number, critic, check,
+                                                 _question("blind", critic, blind_package.material()))
+                for critic in run.critics}
     permutation = state.idea_candidates_permutation
     if not _permutation_ok(permutation, len(state.idea_candidates)):
         raise ContractError("журнал: перестановка не соответствует записанному набору")
     ids = [state.idea_candidates[i].candidate_id for i in permutation]
-    compare = _compare_checker(ids, criteria, tables)
-    for critic, raw in (saved_comparisons or {}).items():
-        _trusted(lambda r, c=critic: compare(r, c), raw, critic)
+    try:
+        package = _second_package(run, state.idea_candidates, permutation)
+    except PackageRefused:
+        return {}
+    compare = _compare_checker(ids, run.criteria, tables)
+    return {(COMPARE_STAGE, critic): _recorded(store, state, tables, COMPARE_STAGE, round_number, critic, compare,
+                                               _question("compare", critic, package.material()))
+            for critic in run.critics}
 
 
 def _check_state(store, tables):
@@ -977,29 +1085,35 @@ def _check_state(store, tables):
         raise ContractError(f"прогон другой стадии: {state.stage!r}, нужна {STAGE!r}")
     if state.state is None:
         raise ContractError("прогон не запущен: сначала операция start")
-    if state.state == tables.decide("идёт_круг", "вердикт", {"verdict": incomplete_verdict(tables)}).to:
-        raise ContractError("неполный прогон; возобновление — операция блока уточнений")
-    if state.state not in ("создан", "идёт_круг"):
+    incomplete = tables.decide("идёт_круг", "вердикт", {"verdict": incomplete_verdict(tables)}).to
+    if state.state not in ("создан", "идёт_круг", incomplete):
         raise ContractError(f"стадия завершена: прогон в состоянии {state.state!r}")
     return state
 
 
-def _input_print(run_inputs: dict) -> str:
-    return INPUT_FLAG + digest(canonical_json(run_inputs))
+def _input_pin(round_number: int, revision: str, run_inputs: dict) -> dict:
+    return dict(round_number=round_number, revision=revision, content_hash=digest(canonical_json(run_inputs)))
 
 
-def _pin_inputs(store, fingerprint: str, *, write: bool) -> None:
+def _pin_inputs(store, pin: dict, *, write: bool) -> None:
     """The caller's inputs are pinned at the first entry; a resumed run with other inputs is refused.
 
     Compared BEFORE the package is rebuilt: a changed input must not close the run as
-    incomplete — the run stays fit for the corrected input.
+    incomplete -- the run stays fit for the corrected input. With `write=False` only the comparison
+    is made; the event is written by the second call.
     """
-    pinned = sorted(f for f in store.load().flags if f.startswith(INPUT_FLAG))
-    if pinned and pinned != [fingerprint]:
-        raise ContractError("вход стадии при возобновлении не совпал с записанным в журнале "
-                            "(изменились разделы, реестры, критерии, карточка автора или имена скрытого)")
-    if not pinned and write:
-        store.set_flag(fingerprint)
+    if write:
+        try:
+            store.pin(PIN_INPUT, **pin)
+        except Refusal:
+            raise ContractError(_INPUT_CHANGED) from None
+        return
+    if isinstance(store.pin_status(store.load(), PIN_INPUT, **pin), str):
+        raise ContractError(_INPUT_CHANGED)
+
+
+_INPUT_CHANGED = ("вход стадии при возобновлении не совпал с записанным в журнале "
+                  "(изменились разделы, реестры, критерии, карточка автора или имена скрытого)")
 
 
 def _blind_package(run_inputs: tuple, author: dict, tables):
@@ -1036,12 +1150,11 @@ def _author_id(candidates) -> str:
     return authors[0]
 
 
-def _phase_blind(run: _Run, blind_package, saved_proposals) -> tuple:
+def _phase_blind(run: _Run, blind_package) -> tuple:
     """Phase A: each critic proposes blind; a card the second package would refuse is a bad answer."""
     blind_card = _blind_checker(run.criteria, run.tables, run.withheld)
     return _collect(
-        run, stage=BLIND_STAGE, phase="blind", package=blind_package.material(), check=blind_card,
-        saved={c: _trusted(blind_card, raw, c) for c, raw in (saved_proposals or {}).items()})
+        run, stage=BLIND_STAGE, phase="blind", package=blind_package.material(), check=blind_card)
 
 
 def _phase_set(run: _Run, author: dict, proposals: dict, new_id, shuffle) -> tuple:
@@ -1075,7 +1188,7 @@ def _phase_set(run: _Run, author: dict, proposals: dict, new_id, shuffle) -> tup
     return package, None
 
 
-def _phase_compare(run: _Run, state, expected, saved_comparisons, proposals, rejections) -> StageResult:
+def _phase_compare(run: _Run, state, expected, proposals, rejections) -> StageResult:
     """Phase C: both critics compare the same package; the outcome is the table's."""
     candidates = state.idea_candidates
     permutation = state.idea_candidates_permutation
@@ -1087,15 +1200,15 @@ def _phase_compare(run: _Run, state, expected, saved_comparisons, proposals, rej
         package = _second_package(run, candidates, permutation)
     except PackageRefused as refused:         # a set written by somebody else, or a table that changed: the last net
         return _finish(run, None, proposals, {}, rejections,
-                       f"второй пакет из записанного набора не собирается: {refused.reason}")
+                       f"второй пакет из записанного набора не собирается: {refused.reason}",
+                       cause=CAUSE_INPUT_NOT_BUILT)
     if expected is not None and not same_package(expected, package):
         raise ContractError("второй пакет, собранный из журнала, не равен собранному до записи набора")
-    _pin_package(run.store, package, run.withheld)
+    _pin_package(run.store, run.round_number, run.revision, package, run.withheld)
 
     compare = _compare_checker(ids, run.criteria, run.tables)
     comparisons, compare_rejections = _collect(
-        run, stage=COMPARE_STAGE, phase="compare", package=package.material(), check=compare,
-        saved={c: _trusted(lambda r, c=c: compare(r, c), raw, c) for c, raw in (saved_comparisons or {}).items()})
+        run, stage=COMPARE_STAGE, phase="compare", package=package.material(), check=compare)
     rejections = {**rejections, "compare": compare_rejections}
     valid = {c: v for c, v in comparisons.items() if v is not None}
     if len(valid) < len(run.critics):
@@ -1108,8 +1221,44 @@ def _phase_compare(run: _Run, state, expected, saved_comparisons, proposals, rej
     return _finish(run, outcome, proposals, valid, rejections)
 
 
+_RESUME_REFUSALS = {
+    "ПРОДОЛЖИТЬ_НЕЧЕМ": "у критиков без валидного ответа не осталось ни повтора, ни вызова",
+    "НУЖНА_КОРРЕКЦИЯ_ВХОДА": "вход не ведёт вперёд (второй пакет не собирается либо новый круг без закреплённого "
+                             "входа): нужна коррекция входа, а не продолжение",
+}
+
+
+def _resume_open(store, run: _Run, state, tables) -> tuple:
+    """БУ-13: the table's decision on continuing an incomplete run, before any write.
+
+    The conditions are counted by the store from its journal; the one thing the caller's reading adds is
+    which received-but-unjudged answers it found invalid (it can only take budget away). A refusal is
+    raised as `ResumeImpossible` and writes nothing. Returns what `_resume` needs.
+    """
+    stage = COMPARE_STAGE if state.idea_candidates else BLIND_STAGE
+    invalid = tuple((state.run_id, stage, run.round_number, critic, item.number)
+                    for (_, critic), seen in run.snapshot.items() for item in seen
+                    if not item.accepted and state.attempts[(state.run_id, stage, run.round_number, critic,
+                                                             item.number)].validation is None)
+    conditions = store.resume_conditions(invalid)
+    refusal = tables.decide(state.state, "resume", conditions).refusal
+    if refusal is not None:
+        raise ResumeImpossible(refusal, _RESUME_REFUSALS.get(refusal, ""))
+    return invalid
+
+
+def _resume(store, invalid: tuple) -> None:
+    """Apply the continuation as the operation `resume` (the store recounts the conditions itself)."""
+    try:
+        operation = store.submit("resume", body={"reason": "продолжение неполного прогона"}, invalid_attempts=invalid)
+    except Refusal as refusal:
+        raise ContractError(f"продолжение отвергнуто: {refusal}") from None
+    if operation.refusal is not None:
+        raise ResumeImpossible(operation.refusal, _RESUME_REFUSALS.get(operation.refusal, ""))
+
+
 def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, registries=None,
-                   critics=("claude", "codex"), saved_proposals=None, saved_comparisons=None,
+                   critics=("claude", "codex"),
                    new_id=None, shuffle=None, tables=None) -> StageResult:
     """Run the «идея» stage end to end against a locked `RunStore`.
 
@@ -1128,28 +1277,29 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
 
     Errors: a wrong shape of the caller's inputs, a corrupt table or journal, a changed input on
     resume -- `ContractError`; the content of the author's card, the criteria or the sections
-    -- `AuthorCardRefused`. An incomplete run (`НЕПОЛНЫЙ_ПРОГОН`) is a result, not an error; entering
-    it again is `ContractError`: resuming it is an operation of the clarification block (БУ),
-    which also decides whether a new round or a reset budget follows.
+    -- `AuthorCardRefused`. An incomplete run (`НЕПОЛНЫЙ_ПРОГОН`) is a result, not an error.
 
-    Phase 0 refuses in this order: the shape of the inputs (the saved answers included), the run's
-    stage, its state, then the cards and criteria. Remaining boundary: the caller's `saved_proposals`
-    can be swapped before the inputs are pinned -- the journal holds no answer bytes until the
-    clarification block (БУ).
+    Resuming (БУ-13, БУ-14): entering a run again -- after a break, or an incomplete verdict --
+    continues it in the same run and round. The answers come ONLY from the journal: the bytes of
+    each received answer, read back with their hash, attempt and question checked, then judged again;
+    nothing the caller hands in can stand in for one (there is no parameter for it). A valid answer is
+    not asked for again, spent attempts stay spent, a changed input is refused before any write or
+    call. An incomplete run is continued by the table's row `resume`; when the critics without a
+    valid answer have no attempts left (retries or cut-off calls used up) the row's refusal is raised
+    as `ResumeImpossible` (`ПРОДОЛЖИТЬ_НЕЧЕМ`) and the run stays as it was -- a changed input then goes
+    through the correction of the clarification block (БУ, part 2), not through this call.
 
-    The saved answers are judged by content in phase 0 too (the same checks as the phases), before
-    the first write. Not judged there: saved proposals when the set of cards already exists (they
-    are not read then). Writing the input print before the `пакет_собран` event closes the window in
-    which a crash would leave the run started but not pinned. If the `fit` of the author's card
-    repeats a criterion's text word for word, the author is refused by the trace of the hidden:
-    retell it in your own words (the check is not loosened).
+    Phase 0 refuses in this order: the shape of the inputs, the run's stage, its state, then the
+    cards and criteria, then what the journal already holds (read back and judged), then the
+    exhausted budget of an incomplete run. Writing the input pin before the `пакет_собран` event
+    closes the window in which a crash would leave the run started but not pinned. If the `fit` of
+    the author's card repeats a criterion's text word for word, the author is refused by the trace of
+    the hidden: retell it in your own words (the check is not loosened).
     """
     tables = _tables(tables)
     critics = _check_critics(critics)
     _check_engine(tables)                                                  # phase 0
     _check_shape(sections, {} if registries is None else registries, withheld, tables)
-    saved_proposals = _check_saved(saved_proposals, "предложения", critics)
-    saved_comparisons = _check_saved(saved_comparisons, "сравнения", critics)
     state = _check_state(store, tables)                                    # the stage, then the state
     registries = {"решения": [], "области": [], "журнал_доказательств": []} if registries is None else registries
     parsed_criteria = validate_criteria(criteria)
@@ -1158,10 +1308,12 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
         card_print = digest(canonical_json(parse_answer(author_card)))
     except (AnswerRejected, PackageRefused):
         card_print = None                                                  # refused below, by the card's own check
-    fingerprint = _input_print({
+    round_number = max(state.round_number, 1)
+    revision = card_print or "карточка_не_разобрана"
+    input_pin = _input_pin(round_number, revision, {
         "разделы": sections, "реестры": registries, "критерии": criteria_view, "карточка": card_print,
         "критики": list(critics), "withheld": digest(canonical_json(withheld))})
-    _pin_inputs(store, fingerprint, write=False)                           # before anything is rebuilt
+    _pin_inputs(store, input_pin, write=False)                             # before anything is rebuilt
     try:       # the task, criteria and hidden names go through the package's own checks first
         check_comparison_inputs(sections, registries, STAGE, tables, withheld, criteria_view)
     except PackageRefused as refused:
@@ -1171,18 +1323,25 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
     author = check_author_card(author_card, criteria, tables, withheld)
     blind_package = _blind_package((sections, registries, withheld, criteria_view), author, tables)
 
-    _check_saved_content(state, saved_proposals, saved_comparisons, parsed_criteria, tables, withheld)
-    _pin_inputs(store, fingerprint, write=True)         # the print first: a crash after it cannot admit other inputs
-    if state.state == "создан":
-        state = store.record_event("пакет_собран")
     run = _Run(store, ask, tables, critics, parsed_criteria, criteria_view, sections, registries, withheld,
-               max(state.round_number, 1))
+               round_number, revision)
+    run = replace(run, snapshot=_check_recorded(store, state, run, blind_package, tables))
+    incomplete = state.state == tables.decide(
+        "идёт_круг", "вердикт", {"verdict": incomplete_verdict(tables)}).to
+    if incomplete:                                   # БУ-13: the journal counts the conditions, the table decides
+        resume_open = _resume_open(store, run, state, tables)
+    _pin_inputs(store, input_pin, write=True)        # the pin first: a crash after it cannot admit other inputs
+    if incomplete:
+        _resume(store, resume_open)
+        state = store.load()
+    elif state.state == "создан":
+        state = store.record_event("пакет_собран")
 
     proposals: dict = {}
     rejections: dict = {}
     expected = None
     if not state.idea_candidates:
-        proposals, blind_rejections = _phase_blind(run, blind_package, saved_proposals)     # phase A
+        proposals, blind_rejections = _phase_blind(run, blind_package)     # phase A
         rejections["blind"] = blind_rejections
         if sum(v is not None for v in proposals.values()) < len(critics):
             missing = [c for c in critics if proposals[c] is None]
@@ -1190,9 +1349,9 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
                            f"слепая фаза: нет валидного предложения у {_listed(missing)}")
         expected, reason = _phase_set(run, author, proposals, new_id, shuffle)             # phase B
         if expected is None:
-            return _finish(run, None, proposals, {}, rejections, reason)
+            return _finish(run, None, proposals, {}, rejections, reason, cause=CAUSE_INPUT_NOT_BUILT)
         state = store.load()
-    return _phase_compare(run, state, expected, saved_comparisons, proposals, rejections)  # phase C
+    return _phase_compare(run, state, expected, proposals, rejections)  # phase C
 
 
 # --------------------------------------------------------------------------

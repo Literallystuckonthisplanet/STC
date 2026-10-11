@@ -1024,7 +1024,14 @@ Roundtable, ни произвольного пакета там нет. Ревь
 | ждёт_Антона | `этап_пройден` | `anton_ok`=устарел | `ждёт_Антона` | — | `ОК_УСТАРЕЛ` |
 | создан | `вход_закреплён` | — | `создан` | — | — |
 | идёт_круг | `вход_закреплён` | — | `идёт_круг` | — | — |
-| ждёт_Антона | `вход_закреплён` | — | `ждёт_Антона` | — | — |
+| ждёт_Антона | `поправка` | `turns_left`=true | `идёт_круг` | `mark_results_stale` | — |
+| ждёт_Антона | `поправка` | `turns_left`=false | `остановлено_для_перепроектирования` | — | — |
+| неполный | `поправка` | `blind_cards_ready`=false | `неполный` | — | `ПОПРАВКА_ТУПИК` |
+| неполный | `поправка` | `blind_cards_ready`=true, `budget_remains`=true, `input_can_progress`=true | `неполный` | — | `КОРРЕКЦИЯ_НЕ_НУЖНА` |
+| неполный | `поправка` | `blind_cards_ready`=true, `turns_left`=true, `budget_remains`=false | `идёт_круг` | `mark_results_stale` | — |
+| неполный | `поправка` | `blind_cards_ready`=true, `turns_left`=true, `budget_remains`=true, `input_can_progress`=false | `идёт_круг` | `mark_results_stale` | — |
+| неполный | `поправка` | `blind_cards_ready`=true, `turns_left`=false, `budget_remains`=false | `остановлено_для_перепроектирования` | — | — |
+| неполный | `поправка` | `blind_cards_ready`=true, `turns_left`=false, `budget_remains`=true, `input_can_progress`=false | `остановлено_для_перепроектирования` | — | — |
 | идёт_круг | `пакет_закреплён` | — | `идёт_круг` | — | — |
 | создан | `cancel-run` | — | `отменён` | `record_reason` | — |
 | идёт_круг | `cancel-run` | — | `отменён` | `kill_process_group`, `mark_results_stale`, `record_reason` | — |

@@ -1747,9 +1747,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3, 50: 8}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3, 50: 8, 51: 5}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 204
+    assert len(findings) == 209
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1985,11 +1985,16 @@ FINDING_PINS = {
     "R50-1": ("7ab7c534acb9", "16fe8a398af1"),
     "R50-2": ("bdfd38b7bb17", "2420babf39c4"),
     "R50-3": ("a4342ab95066", "ca1cde82eaef"),
-    "R50-4": ("6f3cb482a2d6", "1760c70038c6"),
-    "R50-5": ("bbb9a24f5316", "1760c70038c6"),
+    "R50-4": ("6f3cb482a2d6", "c34b142b7ce4"),
+    "R50-5": ("bbb9a24f5316", "fcfcae9bd328"),
     "R50-6": ("28ac8da3d68f", "ead26ac7eb7c"),
-    "R50-7": ("b0c0f932f823", "1760c70038c6"),
-    "R50-8": ("6dad73e1d3fb", "1760c70038c6"),
+    "R50-7": ("b0c0f932f823", "d921a652f2e9"),
+    "R50-8": ("6dad73e1d3fb", "9394c8af51e8"),
+    "R51-1": ("11b8f7c34779", "aec37d45c1fb"),
+    "R51-2": ("63a410ecefb6", "a8de9b9aee59"),
+    "R51-3": ("e70b2cae94ba", "64730678413d"),
+    "R51-4": ("33fc7445d19a", "d3c38b6c279e"),
+    "R51-5": ("671f79bd8958", "e036ac170c1b"),
 }
 
 
@@ -2123,16 +2128,16 @@ ACCEPTANCE_PINS = {
     "Б2": "7733a36e8877",
     "БТ2": "5d702ef36ec0",
     "БИ": "29434be6e3e6",
-    "БУ": "70ae8b633cc0",
+    "БУ": "dbf542e47fb4",
     "БА": "b9b744de6264",
-    "Б15": "a8d864b664bc",
+    "Б15": "64b40ccc07b8",
     "Б4": "e9623ee8803e",
     "Ш2": "6918ea7a2711",
     "Б3б": "b21858bd895d",
     "Б5": "174fffb97870",
     "Б6": "f74b1911a848",
     "Б7": "6b3d40b37bc4",
-    "Б8": "3ed32358ea7b",
+    "Б8": "2525557447ce",
     "Б9": "53e3eab8c25e",
     "Б10": "7bc7ef02a2db",
     "БП": "8702cfee5fb5",
@@ -2159,9 +2164,9 @@ DECLARATION_PINS = {
     "Б2": "3e44a1c9dc9e",
     "БТ2": "fa2a9ea3d8e3",
     "БИ": "86d72c212883",
-    "БУ": "902f372b6c42",
+    "БУ": "7cd5d2ed7281",
     "БА": "b8b4637b2524",
-    "Б15": "be76e85c2c91",
+    "Б15": "f854e58faa90",
     "Б4": "8de62a816674",
     "Ш2": "79d3cf2b43b8",
     "Б3б": "71d5ad81f1bb",
@@ -2172,7 +2177,7 @@ DECLARATION_PINS = {
     "Б9": "18f7d9410d70",
     "Б10": "8538113a68ea",
     "БП": "4af969d39107",
-    "Б0б": "33f3c9fa1037",
+    "Б0б": "e632859aac6b",
     "Б11": "dc30cbb2a0e3",
     "Б12": "1d5631079421",
     "Б13": "60e0862884fc",
@@ -2220,7 +2225,7 @@ def test_the_conveyor_rules_survive_as_acceptance_criteria():
     assert all(condition != "—" for _, condition in pairs), "критерий конвейера пропал"
     digest = hashlib.sha256(
         json.dumps(pairs, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "95437b17498d3db0e1d089ebe60eed8d44f8afbaecd6495ae7cabe1133f592f4", (
+    assert digest == "4650c450ef7c4b7956bb4c4fcb50fcc6be97710075f897c4918294fff06abeba", (
         "правило конвейера удалено или выхолощено под прежним ID")
 
 

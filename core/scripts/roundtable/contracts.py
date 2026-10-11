@@ -42,7 +42,7 @@ from . import tables as tables_module
 from .context import (PackageRefused, build_comparison_package, build_package, canonical_json,
                       check_candidate_card, check_comparison_inputs, check_withheld, comparison_sections,
                       digest, fold_identifier, same_package)
-from .state import CAUSE_INPUT_NOT_BUILT, IdeaCandidate, Refusal
+from .state import CAUSE_INPUT_NOT_BUILT, IdeaCandidate, Refusal, ok_standing
 from .tables import ContractError
 
 __all__ = [
@@ -53,7 +53,7 @@ __all__ = [
     "outcome_rules", "decide_outcome", "IdeaOutcome", "retry_budget", "retry_order", "abort_limit",
     "calls_made", "incomplete_verdict", "run_idea_stage", "StageResult",
     "require_anton_ok", "leave_idea_stage",
-    "ResumeImpossible", "ANTON_OK_FLAG", "OBJECTION_FLAG", "PIN_INPUT", "PIN_PACKAGE", "AUTHOR_SOURCE", "BLIND_STAGE",
+    "ResumeImpossible", "AntonOkRefused", "record_anton_ok", "ok_marker", "OBJECTION_FLAG", "PIN_INPUT", "PIN_PACKAGE", "AUTHOR_SOURCE", "BLIND_STAGE",
     "COMPARE_STAGE", "STAGE", "IDEA_VERDICT", "INCOMPLETE_VERDICT", "CRITERION_ID", "SCHEMAS_DIR",
 ]
 
@@ -66,9 +66,7 @@ STAGE = "идея"
 PIN_INPUT = "вход_закреплён"            # journal events (vocabulary.закрепление.события): the caller's inputs, pinned at the first entry
 PIN_PACKAGE = "пакет_закреплён"         # ... and the second package, pinned before the first comparison call
 OBJECTION_FLAG = "есть_открытые_возражения_к_постановке"
-# БИ-13: evidence of Anton's explicit OK. The real operation belongs to БУ;
-# until it exists the evidence is a run flag, and the guard reads only that.
-ANTON_OK_FLAG = "ок_антона_на_решение"
+# БУ-15: Anton's OK is no flag any more -- it is a journal event tied to a reply in the transcript.
 
 # Verdict of every valid «идея» outcome (§4.5: "любой валидный итог приходит в
 # ждёт_Антона"). It is checked against the vocabulary and the run table below,
@@ -139,9 +137,20 @@ class AntonOkRequired(Exception):
 
     code = "НЕТ_ОК_АНТОНА"
 
-    def __init__(self, detail: str = ""):
+    def __init__(self, detail: str = "", code: str | None = None):
         self.detail = detail
+        if code is not None:
+            self.code = code                 # the table's refusal (НЕТ_ОК_АНТОНА, ОК_УСТАРЕЛ, ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ)
         super().__init__(f"{self.code}: {detail}" if detail else self.code)
+
+
+class AntonOkRefused(Exception):
+    """БУ-15: a reply was offered as Anton's OK and was not counted (nothing is written)."""
+
+    def __init__(self, code: str, detail: str = ""):
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}" if detail else code)
 
 
 # --------------------------------------------------------------------------
@@ -1355,48 +1364,165 @@ def run_idea_stage(store, *, criteria, author_card, ask, sections, withheld, reg
 
 
 # --------------------------------------------------------------------------
-# БИ-13: no transition without Anton's recorded OK
+# БУ-15, БУ-9, БУ-5, БУ-10: Anton's OK -- a trusted source, a record, a real transition
 # --------------------------------------------------------------------------
 
-def require_anton_ok(store) -> None:
-    """Refuse unless the stage is finished and Anton's OK follows its last verdict.
+def ok_marker(run_id: str, revision: str, tables=None) -> str:
+    """The line the assistant prints before asking for the OK: the run and the short hash of the revision.
 
-    The OK counts only when (by journal order) the run waits for Anton, the last
-    verdict is the idea one and belongs to the current round (it follows the last round
-    start), no framing objection is open, the OK flag is still on, and it was recorded
-    after that verdict.
+    The form is `vocabulary.ок_антона.маркер`. An OK counts for the revision whose marker stood in the
+    answer right before the reply -- the engine does not take the hash from the reply itself.
+    """
+    spec = _tables(tables).vocabulary["ок_антона"]
+    return spec["маркер"].replace("{прогон}", run_id).replace("{хеш}", revision[:spec["длина_хеша"]])
+
+
+def _markers_shown(turn: str, spec: dict) -> set:
+    head, tail = spec["маркер"].split("{прогон}")
+    middle, end = tail.split("{хеш}")
+    pattern = re.escape(head) + r"([^\s,]+)" + re.escape(middle) + r"([0-9a-f]{%d})(?![0-9a-f])" % spec["длина_хеша"] + re.escape(end)
+    return set(re.findall(pattern, turn))
+
+
+def _parse_time(value):
+    from datetime import datetime, timezone
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _ok_problem(store, state, spec: dict, basis, home) -> tuple:
+    """`(fields, None)` for an OK that is counted, `(None, problem)` for one that is not.
+
+    Judged first by the journal (`RunStore.ok_journal_problem`: a revision is pinned, the critics judged it,
+    the verdict is of this round, the session is the run's own). Then by the transcript, read ONCE:
+    * the reply is a human's (`tables.transcript_reply`), and it is ONLY the bare word of consent
+      (`ок`, `да`, `согласен`…) or, when the question was a fork card, a verbatim copy of its «yes» option
+      (`resolve_basis(consent=True)`); «ОК на <что угодно>» is not an OK -- what is approved is held by the marker;
+    * the marker line (this run, the whole hash of the current revision's first `длина_хеша` signs) stands in
+      the LAST text block of the assistant -- the parent of the reply -- and in fork mode inside the card after 🗳;
+    * that block and the reply are not older than the last verdict of the current round.
+    """
+    problem = store.ok_journal_problem(state, basis["сессия"])
+    if problem:
+        return None, problem
+    revision = state.input_revision
+    found = tables_module.transcript_reply(basis["сессия"], basis["native_uuid"], home)
+    if isinstance(found, str):
+        return None, found
+    block, own = found["last_text"], found["own"]
+    if block is None:
+        return None, "перед репликой нет текстового блока ассистента: вопроса, на который она отвечает, нет"
+    fork = "🗳" in block
+    shown = _markers_shown(block[block.rindex("🗳"):] if fork else block, spec)
+    if shown != {(state.run_id, revision[:spec["длина_хеша"]])}:
+        return None, ("в последнем блоке ассистента перед репликой"
+                      + (" (в карточке после 🗳)" if fork else "")
+                      + f" нет строки с этим прогоном и текущей редакцией ({ok_marker(state.run_id, revision, store.tables)})"
+                        " или есть строка с другими")
+    if fork:
+        quote = own.strip(" \t\r\n\x00")
+        problem = tables_module.resolve_basis(
+            {"вид": "событие_транскрипта", "сессия": basis["сессия"], "native_uuid": basis["native_uuid"],
+             "цитата": quote, "подвид": "выбор_варианта"}, home, consent=True, records=found["records"])
+    else:
+        problem = tables_module.bare_consent_problem(own)
+    if problem:
+        return None, problem
+    verdict_at = _parse_time(state.last_verdict_at)
+    for what, stamp in (("реплика", found["timestamp"]), ("блок ассистента с вопросом", found["last_text_at"])):
+        moment = _parse_time(stamp)
+        if moment is None:
+            return None, f"у записи «{what}» нет времени в переписке: порядок относительно вердикта не доказать"
+        if verdict_at is None or moment < verdict_at:
+            return None, f"{what} раньше последнего вердикта текущего круга"
+    return {"session": basis["сессия"], "native_uuid": basis["native_uuid"], "reply_at": found["timestamp"],
+            "run_id": state.run_id, "stage": state.stage, "artifact": spec["артефакт"], "revision": revision,
+            "round_number": max(state.round_number, 1)}, None
+
+
+def record_anton_ok(store, basis, home=None):
+    """Record Anton's OK on the current revision -- only from a reply in the transcript (БУ-15).
+
+    `basis` is a reference to a record of the session, `{"сессия": ..., "native_uuid": ...}` and nothing
+    else: no `actor`, no text, no hash. The record ties the source (session, uuid, time of the reply),
+    the run, the stage, the artifact and the hash of the revision (БУ-9). Not counted -> `AntonOkRefused`
+    with the table's code, nothing written. The same reply again is the same record; another reply
+    makes a new one (before the exit); none of them makes a transition (that is `leave_idea_stage`).
+    """
+    tables = store.tables
+    spec = tables.vocabulary["ок_антона"]
+    if not isinstance(basis, Mapping) or set(basis) != {"сессия", "native_uuid"}:
+        raise ContractError("основание ОК: только ссылка на запись переписки {сессия, native_uuid}")
+    state = store.load()
+    if state.stage != spec["этап"]:
+        raise ContractError(f"прогон другой стадии: {state.stage!r}, ОК даётся на {spec['этап']!r}")
+    if state.state == "завершён" and state.stage_exit_position >= 0:
+        # the exit is made and `завершён` has no way out: the same reply is the record already kept, a new one is not needed
+        for old in state.anton_oks:
+            if (old.session, old.native_uuid) == (basis["сессия"], basis["native_uuid"]):
+                return old
+        raise AntonOkRefused("ОК_НЕ_ЗАСЧИТАН", "переход со стадии уже совершён: новый ОК не нужен")
+    if state.state != "ждёт_Антона":
+        raise AntonOkRefused("ОК_НЕ_ЗАСЧИТАН", f"прогон в состоянии {state.state!r}: ОК давать не на что")
+    fields, problem = _ok_problem(store, state, spec, basis, home)
+    refusal = tables.decide(state.state, spec["событие"], {"ok_binding": problem is None}).refusal
+    if refusal is not None:
+        raise AntonOkRefused(refusal, problem or "")
+    try:
+        return store._record_anton_ok(**fields)
+    except Refusal as refused:
+        if refused.code == "ОК_НЕ_ЗАСЧИТАН":
+            raise AntonOkRefused(refused.code, refused.detail) from None
+        raise ContractError(f"запись ОК отвергнута: {refused}") from None
+
+
+def require_anton_ok(store) -> None:
+    """Refuse unless the exit is open: an OK on the current revision after the current verdict, no open objection.
+
+    The answer is the table's (`run.yaml`, `этап_пройден`): the code of the refusal, never an invented one.
+    A read of the journal; the transcript is looked at again by `leave_idea_stage`.
     """
     state = store.load()
     if state.state != "ждёт_Антона":
         raise AntonOkRequired(f"прогон в состоянии {state.state!r}, ждать ОК нечего")
-    if OBJECTION_FLAG in state.flags:
-        raise AntonOkRequired("открыто возражение к постановке — оно держит стадию")
-    if ANTON_OK_FLAG not in state.flags:
-        raise AntonOkRequired("нет записанного ОК Антона на решение")
-    position = {"verdict": -1, "round": -1, "ok": -1}
-    last_verdict = None
-    for index, entry in enumerate(store._entries()):    # временно: до публичного чтения журнала в state.py (блок БУ)
-        kind = entry.get("kind")
-        if kind == "event" and entry.get("event") == "вердикт" and (entry.get("outcome") or {}).get("moved"):
-            position["verdict"] = index
-            last_verdict = (entry.get("conditions") or {}).get("verdict")
-        elif kind == "round_started":
-            position["round"] = index
-        elif kind == "flag" and entry.get("flag") == ANTON_OK_FLAG:
-            position["ok"] = index if entry.get("on") else -1
-    if last_verdict != IDEA_VERDICT:
-        raise AntonOkRequired(f"последний вердикт {last_verdict!r}, а не {IDEA_VERDICT}")
-    if position["verdict"] < position["round"]:
-        raise AntonOkRequired("последний вердикт — с прошлого круга: в текущем круге вердикта ещё нет")
-    if position["ok"] < 0 or position["ok"] < position["verdict"]:
-        raise AntonOkRequired("ОК Антона дан не после последнего вердикта текущего круга")
+    spec = store.tables.vocabulary["ок_антона"]
+    flag = store.tables.framing["флаг_прогона"]
+    standing, detail = ok_standing(state, spec)
+    outcome = store.tables.decide(state.state, spec["переход"], {
+        "anton_ok": standing, "framing_objection": flag in state.flags})
+    if outcome.refusal is not None:
+        raise AntonOkRequired(detail or "открыто возражение к постановке — оно держит стадию", code=outcome.refusal)
 
 
-def leave_idea_stage(store) -> bool:
-    """A PREDICATE: True only when Anton's OK is recorded after the last verdict.
+def leave_idea_stage(store, home=None) -> bool:
+    """БУ-5, БУ-10: leave the stage through the table, only on Anton's recorded OK.
 
-    It is not wired to a run transition and the OK flag is not a protected write — both
-    belong to the БУ block; until then nothing in the engine calls it on a transition.
-    The critics' agreement never substitutes for the OK."""
+    Checks the journal (the last verdict of the current round, an OK on the current revision after it, the
+    revision judged, no open objection to the framing), then looks at the transcript AGAIN: the reply of the
+    last counted OK must still be there and still be what it was (a vanished or changed reply shuts the exit,
+    `ОК_УСТАРЕЛ`). Then the store makes the transition `этап_пройден` and counts the conditions itself.
+    Without the OK -- the table's refusal code, however much the critics agree. A repeat (or a restart) finds
+    the exit already made: `True` again, no second transition.
+    """
+    state = store.load()
+    spec = store.tables.vocabulary["ок_антона"]
+    if state.stage != spec["этап"]:
+        raise ContractError(f"прогон другой стадии: {state.stage!r}, выходим со стадии {spec['этап']!r}")
+    if state.stage_exit_position >= 0:
+        return True
     require_anton_ok(store)
+    last = [o for o in state.anton_oks
+            if o.revision == state.input_revision and o.position > state.last_verdict_position][-1]
+    fields, problem = _ok_problem(store, state, spec, {"сессия": last.session, "native_uuid": last.native_uuid}, home)
+    if problem is None and (fields["reply_at"], fields["revision"]) != (last.reply_at, last.revision):
+        problem = "реплика ОК в переписке изменилась"
+    if problem is not None:
+        raise AntonOkRequired(f"реплика последнего ОК больше не подтверждается: {problem}", code="ОК_УСТАРЕЛ")
+    try:
+        store.record_stage_exit()
+    except Refusal as refused:
+        raise AntonOkRequired(refused.detail, code=refused.code) from None
     return True

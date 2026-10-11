@@ -280,6 +280,35 @@ class Pin:
     content_hash: str
     hidden_hash: str | None
     at: str
+    position: int = -1                 # its place in the journal: what came before it and after is decided by that
+
+
+@dataclass(frozen=True)
+class AntonOk:
+    """БУ-15: one recorded OK of Anton and what it is tied to.
+
+    `session` / `native_uuid` / `reply_at` name the reply in the transcript it came from; `run_id`,
+    `stage`, `artifact`, `revision` (full hash) and `round_number` name what it was given for;
+    `position` is its place in the journal (what came before it and what after is decided by that).
+    """
+
+    session: str
+    native_uuid: str
+    reply_at: str
+    run_id: str
+    stage: str
+    artifact: str
+    revision: str
+    round_number: int
+    position: int
+    at: str
+
+    def same_as(self, other: "AntonOk") -> bool:
+        return all(getattr(self, n) == getattr(other, n) for n in (
+            "session", "native_uuid", "reply_at", "run_id", "stage", "artifact", "revision", "round_number"))
+
+
+_OK_FIELDS = ("session", "native_uuid", "reply_at", "run_id", "stage", "artifact", "revision", "round_number")
 
 
 @dataclass(frozen=True)
@@ -313,6 +342,20 @@ class RunState:
     idea_candidates_permutation: tuple = ()
     pins: list = field(default_factory=list)
     incomplete_cause: str | None = None
+    entries_seen: int = 0
+    last_verdict: str | None = None
+    last_verdict_position: int = -1
+    last_verdict_at: str = ""
+    round_mark_position: int = -1
+    anton_oks: list = field(default_factory=list)
+    stage_exit_position: int = -1
+    session: str | None = None
+
+    @property
+    def input_revision(self) -> str | None:
+        """The revision the current input is pinned for: that of the latest `вход_закреплён`."""
+        revisions = [p.revision for p in self.pins if p.event == "вход_закреплён"]
+        return revisions[-1] if revisions else None
 
     def as_dict(self) -> dict:
         return {
@@ -332,6 +375,9 @@ class RunState:
             ],
             "idea_candidates_permutation": list(self.idea_candidates_permutation),
             "incomplete_cause": self.incomplete_cause,
+            "anton_oks": [{**{n: getattr(o, n) for n in _OK_FIELDS}, "position": o.position, "at": o.at}
+                          for o in self.anton_oks],
+            "stage_exit_position": self.stage_exit_position,
             "pins": [{"event": p.event, "round": p.round_number, "revision": p.revision,
                       "content_hash": p.content_hash, "hidden_hash": p.hidden_hash, "at": p.at}
                      for p in self.pins],
@@ -351,6 +397,28 @@ class RunState:
                 for a in self.attempts.values()
             ],
         }
+
+
+def ok_standing(state: RunState, spec: dict) -> tuple:
+    """`(anton_ok, detail)` for the exit: is there an OK on the current revision after the current verdict.
+
+    The OK counts when the verdict is the stage's own and of the current round, the current revision was
+    pinned BEFORE it (the critics judged that very revision), and the record is newer than the verdict and
+    names the current revision. Whatever else the journal holds is history that opens nothing.
+    """
+    fresh = state.last_verdict == spec["вердикт"] and state.last_verdict_position > state.round_mark_position
+    if not fresh:
+        return ("устарел" if state.anton_oks else "нет"), \
+            "последний вердикт — с прошлого круга: в текущем круге вердикта ещё нет"
+    if not state.anton_oks:
+        return "нет", "нет записанного ОК Антона на решение"
+    pins = [p for p in state.pins if p.event == "вход_закреплён"]
+    judged = bool(pins) and pins[-1].position < state.last_verdict_position
+    good = [o for o in state.anton_oks
+            if judged and o.revision == state.input_revision and o.position > state.last_verdict_position]
+    if good:
+        return "есть", ""
+    return "устарел", "ОК Антона дан не после последнего вердикта текущего круга или на другую редакцию"
 
 
 def _card_bytes(encoded) -> bytes:
@@ -604,13 +672,18 @@ class RunStore:
         head = entries[0]
         if head.get("kind") != "run_created":
             raise StateError(f"{self.directory}: журнал не начинается созданием прогона")
-        state = RunState(run_id=head["run_id"], stage=head["stage"], created_at=head["at"])
+        state = RunState(run_id=head["run_id"], stage=head["stage"], created_at=head["at"], entries_seen=1,
+                         session=head.get("session"))
+        if state.session is not None and (not isinstance(state.session, str) or not state.session.strip()):
+            raise StateError("журнал: сессия прогона — непустая строка или не записана")
         for entry in entries[1:]:
             self._fold(state, entry)
         return state
 
     def _fold(self, state: RunState, entry: dict) -> None:
         kind = entry.get("kind")
+        position = state.entries_seen
+        state.entries_seen += 1
         if kind in ("operation", "event"):
             if kind == "operation":
                 state.operations.append(Operation(
@@ -618,12 +691,20 @@ class RunStore:
                     input_hash=entry["input_hash"], outcome=entry.get("outcome"),
                     refusal=entry.get("refusal"), at=entry["at"]))
             if entry.get("pin") is not None:
-                state.pins.append(self._pin_of(entry))
+                state.pins.append(self._pin_of(entry, position))
             if entry.get("event") == "вердикт":
                 cause = (entry.get("data") or {}).get("cause")
                 if cause is not None and cause not in INCOMPLETE_CAUSES:
                     raise StateError(f"журнал: неизвестная причина неполного прогона {cause!r}")
                 state.incomplete_cause = cause
+                if (entry.get("outcome") or {}).get("moved"):
+                    state.last_verdict = (entry.get("conditions") or {}).get("verdict")
+                    state.last_verdict_position = position
+                    state.last_verdict_at = entry["at"]
+            if entry.get("ok") is not None:
+                state.anton_oks.append(self._ok_of(entry, position))
+            if entry.get("event") == "этап_пройден" and (entry.get("outcome") or {}).get("moved"):
+                state.stage_exit_position = position
             outcome = entry.get("outcome") or {}
             if outcome.get("moved"):
                 state.state = outcome["to"]
@@ -661,6 +742,7 @@ class RunStore:
             state.attempts[key] = replace(previous, validation=Validation(accepted, reason, entry["question_hash"]))
         elif kind == "round_started":
             state.round_number = entry["round"]
+            state.round_mark_position = position
         elif kind == "flag":
             (state.flags.add if entry["on"] else state.flags.discard)(entry["flag"])
         elif kind == "published":
@@ -677,7 +759,22 @@ class RunStore:
             raise StateError(f"неизвестная запись журнала: {kind!r}")
 
     @staticmethod
-    def _pin_of(entry: dict) -> Pin:
+    def _ok_of(entry: dict, position: int) -> AntonOk:
+        """An OK as the journal holds it -- or `StateError`, never a bare `KeyError`."""
+        raw = entry["ok"]
+        if not isinstance(raw, dict) or set(raw) != set(_OK_FIELDS) or entry.get("event") != "ок_антона":
+            raise StateError(f"журнал: запись ОК должна быть из {list(_OK_FIELDS)}")
+        for name in _OK_FIELDS:
+            value = raw[name]
+            if name == "round_number":
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise StateError(f"журнал: круг записи ОК {value!r}")
+            elif not isinstance(value, str) or not value.strip():
+                raise StateError(f"журнал: в записи ОК пусто поле {name}")
+        return AntonOk(**raw, position=position, at=entry["at"])
+
+    @staticmethod
+    def _pin_of(entry: dict, position: int = -1) -> Pin:
         """A pin as the journal holds it -- or `StateError`, never a bare `KeyError`."""
         pin = entry["pin"]
         names = ("round", "revision", "content_hash", "hidden_hash")
@@ -691,7 +788,8 @@ class RunStore:
                 raise StateError(f"журнал: закрепление без {name}")
         if pin["hidden_hash"] is not None and not isinstance(pin["hidden_hash"], str):
             raise StateError("журнал: hidden_hash закрепления — строка или None")
-        return Pin(entry["event"], number, pin["revision"], pin["content_hash"], pin["hidden_hash"], entry["at"])
+        return Pin(entry["event"], number, pin["revision"], pin["content_hash"], pin["hidden_hash"], entry["at"],
+                   position)
 
     def _apply_action(self, state: RunState, action: str, entry: dict) -> None:
         """One pure effect per action code, exactly as run.yaml names them."""
@@ -707,7 +805,7 @@ class RunStore:
         # the journal here and applied there.
 
     # -- the operations -----------------------------------------------------
-    def create(self, run_id: str, stage: str) -> RunState:
+    def create(self, run_id: str, stage: str, session: str | None = None) -> RunState:
         """Bootstrap a run's journal.
 
         There is no `create` entry in the operation vocabulary — the run
@@ -723,12 +821,15 @@ class RunStore:
             self.tables.vocabulary["стадии"]["вне_MVP"])
         if stage not in stages:
             raise StateError(f"неизвестная стадия {stage!r}")
+        if session is not None and (not isinstance(session, str) or not session.strip()):
+            raise StateError("сессия прогона — непустая строка или не задана")
         with RunLock(self.directory) as lock:
             if self._entries():
                 raise StateError(f"{self.directory}: прогон уже создан")
             previous, self._lock = self._lock, lock
             try:
-                self._append({"kind": "run_created", "run_id": run_id, "stage": stage})
+                self._append({"kind": "run_created", "run_id": run_id, "stage": stage,
+                              **({"session": session} if session is not None else {})})
             finally:
                 self._lock = previous
             state = self.load()
@@ -805,6 +906,10 @@ class RunStore:
         self._require_live("record_event")
         if event in self.tables.vocabulary["операции"]:
             raise StateError(f"{event!r} — операция, ей нужен submit с ключом повтора")
+        spec = self.tables.vocabulary["ок_антона"]
+        if event in (spec["событие"], spec["переход"]):
+            raise StateError(f"{event!r} пишется только своим методом хранилища "
+                             "(record_stage_exit; запись ОК закрыта): условия считает журнал")
         state = self.load()
         extra = {"kind": "event", "event": event}
         if data:
@@ -1179,6 +1284,86 @@ class RunStore:
                 return False
         return True
 
+    # -- the OK of Anton (БУ-15) ----------------------------------------------
+    def ok_journal_problem(self, state: RunState, session: str | None = None) -> str | None:
+        """Why an OK cannot be given on this run now, judged by the journal alone -- or None.
+
+        There is a revision pinned, the critics judged THAT revision (its pin stands before the last verdict),
+        the verdict belongs to the current round, and the OK comes from the run's own session if one was recorded.
+        """
+        spec = self.tables.vocabulary["ок_антона"]
+        revision = state.input_revision
+        if revision is None:
+            return "нет закреплённого входа: редакции, на которую давать ОК, нет"
+        if state.last_verdict != spec["вердикт"] or state.last_verdict_position < state.round_mark_position:
+            return "в текущем круге вердикта для Антона ещё нет: ОК давать не на что"
+        last_pin = [p for p in state.pins if p.event == "вход_закреплён"][-1]
+        if last_pin.position > state.last_verdict_position:
+            return "текущую редакцию критики не судили: закрепление новее последнего вердикта"
+        if session is not None and state.session is not None and session != state.session:
+            return "реплика из другой сессии, чем та, в которой начат прогон"
+        return None
+
+    def _record_anton_ok(self, **fields) -> AntonOk:
+        """Write one OK of Anton with what it is tied to, as the journal event `ок_антона`. CLOSED: the caller
+        of the stage (`contracts.record_anton_ok`) makes the proof from the transcript before this.
+
+        Here the journal's own checks are made again, so that the door cannot be used on its own: the
+        state is `ждёт_Антона`, the revision is the current one and was judged, the verdict is of the current
+        round. The same reply again comes back as the same record (no second one), the same reply with other
+        content is a conflict, another reply makes a new record.
+        """
+        self._require_live("_record_anton_ok")
+        if set(fields) != set(_OK_FIELDS):
+            raise StateError(f"_record_anton_ok: нужны ровно поля {list(_OK_FIELDS)}")
+        state = self.load()
+        candidate = AntonOk(**fields, position=-1, at="")
+        for name in _OK_FIELDS:
+            value = fields[name]
+            if name == "round_number":
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise StateError(f"_record_anton_ok: круг {value!r}")
+            elif not isinstance(value, str) or not value.strip():
+                raise StateError(f"_record_anton_ok: пусто поле {name}")
+        if fields["run_id"] != state.run_id or fields["stage"] != state.stage:
+            raise StateError("_record_anton_ok: ОК другого прогона или другой стадии")
+        for old in state.anton_oks:
+            if (old.session, old.native_uuid) == (candidate.session, candidate.native_uuid):
+                if old.same_as(candidate):
+                    return old                                         # идемпотентный повтор той же реплики
+                raise Refusal("КОНФЛИКТ_ВХОДА", "та же реплика уже записана как ОК на другое")
+        problem = self.ok_journal_problem(state, fields["session"])
+        if problem is None and fields["revision"] != state.input_revision:
+            problem = "ОК на другую редакцию, чем текущая"
+        if problem is not None:
+            raise Refusal("ОК_НЕ_ЗАСЧИТАН", problem)
+        self._apply(state, "ок_антона", {"ok_binding": True}, extra={
+            "kind": "event", "event": "ок_антона", "ok": dict(fields)})
+        return self.load().anton_oks[-1]
+
+    def record_stage_exit(self) -> RunState:
+        """БУ-5, БУ-10: the exit from the stage -- the event `этап_пройден` of `run.yaml`, its conditions counted HERE.
+
+        `anton_ok` and `framing_objection` come from the journal (`ok_standing`), never from the caller; there is
+        no other door (`record_event` refuses this event). A refusal is the table's code (`Refusal`), nothing is
+        written. Already left -- the same state, no second transition.
+        """
+        self._require_live("record_stage_exit")
+        spec = self.tables.vocabulary["ок_антона"]
+        state = self.load()
+        if state.stage != spec["этап"]:
+            raise StateError(f"выход со стадии {spec['этап']!r}, а прогон стадии {state.stage!r}")
+        if state.stage_exit_position >= 0:
+            return state
+        standing, detail = ok_standing(state, spec)
+        conditions = {"anton_ok": standing,
+                      "framing_objection": self.tables.framing["флаг_прогона"] in state.flags}
+        outcome = self.tables.decide(state.state, spec["переход"], conditions)
+        if outcome.refusal is not None:
+            raise Refusal(outcome.refusal, detail or "открыто возражение к постановке — оно держит стадию")
+        self._apply(state, spec["переход"], conditions, extra={"kind": "event", "event": spec["переход"]})
+        return self.load()
+
     # -- pins (БУ-12) --------------------------------------------------------
     @staticmethod
     def pin_status(state: RunState, event: str, *, round_number: int, revision: str,
@@ -1235,6 +1420,9 @@ class RunStore:
 
     def set_flag(self, flag: str, on: bool = True) -> RunState:
         self._require_live("set_flag")
+        if not on and flag == self.tables.framing["флаг_прогона"]:
+            # БУ-15: the objection to the framing is closed by Anton's decision (the operations block), never by a flag call
+            raise Refusal("ФЛАГ_ЗАЩИЩЁН", "возражение к постановке снимается решением Антона, а не set_flag")
         self._append({"kind": "flag", "flag": flag, "on": on})
         state = self.load()
         self._write_snapshot(state)

@@ -45,7 +45,7 @@ class _TestRun:
     _MUTATING = {
         "submit", "record_event", "revoke", "start_round", "set_flag",
         "record_attempt", "mark_possible_duplicate", "assign_idea_candidates",
-        "record_received", "record_validation", "pin",
+        "record_received", "record_validation", "pin", "_record_anton_ok", "record_stage_exit",
     }
 
     def __init__(self, directory, tables):
@@ -1083,9 +1083,9 @@ def test_bu12_a_pin_is_a_journal_event_and_survives_a_restart(tmp_path):
     assert [e["event"] for e in events if e.get("kind") == "event"][-1] == "пакет_закреплён"
 
 
-def _idea_run(tmp_path):
+def _idea_run(tmp_path, session=None):
     directory = tmp_path / "run"
-    S.RunStore(directory, TABLES).create("run-1", "идея")
+    S.RunStore(directory, TABLES).create("run-1", "идея", session)
     return _TestRun(directory, TABLES)
 
 
@@ -1387,3 +1387,139 @@ def test_bu11_a_failed_rename_leaves_no_temp_file_and_the_leftovers_of_a_crash_a
     assert calls and "src_dir_fd" in calls[0] and "dst_dir_fd" in calls[0]            # by descriptor, not by path
     assert run.load().attempts[("run-1", "идея:слепой", 1, "claude", 1)].receipt is None
     assert run.record_received("идея:слепой", 1, "claude", 1, b"abc", QUESTION).status == "получена"
+
+
+# --------------------------------------------------------------------------
+# БУ-15 — the record of an OK as the journal holds it
+# --------------------------------------------------------------------------
+
+OK_FIELDS = dict(session="11111111-2222-3333-4444-555555555555", native_uuid="aaaaaaaa-bbbb-cccc-dddd-000000000001",
+                 reply_at="2999-01-01T00:00:00Z", run_id="run-1", stage="идея", artifact="карточка_решения",
+                 revision="d" * 64, round_number=1)
+
+
+def _waiting_for_anton(tmp_path, session=None):
+    run = _started(_idea_run(tmp_path, session))
+    run.record_event("пакет_собран")
+    run.pin("вход_закреплён", round_number=1, revision="d" * 64, content_hash="c" * 64)    # the critics judge THIS revision
+    run.record_event("вердикт", {"verdict": "РЕШЕНИЕ_АНТОНА"})
+    return run
+
+
+def test_bu15_the_record_of_an_ok_is_kept_once_with_its_place_in_the_journal(tmp_path):
+    run = _waiting_for_anton(tmp_path)
+    verdict_at = run.load().last_verdict_position
+    first = run._record_anton_ok(**OK_FIELDS)
+    assert first.position > verdict_at >= 0 and run.load().state == "ждёт_Антона"
+    size = run.journal_path.read_bytes()
+    assert run._record_anton_ok(**OK_FIELDS) == first and run.journal_path.read_bytes() == size
+    other = run._record_anton_ok(**{**OK_FIELDS, "native_uuid": "aaaaaaaa-bbbb-cccc-dddd-000000000002"})
+    assert other.position > first.position and S.RunStore(run.directory, TABLES).load().anton_oks == [first, other]
+    with pytest.raises(S.Refusal):
+        run._record_anton_ok(**{**OK_FIELDS, "revision": "c" * 64})
+
+
+@pytest.mark.parametrize("bad", [{"run_id": "чужой"}, {"stage": "план"}, {"revision": " "}, {"round_number": 0},
+                                 {"round_number": True}, {"session": 5}])
+def test_bu15_a_record_of_another_run_or_a_damaged_field_is_refused_before_the_write(tmp_path, bad):
+    run = _waiting_for_anton(tmp_path)
+    size = run.journal_path.read_bytes()
+    with pytest.raises(S.StateError):
+        run._record_anton_ok(**{**OK_FIELDS, **bad})
+    with pytest.raises(S.StateError):
+        run._record_anton_ok(**{k: v for k, v in OK_FIELDS.items() if k != "revision"})
+    assert run.journal_path.read_bytes() == size
+
+
+@pytest.mark.parametrize("damage", [
+    lambda e: {**e, "ok": {k: v for k, v in e["ok"].items() if k != "revision"}},
+    lambda e: {**e, "ok": {**e["ok"], "round_number": "1"}},
+    lambda e: {**e, "ok": {**e["ok"], "run_id": ""}},
+    lambda e: {**e, "ok": "не словарь"},
+])
+def test_bu15_a_damaged_ok_entry_is_a_state_error_not_a_key_error(tmp_path, damage):
+    run = _waiting_for_anton(tmp_path)
+    run._record_anton_ok(**OK_FIELDS)
+    _rewrite_last(run, damage)
+    with pytest.raises(S.StateError):
+        S.RunStore(run.directory, TABLES).load()
+
+
+def test_bu15_an_ok_cannot_be_recorded_when_the_run_is_not_waiting_for_anton(tmp_path):
+    run = _started(_idea_run(tmp_path))
+    run.record_event("пакет_собран")
+    with pytest.raises((S.Refusal, T.ContractError)):            # no verdict yet: nothing to give an OK for
+        run._record_anton_ok(**OK_FIELDS)
+
+
+def test_bu15_the_door_of_the_record_is_closed_and_the_exit_is_only_the_stores_own(tmp_path):
+    run = _waiting_for_anton(tmp_path)
+    assert not hasattr(S.RunStore, "record_anton_ok")                                # the public name is gone
+    size = run.journal_path.read_bytes()
+    spec = TABLES.vocabulary["ок_антона"]
+    for event, conditions in ((spec["переход"], {"anton_ok": "есть", "framing_objection": False}),
+                              (spec["переход"], {}), (spec["событие"], {"ok_binding": True})):
+        with pytest.raises(S.StateError, match="своим методом"):
+            run.record_event(event, conditions)
+    assert run.journal_path.read_bytes() == size and run.load().state == "ждёт_Антона"
+
+
+def test_bu15_the_exit_counts_its_conditions_from_the_journal_and_takes_none_from_outside(tmp_path):
+    run = _waiting_for_anton(tmp_path)
+    with pytest.raises(S.Refusal) as refused:                                       # no OK
+        run.record_stage_exit()
+    assert refused.value.code == "НЕТ_ОК_АНТОНА" and run.load().state == "ждёт_Антона"
+    with pytest.raises(TypeError):
+        run.record_stage_exit({"anton_ok": "есть", "framing_objection": False})
+    run._record_anton_ok(**OK_FIELDS)
+    run.set_flag(TABLES.framing["флаг_прогона"])                                    # an open objection holds the exit
+    with pytest.raises(S.Refusal) as refused:
+        run.record_stage_exit()
+    assert refused.value.code == "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ"
+    with pytest.raises(S.Refusal) as refused:                                       # and cannot be taken off by a flag call
+        run.set_flag(TABLES.framing["флаг_прогона"], False)
+    assert refused.value.code == "ФЛАГ_ЗАЩИЩЁН" and TABLES.framing["флаг_прогона"] in run.load().flags
+    run.set_flag("другой_флаг")
+    run.set_flag("другой_флаг", False)                                              # other flags are not protected
+    assert run.load().state == "ждёт_Антона"
+
+
+def test_bu15_the_exit_with_an_ok_is_made_once(tmp_path):
+    run = _waiting_for_anton(tmp_path)
+    run._record_anton_ok(**OK_FIELDS)
+    left = run.record_stage_exit()
+    assert left.state == "завершён" and left.stage_exit_position > 0
+    size = run.journal_path.read_bytes()
+    assert run.record_stage_exit().state == "завершён" and run.journal_path.read_bytes() == size
+    assert S.RunStore(run.directory, TABLES).load().stage_exit_position == left.stage_exit_position
+
+
+def test_bu15_the_record_checks_the_journal_itself_revision_state_judged_and_session(tmp_path):
+    run = _waiting_for_anton(tmp_path, session=OK_FIELDS["session"])
+    size = run.journal_path.read_bytes()
+    for bad, why in (({"revision": "c" * 64}, "другую редакцию"),
+                     ({"session": "99999999-2222-3333-4444-555555555555"}, "другой сессии")):
+        with pytest.raises(S.Refusal, match=why):
+            run._record_anton_ok(**{**OK_FIELDS, **bad})
+    assert run.journal_path.read_bytes() == size and run.load().anton_oks == []
+    assert run._record_anton_ok(**OK_FIELDS).revision == "d" * 64                    # positive control
+    assert run.load().session == OK_FIELDS["session"]
+
+
+def test_bu15_a_revision_pinned_after_the_last_verdict_was_never_judged_and_takes_no_ok(tmp_path):
+    run = _waiting_for_anton(tmp_path)
+    run.pin("вход_закреплён", round_number=2, revision="e" * 64, content_hash="f" * 64)    # the verdict was about "d"
+    size = run.journal_path.read_bytes()
+    with pytest.raises(S.Refusal, match="не судили"):
+        run._record_anton_ok(**{**OK_FIELDS, "revision": "e" * 64})
+    with pytest.raises(S.Refusal):
+        run._record_anton_ok(**OK_FIELDS)                                           # nor does the old one: it is not current
+    assert run.journal_path.read_bytes() == size
+
+
+def test_bu15_the_run_remembers_the_session_it_started_in(tmp_path):
+    with_session = _idea_run(tmp_path / "a", session="11111111-2222-3333-4444-555555555555")
+    assert with_session.load().session == "11111111-2222-3333-4444-555555555555"
+    assert _idea_run(tmp_path / "b").load().session is None
+    with pytest.raises(S.StateError):
+        S.RunStore(tmp_path / "c", TABLES).create("run-1", "идея", " ")

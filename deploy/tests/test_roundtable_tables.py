@@ -3192,7 +3192,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert ISSUES["допустимые_решения"] == {'блокер_правкой_круги_исчерпаны': ['принять_риск', 'остановить', 'запросить_ещё_правку'], 'блокер_сменой_решения': ['сменить_решение', 'принять_риск', 'остановить'], 'блокер_только_сменой_цели': ['изменить_цель', 'принять_риск', 'остановить'], 'неизвестное_высокой_существенности': ['принять_риск', 'запросить_ещё_правку', 'остановить']}, (
         "допустимое решение по типу замечания убрано — Антон лишился варианта")
     assert VOCAB["состояния_блока"] == {'рабочие': ['идёт', 'переоткрыт', 'неполный'], 'терминальные': ['сделано', 'объединён_с']}
-    assert {key: VOCAB["коды_условий"][key] for key in VOCAB["коды_условий"]} == {'verdict': ['ОДОБРЕНО', 'НУЖНЫ_ПРАВКИ', 'РЕШЕНИЕ_АНТОНА', 'НЕПОЛНЫЙ_ПРОГОН'], 'decision': ['принять_риск', 'остановить', 'сменить_решение', 'изменить_цель', 'запросить_ещё_правку'], 'framing_decision': ['подтвердить_постановку', 'изменить_цель', 'сменить_решение', 'остановить'], 'budget_allows_round': [True, False], 'budget_fits_quorum': [True, False], 'change_index': ['первая', 'вторая'], 'round_running': [True, False], 'run_finished': [True, False], 'all_verdict_blocking_resolved': [True, False], 'budget_remains': [True, False], 'input_can_progress': [True, False]}
+    assert {key: VOCAB["коды_условий"][key] for key in VOCAB["коды_условий"]} == {'verdict': ['ОДОБРЕНО', 'НУЖНЫ_ПРАВКИ', 'РЕШЕНИЕ_АНТОНА', 'НЕПОЛНЫЙ_ПРОГОН'], 'decision': ['принять_риск', 'остановить', 'сменить_решение', 'изменить_цель', 'запросить_ещё_правку'], 'framing_decision': ['подтвердить_постановку', 'изменить_цель', 'сменить_решение', 'остановить'], 'budget_allows_round': [True, False], 'budget_fits_quorum': [True, False], 'change_index': ['первая', 'вторая'], 'round_running': [True, False], 'run_finished': [True, False], 'all_verdict_blocking_resolved': [True, False], 'budget_remains': [True, False], 'input_can_progress': [True, False], 'ok_binding': [True, False], 'anton_ok': ['есть', 'нет', 'устарел'], 'framing_objection': [True, False]}
     assert STAGES["слепой_вопрос"]["прячем"] == ['предложенное_решение', 'автор', 'второй_критик'], (
         "из слепого вопроса убрано то, что прячется от критика")
     assert STAGES["слепой_вопрос"]["показываем"] == ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения']
@@ -3216,6 +3216,9 @@ def test_closed_code_lists_are_pinned_whole():
         "РЕШЕНИЕ_ВНЕ_ТИПА", "ЕСТЬ_ЗАВИСИМЫЕ_СОБЫТИЯ", "ПРОГОН_ЗАНЯТ",
         "ПРОДОЛЖИТЬ_НЕЧЕМ",     # БУ-13: added — a named outcome for continuing an exhausted run
         "НУЖНА_КОРРЕКЦИЯ_ВХОДА",  # БУ-13: added — the budget is there but the continuation changes nothing
+        # БУ-15: added — Anton's OK: not counted / absent at the exit / overtaken by an edit / an open objection
+        "ОК_НЕ_ЗАСЧИТАН", "НЕТ_ОК_АНТОНА", "ОК_УСТАРЕЛ", "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ",
+        "ФЛАГ_ЗАЩИЩЁН",        # БУ-15: the objection flag is taken off by Anton's decision, not by a flag call
     }
     assert set(VOCAB["коды_условий"]) == {
         "verdict", "decision", "framing_decision", "budget_allows_round",
@@ -3223,6 +3226,7 @@ def test_closed_code_lists_are_pinned_whole():
         "run_finished", "all_verdict_blocking_resolved",
         "budget_remains",       # БУ-13: added — whether the critics without a valid answer have attempts left
         "input_can_progress",   # БУ-13: added — whether the continuation can change anything (input builds, round pinned)
+        "ok_binding", "anton_ok", "framing_objection",   # БУ-15: added — the OK of Anton: counted, standing at the exit, objection
     }
     assert set(VOCAB["решения_по_возражению"]) == {
         "подтвердить_постановку", "изменить_цель", "сменить_решение", "остановить",
@@ -4643,3 +4647,76 @@ def test_bu_continuing_an_incomplete_run_is_three_rows_of_one_operation():
     for budget in (True, False):                                                    # every combination has exactly one outcome
         for progress in (True, False):
             REAL_TABLES.decide("неполный", "resume", {"budget_remains": budget, "input_can_progress": progress})
+
+
+def test_bu15_the_anton_ok_section_and_its_rows_are_declared_and_checked():
+    spec = VOCAB["ок_антона"]
+    assert (spec["событие"], spec["переход"], spec["источник"]) == ("ок_антона", "этап_пройден", "событие_транскрипта")
+    assert spec["длина_хеша"] >= 32 and spec["вердикт"] == "РЕШЕНИЕ_АНТОНА"
+    assert REAL_TABLES.framing["флаг_прогона"] == "есть_открытые_возражения_к_постановке"
+    REAL_TABLES.check()                                                                  # positive control
+    for mutate in (
+        lambda r: r["vocabulary"]["ок_антона"].update(источник="флаг"),
+        lambda r: r["vocabulary"]["ок_антона"].update(маркер="прогон {прогон}"),
+        lambda r: r["vocabulary"]["ок_антона"].update(длина_хеша=3),
+        lambda r: r["vocabulary"]["ок_антона"].update(длина_хеша=31),
+        lambda r: r["vocabulary"]["ок_антона"].update(вердикт="ОДОБРЕНО"),
+        lambda r: r["vocabulary"]["ок_антона"].update(вердикт="выдумка"),
+        lambda r: r["vocabulary"]["ок_антона"].update(этап="выдумка"),
+        lambda r: r["vocabulary"]["ок_антона"].update(переход="resume"),
+        lambda r: r["vocabulary"]["ок_антона"].update(выдумка=1),
+    ):
+        with pytest.raises(_MODULE.ContractError):
+            _tables_with(lambda r: mutate(r)).check()
+
+
+def test_bu15_the_exit_is_a_table_transition_and_every_refusal_has_its_own_code():
+    got = {(c, f): REAL_TABLES.decide("ждёт_Антона", "этап_пройден", {"anton_ok": c, "framing_objection": f})
+           for c in ("есть", "нет", "устарел") for f in (True, False)}
+    assert (got["есть", False].to, got["есть", False].refusal) == ("завершён", None)
+    assert got["есть", True].refusal == "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ"
+    assert got["нет", False].refusal == got["нет", True].refusal == "НЕТ_ОК_АНТОНА"
+    assert got["устарел", False].refusal == "ОК_УСТАРЕЛ"
+    assert all(o.to == "ждёт_Антона" for k, o in got.items() if o.refusal)               # a refusal moves nothing
+    assert REAL_TABLES.decide("ждёт_Антона", "ок_антона", {"ok_binding": True}).to == "ждёт_Антона"   # the record moves nothing
+    assert REAL_TABLES.decide("ждёт_Антона", "ок_антона", {"ok_binding": False}).refusal == "ОК_НЕ_ЗАСЧИТАН"
+    with pytest.raises(_MODULE.ContractError):                                           # `завершён` is final: no record after the exit
+        REAL_TABLES.decide("завершён", "ок_антона", {"ok_binding": True})
+    assert "этап_пройден" not in VOCAB["операции"] and "ок_антона" not in VOCAB["операции"]
+
+
+# БУ-15 / аудит: слова отрицания и условия не прячутся за двойником «i» и «і»; голое слово согласия.
+LOOKALIKE_I = [
+    "нi в коем случае", "погодi", "подождi", "дождiсь ревью", "нi", "нiколи",       # Latin i
+    "ні в коем случае", "ніколи", "погоді",                                          # Ukrainian і
+]
+
+
+@pytest.mark.parametrize("tail", LOOKALIKE_I)
+def test_bu15_a_lookalike_i_does_not_hide_a_negation_or_a_condition(tail):
+    reply = f"ОК на карточку решения, {tail}"
+    assert _MODULE._unambiguous_yes(reply, reply) is not None, f"засчитано: {reply!r}"
+    assert _MODULE.bare_consent_problem(f"ок, {tail}") is not None
+
+
+def test_bu15_the_consent_phrases_keep_working():
+    ok = "ОК на работу над блоками цикла уточнений и предпроверки"          # the phrase of Anton's permission
+    assert _MODULE._unambiguous_yes(ok, ok) is None
+    for phrase in ("ОК на коммит", "да на всё"):                                         # the permission formula still takes «на <что>»
+        assert _MODULE._unambiguous_yes(phrase, phrase) is None
+    for word in ("ок", "Ок.", "окей", "да", "Да!", "согласен", "согласна", "одобряю", "разрешаю", "оk"):
+        assert _MODULE.bare_consent_problem(word) is None, word
+    for word in ("ок на коммит", "да на всё", "ок?", "не ок", "ок, но позже", "нет", "ок нi", "\x00ок на всё"):
+        assert _MODULE.bare_consent_problem(word) is not None, word
+
+
+def test_bu15_a_transcript_that_cannot_be_read_is_a_refusal_for_a_permission_too(tmp_path):
+    module = import_tables_module()
+    session = "11111111-2222-3333-4444-555555555555"
+    directory = tmp_path / ".claude" / "projects" / "proj"
+    directory.mkdir(parents=True)
+    (directory / f"{session}.jsonl").write_bytes(b"\xff\xfe\x80")
+    problem = module.resolve_basis({"вид": "событие_транскрипта", "сессия": session,
+                                    "native_uuid": "aaaaaaaa-bbbb-cccc-dddd-000000000001",
+                                    "цитата": "разрешаю всё это делать"}, tmp_path)
+    assert "не читается" in (problem or "")

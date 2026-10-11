@@ -86,7 +86,7 @@ TOP_LEVEL = {
         "состояния_блока", "внешние_действия",
         "оценка_критерия", "состояния_кандидата", "выбор_кандидата_sentinel",
         "отношение_механизмов", "повтор_невалидного_ответа",
-        "ответ_критика", "закрепление",
+        "ответ_критика", "закрепление", "ок_антона",
         "операции", "операции_без_бюджета",
         "коды_условий", "коды_действий", "коды_отказа",
         "схемы_контрактов", "схемы_вне_контрактов",
@@ -679,6 +679,8 @@ SHAPES = {
         "коды_условий": Mapping(LIST),
         "ответ_критика": Record("каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов", "почему"),
         "закрепление": Record("события", "на_круг", "иное_содержимое"),
+        "ок_антона": Record("событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша",
+                            "почему"),
         "повтор_невалидного_ответа": Record(
             "максимум_на_ответ", "область", "тратит_бюджет", "порядок", "оба_невалидны",
             "сохранённый_валидный_ответ_не_повторять", "после_исчерпания",
@@ -1780,6 +1782,7 @@ class Tables:
         self._check_idea_outcomes()
         self._check_idea_execution()
         self._check_answer_records()
+        self._check_anton_ok()
         checked.append("исходы идеи: коды, порядок и приоритеты закрыты, причины сходятся со списком")
 
         self._check_shapes()
@@ -1831,6 +1834,37 @@ class Tables:
             if any(t.source != t.target or t.refusal or t.actions or t.conditions for t in rows):
                 raise ContractError(f"{where}.события: {event!r} не должно менять состояние, "
                                     "зависеть от условий или отказывать")
+
+    def _check_anton_ok(self) -> None:
+        """vocabulary.ок_антона (БУ-15): то, что читают state.py и contracts.py, названо и сходится с run.yaml."""
+        where = "vocabulary.ок_антона"
+        spec = self.vocabulary.get("ок_антона")
+        if not isinstance(spec, dict):
+            raise ContractError(f"{where}: ожидалась карта")
+        _require(spec, {"событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша",
+                        "почему"}, set(), where)
+        if spec["вердикт"] not in self.vocabulary["вердикты"] or spec["вердикт"] == "ОДОБРЕНО":
+            raise ContractError(f"{where}.вердикт: {spec['вердикт']!r} не вердикт, ведущий к Антону")
+        if spec["источник"] != "событие_транскрипта":
+            raise ContractError(f"{where}.источник: ОК Антона доказывается репликой в переписке (событие_транскрипта)")
+        stages = set(self.vocabulary["стадии"]["в_MVP"]) | set(self.vocabulary["стадии"]["вне_MVP"])
+        if spec["этап"] not in stages:
+            raise ContractError(f"{where}.этап: {spec['этап']!r} не стадия")
+        _nonempty_string(spec["артефакт"], f"{where}.артефакт")
+        _nonempty_string(spec["почему"], f"{where}.почему")
+        marker = spec["маркер"]
+        if not isinstance(marker, str) or marker.count("{прогон}") != 1 or marker.count("{хеш}") != 1:
+            raise ContractError(f"{where}.маркер: нужна строка с одним {{прогон}} и одним {{хеш}}")
+        size = spec["длина_хеша"]
+        if isinstance(size, bool) or not isinstance(size, int) or not 32 <= size <= 64:
+            raise ContractError(f"{where}.длина_хеша: целое от 32 до 64, получено {size!r}")
+        operations = set(self.vocabulary["операции"])
+        for name in (spec["событие"], spec["переход"]):
+            if name in operations or name not in self.events:
+                raise ContractError(f"{where}: {name!r} — не событие движка из run.yaml")
+        for row in (t for t in self.transitions if t.event == spec["событие"]):
+            if row.source != row.target or row.actions:
+                raise ContractError(f"{where}.событие: запись ОК не должна менять состояние прогона")
 
     def _check_idea_execution(self) -> None:
         """stages.исполнение_идеи: предел вызовов критика, прерванных до ответа (БИ, аудит безопасности)."""
@@ -2914,13 +2948,16 @@ def _denylist(words: str) -> re.Pattern:
     читалось безоговорочным согласием. Перечень сворачивается той же
     таблицей, что и текст; граница слова — любая буква, а не только кириллица.
     """
-    return re.compile(r"(?<![^\W\d_])(" + words.translate(_HOMOGLYPHS) + r")(?![^\W\d_])", re.I)
+    # Круг БУ-2а: двойник «i»/«і» прятал слово («нi», «погодi»). Кириллическая «и» в перечне
+    # совпадает и с латинской «i» — украинская «і» свёрнута в неё той же таблицей.
+    folded = words.translate(_HOMOGLYPHS).replace("и", "[иi]")
+    return re.compile(r"(?<![^\W\d_])(" + folded + r")(?![^\W\d_])", re.I)
 
 
 # Отрицание, отказ, запрет — отдельным словом. Шире нужного нарочно: лишний
 # отказ исправляется новой репликой, лишнее «согласие» — нет.
 NEGATION = _denylist(r"не|нет|ни|нельзя|никогда|запрещ\w*|стоп|отмен\w*|откаж\w*|"
-                     r"отказ\w*|против|погоди|no|not|don.?t|never|stop|wait|hold")
+                     r"отказ\w*|против|погоди|ні|ніколи|no|not|don.?t|never|stop|wait|hold")
 CONDITION = _denylist(r"но|только|лишь|если|после|кроме|когда|позже|потом|"
                       r"подожди|подождём|дождись|пока|однако|сначала|сперва|прежде|перед|"
                       r"при условии|but|only|if|after|unless|before|first|once|when|until|later|except|provided")
@@ -2928,8 +2965,11 @@ CONDITION = _denylist(r"но|только|лишь|если|после|кром�
 # «Да ладно…», «Да ты что…» и условие строкой ниже. Согласие теперь —
 # РАЗРЕШЁННАЯ форма всей реплики целиком: слово согласия и, по желанию,
 # «на <что>». Всё остальное программа согласием не читает.
-CONSENT_FORMULA = re.compile(r"^(ок|окей|да|разрешаю|согласен|согласна|одобряю)"
+CONSENT_WORDS = "ок|окей|да|разрешаю|согласен|согласна|одобряю"
+CONSENT_FORMULA = re.compile(rf"^({CONSENT_WORDS})"
                              r"(?:[,!.]?\s+на\s+(?P<scope>[^\n?]+?))?[.!]*$", re.I)
+# БУ-15: ОК на стадии — голое слово согласия, без «на <что>»: свободный «что» не привязывает ОК к вопросу.
+BARE_CONSENT = re.compile(rf"^({CONSENT_WORDS})[.!]*$", re.I)
 # Название варианта «да» в карточке развилки — только такие формы.
 OPTION_CONSENT = re.compile(r"^(дать\s+(явное\s+)?[«\"]?(да|ок)[»\"]?|да|ок|подтвердить|"
                             r"подтверждаю|разрешаю|разрешить|согласен|согласна)"
@@ -3045,6 +3085,19 @@ def _unambiguous_yes(own: str, quote: str) -> str | None:
     return _refuses(reply)
 
 
+def bare_consent_problem(own: str) -> str | None:
+    """БУ-15: реплика — голое слово согласия («ок», «да», «согласен»…), без отрицания, вопроса и условия.
+
+    Порога длины цитаты нет: короткое «ок» — настоящий ответ человека. «ОК на <что угодно>» сюда не
+    проходит: что именно одобрено, держит строка привязки в ответе ассистента, а не слова реплики.
+    """
+    edges = " \t\r\n\x00"
+    reply = _normal(own).strip(edges).rstrip(".!").strip(edges)
+    if not BARE_CONSENT.match(reply):
+        return "реплика — не голое слово согласия («ок», «да», «согласен»…)"
+    return _refuses(reply)
+
+
 def _assistant_turn(record: dict, records: dict) -> str:
     """Текст последнего ответа ассистента прямо перед этой репликой."""
     texts, current, seen = [], record.get("parentUuid"), set()
@@ -3093,8 +3146,80 @@ def _chosen_yes(own: str, record: dict, records: dict) -> str | None:
 
 
 
+def _session_records(session: str, home: Path) -> tuple[dict | None, str | None]:
+    """Записи переписки сессии: (uuid → запись, отказ). Одно место для разрешений и для ОК Антона."""
+    candidates = list(home.glob(f".claude/projects/*/{session}.jsonl"))
+    if not candidates:
+        return None, f"сессии нет: {session}"
+    if len(candidates) > 1:
+        return None, f"сессия {session} записана в нескольких каталогах — какую читать, не доказать"
+    # 🚩 Ревью #39: файл переписки мог оказаться ярлыком наружу — и «основание»
+    # читалось из чего угодно.
+    transcript = candidates[0]
+    projects = (home / ".claude/projects").resolve()
+    if not transcript.resolve().is_relative_to(projects):
+        return None, f"запись сессии ведёт наружу: {transcript.resolve()}"
+    try:
+        return _records(transcript), None
+    except (OSError, UnicodeDecodeError) as error:
+        return None, f"переписка сессии {session} не читается ({type(error).__name__})"
+
+
+def _last_assistant_text(record: dict, records: dict) -> tuple[str | None, str | None]:
+    """(последний текстовый блок ассистента — родитель реплики, время его записи).
+
+    Идём вверх от реплики и берём ближайшую запись ассистента, где есть текст; на реплике человека
+    останавливаемся. Блок — именно последний текстовый блок этой записи.
+    """
+    current, seen = record.get("parentUuid"), set()
+    while isinstance(current, str) and current in records and current not in seen:
+        seen.add(current)
+        entry = records[current]
+        if _is_human_prompt(entry):
+            return None, None
+        if entry.get("type") == "assistant":
+            content = _content(entry)
+            texts = _texts(content if isinstance(content, list) else [])
+            if texts:
+                stamp = entry.get("timestamp")
+                return texts[-1], stamp if isinstance(stamp, str) else None
+        current = entry.get("parentUuid")
+    return None, None
+
+
+def transcript_reply(session: str, native_uuid: str, home: Path | None = None) -> dict | str:
+    """БУ-15: что известно о реплике человека в переписке — или отказ строкой.
+
+    Те же проверки происхождения, что у разрешений (`_session_records`, `_human_text`, `own_words`):
+    запись есть, это реплика человека, а не служебная вставка. Возвращает слова человека без
+    вставок (`own`), время реплики (`timestamp`, как записано, или None), текст ответа ассистента
+    прямо перед ней (`assistant_turn`). Согласие в реплике проверяет `resolve_basis(consent=True)`.
+    """
+    home = Path(home) if home else Path.home()
+    if not _is_uuid(session):
+        return f"сессия не похожа на идентификатор: {session!r}"
+    if not _is_uuid(native_uuid):
+        return f"событие не похоже на идентификатор: {native_uuid!r}"
+    records, problem = _session_records(session, home)
+    if problem:
+        return problem
+    record = records.get(native_uuid)
+    if record is None:
+        return f"{native_uuid}: события нет в сессии"
+    if record.get("type") != "user":
+        return f"{native_uuid}: не реплика пользователя"
+    text, refusal = _human_text(record, records, native_uuid)
+    if refusal:
+        return refusal
+    timestamp = record.get("timestamp")
+    last_text, last_text_at = _last_assistant_text(record, records)
+    return {"own": own_words(text), "timestamp": timestamp if isinstance(timestamp, str) else None,
+            "assistant_turn": _assistant_turn(record, records), "records": records,
+            "last_text": last_text, "last_text_at": last_text_at}
+
+
 def resolve_basis(basis: dict, home: Path | None = None, *,
-                  consent: bool = False) -> str | None:
+                  consent: bool = False, records: dict | None = None) -> str | None:
     """Actually open what the permission points at. Returns the failure, or None.
 
     Structure checks proved a string was non-empty. That is what let a citation
@@ -3129,20 +3254,12 @@ def resolve_basis(basis: dict, home: Path | None = None, *,
         return f"событие не похоже на идентификатор: {wanted!r}"
     if len(str(quote).strip()) < MIN_QUOTE:
         return f"цитата короче {MIN_QUOTE} знаков — доказывать ей нечего"
-    candidates = list(home.glob(f".claude/projects/*/{session}.jsonl"))
-    if not candidates:
-        return f"сессии нет: {session}"
-    if len(candidates) > 1:
-        return f"сессия {session} записана в нескольких каталогах — какую читать, не доказать"
-    # 🚩 Ревью #39: файл переписки мог оказаться ярлыком наружу — и «основание»
-    # читалось из чего угодно.
-    transcript = candidates[0]
-    projects = (home / ".claude/projects").resolve()
-    if not transcript.resolve().is_relative_to(projects):
-        return f"запись сессии ведёт наружу: {transcript.resolve()}"
+    if records is None:                       # `records`: уже прочитанная переписка — второго разбора нет
+        records, problem = _session_records(session, home)
+        if problem:
+            return problem
     if not isinstance(quote, str):
         return f"цитата не строка: {quote!r}"
-    records = _records(transcript)
     record = records.get(wanted)
     if record is not None:
         if record.get("type") != "user":

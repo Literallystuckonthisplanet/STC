@@ -1,0 +1,434 @@
+{
+  "версия": 1,
+  "случаи": [
+    {
+      "имя": "clean",
+      "документ": "clean.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    },
+    {
+      "имя": "minimal-valid",
+      "документ": "minimal-valid.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    },
+    {
+      "имя": "broken-section-target",
+      "документ": "broken-section-target.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "находки",
+      "находки": [
+        {
+          "код": "BROKEN_ANCHOR",
+          "где": "ref:gone",
+          "причина": "якорь не объявлен ни одним разделом"
+        }
+      ]
+    },
+    {
+      "имя": "broken-section-target-control",
+      "документ": "controls/broken-section-target.ok.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    },
+    {
+      "имя": "removed-block-refused",
+      "документ": "removed-block.md",
+      "факты": {
+        "отказ": {
+          "причина": "отсутствие_обязательного_файла",
+          "деталь": "docs/removed.md"
+        }
+      },
+      "статус": "находки",
+      "находки": [
+        {
+          "код": "MISSING_EXISTING_EVIDENCE",
+          "где": "docs/removed.md",
+          "причина": "нет файла: сборщик отказал по отсутствию обязательного файла"
+        }
+      ]
+    },
+    {
+      "имя": "removed-block-not-in-manifest",
+      "документ": "removed-block.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "находки",
+      "находки": [
+        {
+          "код": "MISSING_EXISTING_EVIDENCE",
+          "где": "docs/removed.md",
+          "причина": "нет файла: его нет в манифесте пакета"
+        }
+      ]
+    },
+    {
+      "имя": "hash-mismatch",
+      "документ": "hash-mismatch.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "находки",
+      "находки": [
+        {
+          "код": "MISSING_EXISTING_EVIDENCE",
+          "где": "docs/plan.md",
+          "причина": "хеш не совпал с хешем из манифеста пакета"
+        }
+      ]
+    },
+    {
+      "имя": "removed-block-control",
+      "документ": "controls/removed-block.ok.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    },
+    {
+      "имя": "planned-claimed-as-evidence",
+      "документ": "planned-claimed-as-evidence.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "находки",
+      "находки": [
+        {
+          "код": "MISSING_EXISTING_EVIDENCE",
+          "где": "out/new.md",
+          "причина": "нет файла как свидетельства: в манифесте он planned_output"
+        }
+      ]
+    },
+    {
+      "имя": "planned-output-absent-is-fine",
+      "документ": "clean.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/a.md",
+            "класс": "planned_output",
+            "хеш": null
+          },
+          {
+            "путь": "out/b.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    },
+    {
+      "имя": "unknown-class-in-facts",
+      "документ": "clean.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "может_быть",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          }
+        ]
+      },
+      "статус": "недопустимый_вход",
+      "находки": []
+    },
+    {
+      "имя": "unknown-class-refusal",
+      "документ": "clean.md",
+      "факты": {
+        "отказ": {
+          "причина": "неизвестный_класс_файла",
+          "деталь": "docs/plan.md: может_быть"
+        }
+      },
+      "статус": "недопустимый_вход",
+      "находки": []
+    },
+    {
+      "имя": "count-mismatch",
+      "документ": "count-mismatch.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "находки",
+      "находки": [
+        {
+          "код": "DECLARED_COUNT_MISMATCH",
+          "где": "files",
+          "причина": "в списке 2, объявлено 3"
+        }
+      ]
+    },
+    {
+      "имя": "count-mismatch-control",
+      "документ": "controls/count-mismatch.ok.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    },
+    {
+      "имя": "revision-mismatch",
+      "документ": "revision-mismatch/artifact.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "находки",
+      "находки": [
+        {
+          "код": "REVISION_MISMATCH",
+          "где": "revision",
+          "причина": "редакция в шапке не равна редакции пакета"
+        }
+      ]
+    },
+    {
+      "имя": "revision-mismatch-control",
+      "документ": "revision-mismatch/control.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    },
+    {
+      "имя": "forbidden-capability",
+      "документ": "forbidden-capability.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "находки",
+      "находки": [
+        {
+          "код": "FORBIDDEN_CAPABILITY_PRESENT",
+          "где": "write",
+          "причина": "возможность и активна, и запрещена одновременно"
+        }
+      ]
+    },
+    {
+      "имя": "forbidden-capability-control",
+      "документ": "controls/forbidden-capability.ok.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    },
+    {
+      "имя": "hash-uppercase",
+      "документ": "hash-uppercase.md",
+      "факты": {
+        "редакция": "r1",
+        "записи": [
+          {
+            "путь": "docs/plan.md",
+            "класс": "existing_evidence",
+            "хеш": "67b2d5a5fac29f2a0d981fe74b2d86276dcafb1e7838c10813494e37d5922f55"
+          },
+          {
+            "путь": "out/new.md",
+            "класс": "planned_output",
+            "хеш": null
+          }
+        ]
+      },
+      "статус": "чисто",
+      "находки": []
+    }
+  ]
+}

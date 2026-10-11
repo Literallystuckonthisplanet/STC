@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "precheck_frontmatter",
+  "description": "Фронтматтер артефакта для программной предпроверки (Б15): редакция в шапке, объявленные якоря и ссылки, явные списки с объявленным числом, заявленные хеши existing_evidence, множества возможностей. Свободный текст документа не разбирается.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["revision", "sections", "references", "lists", "evidence", "active_capabilities", "forbidden_capabilities"],
+  "properties": {
+    "revision": {"type": "string", "minLength": 1, "maxLength": 64},
+    "sections": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "anchors"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 200},
+          "anchors": {"type": "array", "maxItems": 500, "items": {"type": "string", "minLength": 1, "maxLength": 200}}
+        }
+      }
+    },
+    "references": {"type": "array", "maxItems": 2000, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+    "lists": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "declared_count", "items"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 200},
+          "declared_count": {"type": "integer"},
+          "items": {"type": "array", "maxItems": 5000, "items": {"type": "string", "minLength": 1, "maxLength": 500}}
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "maxLength": 500},
+          "sha256": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    "active_capabilities": {"type": "array", "maxItems": 500, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+    "forbidden_capabilities": {"type": "array", "maxItems": 500, "items": {"type": "string", "minLength": 1, "maxLength": 200}}
+  }
+}

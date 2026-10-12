@@ -241,8 +241,11 @@ def test_every_working_state_has_a_continuation(tmp_path):
 
     directory = _copy(tmp_path)
 
+    # БУ: из неполного прогона два продолжения — resume и поправка; тупик
+    # получается, только если убрать оба.
     def strip_resume(data):
-        data["переходы"] = [row for row in data["переходы"] if row["событие"] != "resume"]
+        data["переходы"] = [row for row in data["переходы"]
+                            if row["событие"] not in ("resume", "поправка")]
 
     _edit(directory, "run", strip_resume)
     # load() now runs the full check() (БТ2-4 rework) — the missing

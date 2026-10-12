@@ -1222,6 +1222,7 @@ def test_a_missing_scope_hash_is_not_a_wildcard():
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
     _as_open(raw, "Б2")                       # круг 49: Б2 закрыт, опыт открывает его на копии
+    _as_open(raw, "Б15")                      # круг 52: Б15 закрыт и зависит от Б2 — открывается следом
     # разрешение, покрывающее открытый Б2
     at = next(i for i, g in enumerate(raw["blocks"]["разрешения_исполнения"])
               if "Б2" in g["блоки"])
@@ -1747,9 +1748,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3, 50: 8, 51: 5}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3, 50: 8, 51: 5, 52: 5}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 209
+    assert len(findings) == 214
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1991,10 +1992,15 @@ FINDING_PINS = {
     "R50-7": ("b0c0f932f823", "d921a652f2e9"),
     "R50-8": ("6dad73e1d3fb", "9394c8af51e8"),
     "R51-1": ("11b8f7c34779", "aec37d45c1fb"),
-    "R51-2": ("63a410ecefb6", "a8de9b9aee59"),
-    "R51-3": ("e70b2cae94ba", "64730678413d"),
-    "R51-4": ("33fc7445d19a", "d3c38b6c279e"),
+    "R51-2": ("63a410ecefb6", "f6661cf4422f"),
+    "R51-3": ("e70b2cae94ba", "c498bdb97a6a"),
+    "R51-4": ("33fc7445d19a", "dc1aabb9435a"),
     "R51-5": ("671f79bd8958", "e036ac170c1b"),
+    "R52-1": ("e7e0bff43043", "c2998023dd2a"),
+    "R52-2": ("4670a8d5494b", "aa6f3581b19c"),
+    "R52-3": ("1452d8ecf7f9", "92493ad1da24"),
+    "R52-4": ("dfe9e26bae99", "febd4fe6731b"),
+    "R52-5": ("ce9f31f9e691", "1760c70038c6"),
 }
 
 
@@ -2762,6 +2768,7 @@ def test_a_block_cannot_be_worked_on_under_a_stale_permission():
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
     _as_open(raw, "Б2")
+    _as_open(raw, "Б15")                      # круг 52: закрытый Б15 не может стоять над открытым Б2
     raw["blocks"]["блоки"]["Б2"]["приёмка"].append(
         {"id": "Б2-99", "условие": "дописал себе работы после разрешения"})
     with pytest.raises(module.ContractError, match="Б2: в работе"):
@@ -2848,6 +2855,7 @@ def test_absorption_cannot_be_circular():
     for chain in (["БТ2", "БИ"], ["БТ2", "БИ", "Б9"]):
         raw = _as_open(copy.deepcopy(module.load().raw), "БТ2")
         _as_open(raw, "БИ")                   # круг 50: БИ закрыт, опыт открывает его на копии
+        _as_open(raw, "Б15")                  # круг 52: Б15 закрыт при открытых БТ2/БИ — открывается следом
         blocks = raw["blocks"]["блоки"]
         for name, nxt in zip(chain, chain[1:] + chain[:1]):
             blocks[name]["состояние"] = "объединён_с"
@@ -3202,7 +3210,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert BLOCKS["списки"] == {'пункты_плана_PEV': ['результат_границы_и_что_не_меняется', 'затронутые_файлы_и_доказательства', 'критерии_приёмки_и_проверка', 'блоки_и_зависимости', 'делегирование_модель_изоляция', 'неразрешённые_решения_пользователя'], 'таблицы': ['vocabulary', 'run', 'issues', 'framing', 'precheck', 'blocks', 'stages', 'findings'], 'фикстуры_репетиции': ['tune-plan.md', 'tune-gold.json', 'holdout-plan.md', 'holdout-gold.json'], 'исходы_идеи': ['возражение_держит_стадию', 'нет_годного_варианта', 'частичная_негодность', 'оба_предпочли_неавторскую_и_назвали_авторскую_непроходной', 'нет_консенсусно_годного', 'подтверждён', 'оба_предпочли_неавторскую', 'расхождение', 'три_подхода_на_столе']}
     # исполнение меняется при каждом закрытии блока — поэтому слепком, и
     # обновляется той же правкой, что закрывает блок
-    assert _finding_digest(BLOCKS["исполнение"]) == "34082d2f6961", (
+    assert _finding_digest(BLOCKS["исполнение"]) == "b56d9bfea1b2", (
         "план исполнения изменён — шаг, проверка блока, роль или волна")
     assert BLOCKS["порядок_критики"]["классы_мутаций"] == ['убрать_правило', 'подменить_значение_на_допустимое', 'подменить_текст_сохранив_ID', 'подсунуть_недопустимое', 'соврать_в_ссылке', 'расширить_себе_объём', 'разорвать_доказательство'], (
         "из метода критика убран или подменён класс поломки")
@@ -3992,7 +4000,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "8cefab94b5fcb38fb640e9108197ec2404eb03c369e1b1b8d95dd1c88d6991c5", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "f2300cdf59f8b40054cc2cbba556403661f00dec223f562454e861774ed1df02", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 
@@ -4602,7 +4610,19 @@ def _tables_with(mutate):
     return module.Tables.from_raw(raw)
 
 
-REAL_TABLES = import_tables_module().load()
+class _LazyTables:
+    """Настоящие таблицы грузятся при первом обращении, а не при сборе тестов.
+
+    Круг 52: загрузка на уровне модуля роняла сбор всего файла, когда опыт
+    мутации ломал таблицу, — сторож по имени не выполнялся, а опыты П87 и П95
+    краснели не по существу.
+    """
+
+    def __getattr__(self, name):
+        return getattr(import_tables_module().load(), name)
+
+
+REAL_TABLES = _LazyTables()
 
 
 def test_bu_the_answer_and_pin_sections_are_declared_and_checked():

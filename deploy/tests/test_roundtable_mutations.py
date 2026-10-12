@@ -62,6 +62,9 @@ def _as_open(raw, name):
     _blocks(raw)["исполнение"]["блоки"].setdefault(name, {
         "волна": 2, "исполнитель": "builder", "изоляция": "worktree",
         "ревью": ["qa", "code-reviewer", "codex"]})
+    # круг 52: Б15 закрыт и стоит над ремонтным шлюзом — открытый блок шлюза тянет его за собой
+    if name in ("Б2", "БТ2", "БИ") and "коммиты" in _blocks(raw)["блоки"]["Б15"]:
+        _as_open(raw, "Б15")
 
 
 def _absorb(raw, keep_text: bool):

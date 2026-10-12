@@ -45,7 +45,7 @@ class _TestRun:
     _MUTATING = {
         "submit", "record_event", "revoke", "_start_round", "set_flag",
         "record_attempt", "mark_possible_duplicate", "assign_idea_candidates",
-        "record_received", "record_validation", "pin", "_record_anton_ok", "record_stage_exit", "_record_correction",
+        "record_received", "record_validation", "pin", "_record_anton_ok", "_record_stage_exit", "_record_correction",
     }
 
     def __init__(self, directory, tables):
@@ -1457,6 +1457,7 @@ def test_bu15_an_ok_cannot_be_recorded_when_the_run_is_not_waiting_for_anton(tmp
 def test_bu15_the_door_of_the_record_is_closed_and_the_exit_is_only_the_stores_own(tmp_path):
     run = _waiting_for_anton(tmp_path)
     assert not hasattr(S.RunStore, "record_anton_ok")                                # the public name is gone
+    assert not hasattr(S.RunStore, "record_stage_exit")                              # ... and the exit has no public door either
     size = run.journal_path.read_bytes()
     spec = TABLES.vocabulary["ок_антона"]
     for event, conditions in ((spec["переход"], {"anton_ok": "есть", "framing_objection": False}),
@@ -1469,14 +1470,14 @@ def test_bu15_the_door_of_the_record_is_closed_and_the_exit_is_only_the_stores_o
 def test_bu15_the_exit_counts_its_conditions_from_the_journal_and_takes_none_from_outside(tmp_path):
     run = _waiting_for_anton(tmp_path)
     with pytest.raises(S.Refusal) as refused:                                       # no OK
-        run.record_stage_exit()
+        run._record_stage_exit()
     assert refused.value.code == "НЕТ_ОК_АНТОНА" and run.load().state == "ждёт_Антона"
     with pytest.raises(TypeError):
-        run.record_stage_exit({"anton_ok": "есть", "framing_objection": False})
+        run._record_stage_exit({"anton_ok": "есть", "framing_objection": False})
     run._record_anton_ok(**OK_FIELDS)
     run.set_flag(TABLES.framing["флаг_прогона"])                                    # an open objection holds the exit
     with pytest.raises(S.Refusal) as refused:
-        run.record_stage_exit()
+        run._record_stage_exit()
     assert refused.value.code == "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ"
     with pytest.raises(S.Refusal) as refused:                                       # and cannot be taken off by a flag call
         run.set_flag(TABLES.framing["флаг_прогона"], False)
@@ -1489,10 +1490,10 @@ def test_bu15_the_exit_counts_its_conditions_from_the_journal_and_takes_none_fro
 def test_bu15_the_exit_with_an_ok_is_made_once(tmp_path):
     run = _waiting_for_anton(tmp_path)
     run._record_anton_ok(**OK_FIELDS)
-    left = run.record_stage_exit()
+    left = run._record_stage_exit()
     assert left.state == "завершён" and left.stage_exit_position > 0
     size = run.journal_path.read_bytes()
-    assert run.record_stage_exit().state == "завершён" and run.journal_path.read_bytes() == size
+    assert run._record_stage_exit().state == "завершён" and run.journal_path.read_bytes() == size
     assert S.RunStore(run.directory, TABLES).load().stage_exit_position == left.stage_exit_position
 
 

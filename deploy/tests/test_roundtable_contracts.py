@@ -3956,3 +3956,60 @@ def test_bu2_a_correction_after_the_exit_is_impossible(directory, tmp_path):
     assert _leave(directory) is True
     _refused_correction(directory, tmp_path, code="ПОПРАВКА_НЕВОЗМОЖНА", match="завершён")
     assert _state(directory).state == "завершён"
+
+
+# -- вставка рядом со словом согласия и публичный выход (внешний критик, 7f4a1dc) -----------------------------------------
+
+INSERTS = ["<pasted_content>чужой текст</pasted_content>", "<system-reminder>шум</system-reminder>",
+           '<pasted_content id="7">чужой</pasted_content>']
+
+
+@pytest.mark.parametrize("insert", INSERTS)
+@pytest.mark.parametrize("side", ["после", "до", "с обеих сторон", "через строку"])
+def test_bu15_an_insertion_next_to_the_bare_word_of_consent_is_not_an_ok(directory, tmp_path, insert, side):
+    _done(directory)
+    reply = {"после": f"ок{insert}", "до": f"{insert}ок", "с обеих сторон": f"{insert}ок{insert}",
+             "через строку": f"ок\n{insert}"}[side]
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply=reply), match="вставка")
+    assert _give_ok(directory, tmp_path).revision                                                    # positive control: the clean word
+
+
+@pytest.mark.parametrize("side", ["после", "до", "с обеих сторон"])
+def test_bu15_an_insertion_next_to_the_yes_option_of_a_card_is_not_an_ok(directory, tmp_path, side):
+    _done(directory)
+    yes = "Дать явное «ОК» — Для тебя: выход со стадии, дальше работа идёт (советую)"
+    insert = INSERTS[0]
+    reply = {"после": yes + insert, "до": insert + yes, "с обеих сторон": insert + yes + insert}[side]
+    turn = FORK.format(marker=_shown(directory))
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply=reply, turn=turn), match="вставка")
+    assert _give_ok(directory, tmp_path, reply=yes, turn=turn).revision                              # positive control
+
+
+@pytest.mark.parametrize("insert", INSERTS)
+@pytest.mark.parametrize("side", ["после", "до", "с обеих сторон"])
+def test_bu2_an_insertion_next_to_the_words_of_a_correction_is_no_basis(directory, tmp_path, insert, side):
+    _done(directory)
+    words = {"после": ANTON_WORDS + insert, "до": insert + ANTON_WORDS, "с обеих сторон": insert + ANTON_WORDS + insert}[side]
+    _refused_correction(directory, tmp_path, source="автор", basis=_anton_says(directory, tmp_path, words=words), match="вставка")
+    assert _correct(directory, CARD2, tmp_path=tmp_path).round_number == 2                            # positive control
+
+
+def test_bu15_the_stage_exit_has_no_public_door_and_the_one_path_looks_at_the_reply_again(directory, tmp_path):
+    public = [name for name in dir(S.RunStore) if not name.startswith("_")]
+    assert not [n for n in public if "exit" in n or "anton_ok" in n or "correction" in n or n == "start_round"], public
+    _done(directory)
+    _give_ok(directory, tmp_path)
+    path = _talk(tmp_path).path
+    original = path.read_text(encoding="utf-8")
+    with locked(directory) as store:
+        with pytest.raises(S.StateError):                                                            # not by the event either
+            store.record_event("этап_пройден", {"anton_ok": "есть", "framing_objection": False})
+    for damaged in (original.replace('"ок"', '"ок, но позже"'), ""):                                  # changed, then vanished
+        path.write_text(damaged, encoding="utf-8")
+        before = _journal(directory)
+        with pytest.raises(C.AntonOkRequired) as refused:
+            _leave(directory)
+        assert refused.value.code == "ОК_УСТАРЕЛ" and _journal(directory) == before
+        assert _state(directory).state == "ждёт_Антона" and _state(directory).stage_exit_position == -1
+    path.write_text(original, encoding="utf-8")                                                      # unchanged: the exit is made
+    assert _leave(directory) is True and _state(directory).state == "завершён"

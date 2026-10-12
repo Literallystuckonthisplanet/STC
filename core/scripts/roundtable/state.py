@@ -1042,7 +1042,7 @@ class RunStore:
         spec = self.tables.vocabulary["ок_антона"]
         if event in (spec["событие"], spec["переход"], self.tables.vocabulary["цикл_уточнений"]["событие"]):
             raise StateError(f"{event!r} пишется только своим методом хранилища "
-                             "(record_stage_exit; запись ОК и поправки закрыты): условия считает журнал")
+                             "(_record_stage_exit; запись ОК и поправки закрыты): условия считает журнал")
         state = self.load()
         extra = {"kind": "event", "event": event}
         if data:
@@ -1474,14 +1474,18 @@ class RunStore:
             "kind": "event", "event": "ок_антона", "ok": dict(fields)})
         return self.load().anton_oks[-1]
 
-    def record_stage_exit(self) -> RunState:
+    def _record_stage_exit(self) -> RunState:
         """БУ-5, БУ-10: the exit from the stage -- the event `этап_пройден` of `run.yaml`, its conditions counted HERE.
 
         `anton_ok` and `framing_objection` come from the journal (`ok_standing`), never from the caller; there is
         no other door (`record_event` refuses this event). A refusal is the table's code (`Refusal`), nothing is
         written. Already left -- the same state, no second transition.
+
+        CLOSED (a mechanical writer): the journal cannot see the transcript, and an OK stands on a reply there.
+        The only caller is `contracts.leave_idea_stage`, which looks at that reply AGAIN before calling; a public
+        method here would let a changed or vanished reply be bypassed.
         """
-        self._require_live("record_stage_exit")
+        self._require_live("_record_stage_exit")
         spec = self.tables.vocabulary["ок_антона"]
         state = self.load()
         if state.stage != spec["этап"]:

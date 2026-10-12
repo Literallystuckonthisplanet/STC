@@ -3119,6 +3119,8 @@ def bare_consent_problem(own: str) -> str | None:
     Порога длины цитаты нет: короткое «ок» — настоящий ответ человека. «ОК на <что угодно>» сюда не
     проходит: что именно одобрено, держит строка привязки в ответе ассистента, а не слова реплики.
     """
+    if "\x00" in own:                       # the trace of a cut-out insertion: the reply is not the human's words alone
+        return "в реплике была вставка: голое слово согласия не отделить от чужого текста"
     edges = " \t\r\n\x00"
     reply = _normal(own).strip(edges).rstrip(".!").strip(edges)
     if not BARE_CONSENT.match(reply):

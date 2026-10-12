@@ -1507,6 +1507,12 @@ def _ok_problem(store, state, spec: dict, basis, home) -> tuple:
     if isinstance(found, str):
         return None, found
     own = found["own"]
+    if not found["human_prompt"]:
+        return None, "основание — не реплика человека (служебная запись или результат инструмента)"
+    if found["inserted"]:
+        # a cut-out insertion next to the word is not "the human's words alone": decided BEFORE either branch
+        return None, ("в реплике есть вставка (служебный или вставленный чужой текст): ОК даёт реплика, в которой "
+                      "нет ничего, кроме слов человека")
     problem, fork = _shown_problem(state, revision, found, spec, store.tables)
     if problem:
         return None, problem
@@ -1606,7 +1612,7 @@ def leave_idea_stage(store, home=None) -> bool:
     if problem is not None:
         raise AntonOkRequired(f"реплика последнего ОК больше не подтверждается: {problem}", code="ОК_УСТАРЕЛ")
     try:
-        store.record_stage_exit()
+        store._record_stage_exit()
     except Refusal as refused:
         raise AntonOkRequired(refused.detail, code=refused.code) from None
     return True

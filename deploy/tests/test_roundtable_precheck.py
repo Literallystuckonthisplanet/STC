@@ -126,7 +126,7 @@ def test_planned_output_absent_does_not_fail():
 
 def test_an_unknown_file_class_is_neither_planned_output_nor_silence():
     result = _run(CASES["unknown-class-in-facts"])
-    assert result.status == P.BAD_INPUT and result.reason.startswith("факты: неизвестный класс файла")
+    assert result.status == P.BAD_INPUT and result.reason == "факты: неизвестный класс файла, запись 1"
     assert "может_быть" not in result.reason and not result.allows_continuation
     refused = _run(CASES["unknown-class-refusal"])
     assert refused.status == P.BAD_INPUT and refused.reason == "пакет не собран: неизвестный_класс_файла"
@@ -343,7 +343,7 @@ def test_the_module_does_not_import_a_model_or_transport_layer():
 
 def test_a_repeat_gives_the_same_ordered_result():
     text = _document(
-        sections=[{"id": "s", "anchors": ["ref:a"]}], references=["ref:z", "ref:b", "ref:a", "ref:b"],
+        sections=[{"id": "s", "anchors": ["ref:a"]}], references=["ref:z", "ref:b", "ref:a"],
         lists=[{"name": "n2", "declared_count": 1, "items": []}, {"name": "n1", "declared_count": 2, "items": ["x"]}],
         active_capabilities=["w", "d"], forbidden_capabilities=["d", "w"], revision="r9")
     first = P.precheck(text, MINIMAL_FACTS, TABLES)
@@ -352,7 +352,7 @@ def test_a_repeat_gives_the_same_ordered_result():
     codes = [f.code for f in first.findings]
     assert codes == sorted(codes, key=CODES.index), "order: the code order of precheck.yaml"
     within = [f.where for f in first.findings if f.code == "BROKEN_ANCHOR"]
-    assert within == ["ref:b", "ref:z"], "inside a code: by place, a repeated reference once"
+    assert within == ["references[0]", "references[1]"], "inside a code: by place"
 
 
 
@@ -425,6 +425,31 @@ def test_a_recursion_error_inside_the_parser_is_a_bad_input(monkeypatch):
     assert result.status == P.BAD_INPUT and result.reason == "фронтматтер: вложенность глубже допустимой"
 
 
+@pytest.mark.parametrize("text", [
+    'revision: r1\nsections: []\nreferences: []\nlists:\n  - {name: n, declared_count: 1, items: ["' + "[" * 100 + '"]}\n'
+    'evidence: []\nactive_capabilities: []\nforbidden_capabilities: []',
+    _document().replace("{", "{") + "\n# " + "[" * 200 + "{" * 200,
+    "revision: r1  # [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{\n"
+    "sections: []\nreferences: []\nlists: []\nevidence: []\nactive_capabilities: []\nforbidden_capabilities: []",
+    'revision: r1\nsections: []\nreferences: ["ref:' + "{" * 100 + '"]\nlists: []\nevidence: []\n'
+    'active_capabilities: []\nforbidden_capabilities: []',
+])
+def test_brackets_in_strings_and_comments_are_not_structure(text):
+    result = P.precheck(text, MINIMAL_FACTS, TABLES)
+    assert result.status in (P.CLEAN, P.FINDINGS), result      # not a depth refusal
+    assert result.reason == ""
+
+
+def test_the_real_depth_is_what_is_limited():
+    level = P.DEPTH_LIMIT
+    inside = "revision: r1\n" + "x: " + "[" * (level + 5) + "]" * (level + 5)
+    assert P.precheck(inside, MINIMAL_FACTS, TABLES).reason == "фронтматтер: вложенность глубже допустимой"
+    block = "\n".join("  " * i + "k:" for i in range(level + 5)) + " 1"
+    assert P.precheck(block, MINIMAL_FACTS, TABLES).reason == "фронтматтер: вложенность глубже допустимой"
+    ok = "revision: r1\nx: " + "[" * (level - 2) + "]" * (level - 2)       # deep but allowed: then refused by the schema
+    assert P.precheck(ok, MINIMAL_FACTS, TABLES).reason.startswith("фронтматтер не по схеме")
+
+
 def _everything(result):
     return " ".join([result.reason] + [f"{f.code} {f.where} {f.reason}" for f in result.findings])
 
@@ -463,11 +488,65 @@ def test_a_revision_finding_does_not_show_either_side():
     assert result.findings[0].reason == "редакция в шапке не равна редакции пакета"
 
 
-def test_a_shown_place_is_a_clipped_name_of_a_closed_alphabet():
-    assert P._name("docs/plan.md") == "docs/plan.md"
-    assert P._name("a" * 500) == "a" * P.NAME_LIMIT + "…"
-    for raw in ("a b", "a\nb", "a​b", "", 5, None):
-        assert P._name(raw) == P.HIDDEN
+MARKER = "REVIEW" + "_MARKER_" + "ALPHA"          # alphanumeric, no spaces: the "safe-looking" kind of input
+
+
+def test_no_value_of_the_input_is_echoed_on_any_branch():
+    existing = C.ManifestEntry(MARKER + "/a.md", "existing_evidence", "a" * 64, 1)
+    ok_facts = P.PrecheckFacts(entries=(existing,), revision="r1")
+    claim = {"path": MARKER + "/b.md", "sha256": "0" * 64}
+    cases = [
+        # facts: unknown class, repeated path, alien class, alien revision, every kind of refusal
+        P.precheck(_document(), P.PrecheckFacts(entries=(C.ManifestEntry(MARKER, MARKER, None, None),), revision="r1"), TABLES),
+        P.precheck(_document(), P.PrecheckFacts(entries=(existing, C.ManifestEntry(MARKER + "/a.md", "planned_output", None, None)),
+                                                revision="r1"), TABLES),
+        P.precheck(_document(), P.PrecheckFacts(entries=(), revision=MARKER), TABLES),
+        P.precheck(_document(), P.PrecheckFacts(refusal=MARKER, refusal_detail=MARKER), TABLES),
+        P.precheck(_document(), P.PrecheckFacts(refusal="файл_нечитаем", refusal_detail=MARKER), TABLES),
+        P.precheck(_document(evidence=[claim]), P.PrecheckFacts(refusal=P.MISSING_FILE_REFUSAL, refusal_detail=MARKER), TABLES),
+        # the header: unknown field, wrong type, alien revision, malformed reference, empty name
+        P.precheck(json.dumps({**json.loads(_document()), MARKER: 1}), ok_facts, TABLES),
+        P.precheck(_document(revision={MARKER: MARKER}), ok_facts, TABLES),
+        P.precheck(_document(revision=MARKER), ok_facts, TABLES),
+        P.precheck(_document(references=[MARKER]), ok_facts, TABLES),
+        P.precheck(_document(active_capabilities=["--"], forbidden_capabilities=[MARKER]), ok_facts, TABLES),
+        P.precheck(MARKER + ": [", ok_facts, TABLES),
+        P.precheck(f"{MARKER}: 1\n{MARKER}: 2", ok_facts, TABLES),
+        # findings of all five codes, with the marker in every name the header carries
+        P.precheck(_document(
+            revision="r2", sections=[{"id": MARKER, "anchors": [MARKER + "_a"]}],
+            references=["ref:" + MARKER], lists=[{"name": MARKER, "declared_count": 7, "items": [MARKER]}],
+            evidence=[claim, {"path": MARKER + "/a.md", "sha256": "1" * 64}],
+            active_capabilities=[MARKER], forbidden_capabilities=[MARKER]), ok_facts, TABLES),
+    ]
+    assert [c.status for c in cases[-1:]] == [P.FINDINGS]
+    assert {f.code for f in cases[-1].findings} == set(CODES)
+    for result in cases:
+        assert MARKER not in _everything(result), result
+        assert "MARKER" not in _everything(result), result
+
+
+def test_a_place_is_a_machine_locator_with_a_number_never_a_name():
+    result = P.precheck(_document(
+        references=["ref:gone", "ref:gone2"], lists=[{"name": "n", "declared_count": 1, "items": []}],
+        active_capabilities=["x", "y"], forbidden_capabilities=["y"]), MINIMAL_FACTS, TABLES)
+    assert [(f.code, f.where) for f in result.findings] == [
+        ("BROKEN_ANCHOR", "references[0]"), ("BROKEN_ANCHOR", "references[1]"),
+        ("DECLARED_COUNT_MISMATCH", "lists[0]"), ("FORBIDDEN_CAPABILITY_PRESENT", "active_capabilities[1]")]
+
+
+def test_places_sort_by_number_not_by_text():
+    refs = [f"ref:r{n}" for n in range(12)]
+    result = P.precheck(_document(references=refs), MINIMAL_FACTS, TABLES)
+    assert [f.where for f in result.findings] == [f"references[{n}]" for n in range(12)]
+
+
+def test_a_repeated_entry_is_named_by_its_number():
+    twice = P.PrecheckFacts(entries=(C.ManifestEntry("a", "existing_evidence", "a" * 64, 1),
+                                     C.ManifestEntry("b", "planned_output", None, None),
+                                     C.ManifestEntry("a", "planned_output", None, None)), revision="r1")
+    result = P.precheck(_document(), twice, TABLES)
+    assert result.status == P.BAD_INPUT and result.reason == "факты: путь повторяется, запись 3"
 
 
 def test_every_refusal_literal_of_the_builder_is_known_to_the_precheck():

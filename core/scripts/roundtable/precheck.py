@@ -47,10 +47,7 @@ FENCE = "---"
 MISSING_FILE_REFUSAL = "отсутствие_обязательного_файла"
 REF_PREFIX = "ref:"
 HIDDEN = "<значение скрыто>"
-NAME_LIMIT = 120
-NAME_EXTRA = frozenset("._:/+-")
-DEPTH_LIMIT = 32             # flow brackets (`[`, `{`) nested deeper than this are refused before parsing
-INDENT_LIMIT = 128           # columns of indentation incl. two per `- ` / `? ` marker
+DEPTH_LIMIT = 32             # real nesting of mappings/sequences deeper than this is refused
 # The refusal reasons the builder can give (a test compares them with the literals in
 # context.py): only these may be named in a result, any other refusal text is hidden.
 KNOWN_REFUSALS = frozenset({
@@ -154,40 +151,20 @@ def _bad(reason: str) -> PrecheckResult:
     return PrecheckResult(BAD_INPUT, (), reason)
 
 
-def _name(value) -> str:
-    """A value that may be shown in `where`/`reason`: a clipped name of a closed alphabet.
-
-    Anything else (spaces, controls, invisible marks, a non-string) is replaced by a marker:
-    the input is untrusted and its raw text must not travel into the result.
-    """
-    if (isinstance(value, str) and value and all(ch.isalnum() or ch in NAME_EXTRA for ch in value)):
-        return value if len(value) <= NAME_LIMIT else value[:NAME_LIMIT] + "…"
-    return HIDDEN
-
-
-def _number(value) -> str:
-    return str(value) if isinstance(value, int) and abs(value) < 10 ** 9 else "вне разумного предела"
-
-
-def _too_deep(text: str) -> bool:
-    """A cheap scan BEFORE the YAML parser: nested flow brackets or a deep indentation."""
+def _scan_structure(text: str) -> None:
+    """One pass over the parser's EVENTS (so quotes, block scalars and comments are not mistaken
+    for structure): refuse aliases -- the way to make a small text expand -- and stop at the first
+    moment the real nesting of mappings/sequences passes `DEPTH_LIMIT`."""
     depth = 0
-    for char in text:
-        if char in "[{":
+    for event in yaml.parse(text):
+        if isinstance(event, yaml.AliasEvent):
+            raise _Unusable("фронтматтер: ссылки-алиасы не допускаются")
+        if isinstance(event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)):
             depth += 1
             if depth > DEPTH_LIMIT:
-                return True
-        elif char in "]}" and depth:
+                raise _Unusable("фронтматтер: вложенность глубже допустимой")
+        elif isinstance(event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)):
             depth -= 1
-    for line in text.split("\n"):
-        rest = line.lstrip(" ")
-        column = len(line) - len(rest)
-        while rest[:2] in ("- ", "? "):
-            column += 2
-            rest = rest[2:].lstrip(" ")
-        if column > INDENT_LIMIT:
-            return True
-    return False
 
 
 def _parse(frontmatter_text) -> dict:
@@ -197,12 +174,8 @@ def _parse(frontmatter_text) -> dict:
         raise _Unusable("фронтматтер: пусто")
     if len(frontmatter_text) > FRONTMATTER_LIMIT:
         raise _Unusable(f"фронтматтер: длиннее {FRONTMATTER_LIMIT} знаков")
-    if _too_deep(frontmatter_text):
-        raise _Unusable("фронтматтер: вложенность глубже допустимой")
     try:
-        # Aliases are refused before loading: they are the way to make a small text expand.
-        if any(isinstance(event, yaml.AliasEvent) for event in yaml.parse(frontmatter_text)):
-            raise _Unusable("фронтматтер: ссылки-алиасы не допускаются")
+        _scan_structure(frontmatter_text)
         data = yaml.load(frontmatter_text, Loader=tables_module.StrictLoader)
     except yaml.YAMLError as error:
         raise _Unusable(f"фронтматтер: не разбирается — {type(error).__name__}") from None
@@ -256,14 +229,15 @@ def _facts_shape(facts, classes) -> None:
         raise _Unusable("факты: у пакета нет редакции — её задаёт вызывающий при сборке")
     _revision_ok(facts.revision, "в фактах пакета")
     seen = set()
-    for entry in facts.entries:
+    for number, entry in enumerate(facts.entries, 1):
         if not isinstance(entry, ManifestEntry):
             raise _Unusable("факты: запись манифеста чужого вида")
+        # Nothing of an entry is echoed: the place is its number (from 1), the text is fixed.
         if entry.file_class not in classes:
             # An unknown class is neither planned_output nor silence.
-            raise _Unusable(f"факты: неизвестный класс файла у {_name(entry.path)}")
+            raise _Unusable(f"факты: неизвестный класс файла, запись {number}")
         if entry.path in seen:
-            raise _Unusable(f"факты: путь {_name(entry.path)} в манифесте дважды")
+            raise _Unusable(f"факты: путь повторяется, запись {number}")
         seen.add(entry.path)
 
 
@@ -286,9 +260,9 @@ def _broken_anchor(front, facts, found):
     for reference in front["references"]:
         if not reference.startswith(REF_PREFIX) or len(reference) == len(REF_PREFIX):
             raise _Unusable("ссылка: ожидалось ref:<имя>")
-    for reference in front["references"]:
+    for index, reference in enumerate(front["references"]):
         if reference not in declared:
-            found.append(Finding("BROKEN_ANCHOR", _name(reference), "якорь не объявлен ни одним разделом"))
+            found.append(Finding("BROKEN_ANCHOR", f"references[{index}]", "якорь не объявлен ни одним разделом"))
 
 
 def _missing_evidence(front, facts, found):
@@ -298,29 +272,30 @@ def _missing_evidence(front, facts, found):
     """
     if facts.refusal is not None:
         if facts.refusal == MISSING_FILE_REFUSAL:
-            found.append(Finding("MISSING_EXISTING_EVIDENCE", _name(facts.refusal_detail or "манифест"),
+            found.append(Finding("MISSING_EXISTING_EVIDENCE", "manifest",
                                  "нет файла: сборщик отказал по отсутствию обязательного файла"))
             return
         raise _Unusable(f"пакет не собран: {_refusal_reason(facts.refusal)}")
     manifest = {entry.path: entry for entry in facts.entries}
-    for claim in front["evidence"]:
+    for index, claim in enumerate(front["evidence"]):
+        where = f"evidence[{index}]"
         entry = manifest.get(claim["path"])
         if entry is None:
-            found.append(Finding("MISSING_EXISTING_EVIDENCE", _name(claim["path"]), "нет файла: его нет в манифесте пакета"))
+            found.append(Finding("MISSING_EXISTING_EVIDENCE", where, "нет файла: его нет в манифесте пакета"))
         elif entry.file_class != "existing_evidence":
-            found.append(Finding("MISSING_EXISTING_EVIDENCE", _name(claim["path"]),
-                                 f"нет файла как свидетельства: в манифесте он {_name(entry.file_class)}"))
+            found.append(Finding("MISSING_EXISTING_EVIDENCE", where,
+                                 f"нет файла как свидетельства: в манифесте он {entry.file_class}"))
         elif entry.sha256 is None:
-            found.append(Finding("MISSING_EXISTING_EVIDENCE", _name(claim["path"]), "нет файла: у записи манифеста нет хеша"))
+            found.append(Finding("MISSING_EXISTING_EVIDENCE", where, "нет файла: у записи манифеста нет хеша"))
         elif entry.sha256.casefold() != claim["sha256"].strip().casefold():
-            found.append(Finding("MISSING_EXISTING_EVIDENCE", _name(claim["path"]), "хеш не совпал с хешем из манифеста пакета"))
+            found.append(Finding("MISSING_EXISTING_EVIDENCE", where, "хеш не совпал с хешем из манифеста пакета"))
 
 
 def _count_mismatch(front, facts, found):
-    for row in front["lists"]:
+    for index, row in enumerate(front["lists"]):
         if len(row["items"]) != row["declared_count"]:
-            found.append(Finding("DECLARED_COUNT_MISMATCH", _name(row["name"]),
-                                 f"в списке {len(row['items'])}, объявлено {_number(row['declared_count'])}"))
+            found.append(Finding("DECLARED_COUNT_MISMATCH", f"lists[{index}]",
+                                 "длина списка не равна объявленному числу"))
 
 
 def _revision_mismatch(front, facts, found):
@@ -341,11 +316,11 @@ def _forbidden_capability(front, facts, found):
         return key
     forbidden = {folded(name) for name in front["forbidden_capabilities"]}
     seen = set()
-    for name in front["active_capabilities"]:
+    for index, name in enumerate(front["active_capabilities"]):
         key = folded(name)
         if key in forbidden and key not in seen:
             seen.add(key)
-            found.append(Finding("FORBIDDEN_CAPABILITY_PRESENT", _name(name),
+            found.append(Finding("FORBIDDEN_CAPABILITY_PRESENT", f"active_capabilities[{index}]",
                                  "возможность и активна, и запрещена одновременно"))
 
 
@@ -358,11 +333,16 @@ CHECKS = {
 }
 
 
+def _place_key(where: str) -> tuple:
+    """`references[10]` after `references[2]`: the number inside the brackets is read as a number."""
+    return tuple(int(part) if part.isdigit() else part for part in re.split(r"(\d+)", where))
+
+
 def _ordered(found, order) -> tuple:
-    """Code order of precheck.yaml, then place, then reason; repeats dropped."""
+    """Code order of precheck.yaml, then place (natural order), then reason; repeats dropped."""
     unique = {finding.as_tuple(): finding for finding in found}
     return tuple(sorted(unique.values(),
-                        key=lambda f: (order.index(f.code), f.where, f.reason)))
+                        key=lambda f: (order.index(f.code), _place_key(f.where), f.reason)))
 
 
 def precheck(frontmatter_text, facts, tables=None) -> PrecheckResult:

@@ -86,6 +86,7 @@ TOP_LEVEL = {
         "состояния_блока", "внешние_действия",
         "оценка_критерия", "состояния_кандидата", "выбор_кандидата_sentinel",
         "отношение_механизмов", "повтор_невалидного_ответа",
+        "ответ_критика", "закрепление", "ок_антона", "цикл_уточнений",
         "операции", "операции_без_бюджета",
         "коды_условий", "коды_действий", "коды_отказа",
         "схемы_контрактов", "схемы_вне_контрактов",
@@ -676,6 +677,10 @@ SHAPES = {
                                              "журнал_необязательные")),
         "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
         "коды_условий": Mapping(LIST),
+        "ответ_критика": Record("каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов"),
+        "закрепление": Record("события", "на_круг", "иное_содержимое"),
+        "цикл_уточнений": Record("потолок_оборотов", "событие", "источники", "терминальное"),
+        "ок_антона": Record("событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша"),
         "повтор_невалидного_ответа": Record(
             "максимум_на_ответ", "область", "тратит_бюджет", "порядок", "оба_невалидны",
             "сохранённый_валидный_ответ_не_повторять", "после_исчерпания",
@@ -1776,11 +1781,118 @@ class Tables:
 
         self._check_idea_outcomes()
         self._check_idea_execution()
+        self._check_answer_records()
+        self._check_anton_ok()
+        self._check_refinement()
         checked.append("исходы идеи: коды, порядок и приоритеты закрыты, причины сходятся со списком")
 
         self._check_shapes()
         checked.append(f"{len(SHAPES)} таблиц: выдуманных полей нет ни на какой глубине")
         return checked
+
+    def _check_answer_records(self) -> None:
+        """vocabulary.ответ_критика и vocabulary.закрепление (БУ-11, БУ-12): то, что читают state.py и contracts.py."""
+        answer = self.vocabulary.get("ответ_критика")
+        where = "vocabulary.ответ_критика"
+        if not isinstance(answer, dict):
+            raise ContractError(f"{where}: ожидалась карта")
+        _require(answer, {"каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов"},
+                 set(), where)
+        folder = answer["каталог"]
+        if not isinstance(folder, str) or not re.fullmatch(r"[\w-]{1,32}", folder):
+            raise ContractError(f"{where}.каталог: простое имя каталога, получено {folder!r}")
+        if answer["имя_файла"] != "sha256":
+            raise ContractError(f"{where}.имя_файла: движок умеет только sha256")
+        if answer["порядок_записи"] != ["файл_ответа_на_диск", "событие_получена"]:
+            raise ContractError(f"{where}.порядок_записи: ожидалось [файл_ответа_на_диск, событие_получена]")
+        limit = answer["предел_причины"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ContractError(f"{where}.предел_причины: целое от 1, получено {limit!r}")
+        size = answer["предел_байтов"]
+        section = self.vocabulary.get("пакет", {}).get("предел_раздела_байт")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 1 or (
+                isinstance(section, int) and size < section):
+            raise ContractError(f"{where}.предел_байтов: целое не меньше пакет.предел_раздела_байт ({section!r}), "
+                                f"получено {size!r}")
+
+        pins = self.vocabulary.get("закрепление")
+        where = "vocabulary.закрепление"
+        if not isinstance(pins, dict):
+            raise ContractError(f"{where}: ожидалась карта")
+        _require(pins, {"события", "на_круг", "иное_содержимое"}, set(), where)
+        if pins["события"] != ["вход_закреплён", "пакет_закреплён"]:
+            raise ContractError(f"{where}.события: ожидалось [вход_закреплён, пакет_закреплён]")
+        if pins["на_круг"] != "одно":
+            raise ContractError(f"{where}.на_круг: движок умеет только «одно»")
+        if pins["иное_содержимое"] not in self.vocabulary["коды_отказа"]:
+            raise ContractError(f"{where}.иное_содержимое: {pins['иное_содержимое']!r} не код отказа")
+        operations = set(self.vocabulary["операции"])
+        for event in pins["события"]:
+            rows = [t for t in self.transitions if t.event == event]
+            if event in operations or not rows:
+                raise ContractError(f"{where}.события: {event!r} — не событие движка из run.yaml")
+            if any(t.source != t.target or t.refusal or t.actions or t.conditions for t in rows):
+                raise ContractError(f"{where}.события: {event!r} не должно менять состояние, "
+                                    "зависеть от условий или отказывать")
+
+    def _check_anton_ok(self) -> None:
+        """vocabulary.ок_антона (БУ-15): то, что читают state.py и contracts.py, названо и сходится с run.yaml."""
+        where = "vocabulary.ок_антона"
+        spec = self.vocabulary.get("ок_антона")
+        if not isinstance(spec, dict):
+            raise ContractError(f"{where}: ожидалась карта")
+        _require(spec, {"событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша"},
+                 set(), where)
+        if spec["вердикт"] not in self.vocabulary["вердикты"] or spec["вердикт"] == "ОДОБРЕНО":
+            raise ContractError(f"{where}.вердикт: {spec['вердикт']!r} не вердикт, ведущий к Антону")
+        if spec["источник"] != "событие_транскрипта":
+            raise ContractError(f"{where}.источник: ОК Антона доказывается репликой в переписке (событие_транскрипта)")
+        stages = set(self.vocabulary["стадии"]["в_MVP"]) | set(self.vocabulary["стадии"]["вне_MVP"])
+        if spec["этап"] not in stages:
+            raise ContractError(f"{where}.этап: {spec['этап']!r} не стадия")
+        # Замер 12.10: «артефакт» проверялся только непустотой — подмена названия того, на что даётся ОК,
+        # проходила. ОК стадии «идея» — первое звено цепочки согласий: его артефакт и есть принимаемый.
+        chain = self.plan.get("согласия", {}).get("цепочка") or [{}]
+        if spec["артефакт"] != chain[0].get("принимается"):
+            raise ContractError(f"{where}.артефакт: {spec['артефакт']!r} не то, что принимается первым звеном согласий")
+        marker = spec["маркер"]
+        if not isinstance(marker, str) or marker.count("{прогон}") != 1 or marker.count("{хеш}") != 1:
+            raise ContractError(f"{where}.маркер: нужна строка с одним {{прогон}} и одним {{хеш}}")
+        size = spec["длина_хеша"]
+        if isinstance(size, bool) or not isinstance(size, int) or not 32 <= size <= 64:
+            raise ContractError(f"{where}.длина_хеша: целое от 32 до 64, получено {size!r}")
+        operations = set(self.vocabulary["операции"])
+        for name in (spec["событие"], spec["переход"]):
+            if name in operations or name not in self.events:
+                raise ContractError(f"{where}: {name!r} — не событие движка из run.yaml")
+        for row in (t for t in self.transitions if t.event == spec["событие"]):
+            if row.source != row.target or row.actions:
+                raise ContractError(f"{where}.событие: запись ОК не должна менять состояние прогона")
+
+    def _check_refinement(self) -> None:
+        """vocabulary.цикл_уточнений (БУ-4, БУ-8): потолок — число, исход — терминальное состояние, поправка — событие движка."""
+        where = "vocabulary.цикл_уточнений"
+        spec = self.vocabulary.get("цикл_уточнений")
+        if not isinstance(spec, dict):
+            raise ContractError(f"{where}: ожидалась карта")
+        _require(spec, {"потолок_оборотов", "событие", "источники", "терминальное"}, set(), where)
+        ceiling = spec["потолок_оборотов"]
+        if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
+            raise ContractError(f"{where}.потолок_оборотов: целое от 1, получено {ceiling!r}")
+        if spec["источники"] != ["антон", "автор"]:
+            raise ContractError(f"{where}.источники: ожидалось [антон, автор]")
+        if spec["терминальное"] not in self.vocabulary["состояния_прогона"]["терминальные"]:
+            raise ContractError(f"{where}.терминальное: {spec['терминальное']!r} не терминальное состояние")
+        event = spec["событие"]
+        if event in self.vocabulary["операции"] or event not in self.events:
+            raise ContractError(f"{where}.событие: {event!r} — не событие движка из run.yaml")
+        rows = [t for t in self.transitions if t.event == event]
+        if {t.conditions.get("turns_left") for t in rows} - {None} != {True, False}:
+            raise ContractError(f"{where}: у поправки должны быть строки и с оборотами, и без")
+        if any(t.conditions.get("turns_left") is False and t.target != spec["терминальное"] for t in rows):
+            raise ContractError(f"{where}: без оборотов поправка ведёт в {spec['терминальное']!r}")
+        if any(t.target == spec["терминальное"] and t.conditions.get("turns_left") is not False for t in rows):
+            raise ContractError(f"{where}: терминальное состояние — только по исчерпанию оборотов")
 
     def _check_idea_execution(self) -> None:
         """stages.исполнение_идеи: предел вызовов критика, прерванных до ответа (БИ, аудит безопасности)."""
@@ -2864,13 +2976,16 @@ def _denylist(words: str) -> re.Pattern:
     читалось безоговорочным согласием. Перечень сворачивается той же
     таблицей, что и текст; граница слова — любая буква, а не только кириллица.
     """
-    return re.compile(r"(?<![^\W\d_])(" + words.translate(_HOMOGLYPHS) + r")(?![^\W\d_])", re.I)
+    # Круг БУ-2а: двойник «i»/«і» прятал слово («нi», «погодi»). Кириллическая «и» в перечне
+    # совпадает и с латинской «i» — украинская «і» свёрнута в неё той же таблицей.
+    folded = words.translate(_HOMOGLYPHS).replace("и", "[иi]")
+    return re.compile(r"(?<![^\W\d_])(" + folded + r")(?![^\W\d_])", re.I)
 
 
 # Отрицание, отказ, запрет — отдельным словом. Шире нужного нарочно: лишний
 # отказ исправляется новой репликой, лишнее «согласие» — нет.
 NEGATION = _denylist(r"не|нет|ни|нельзя|никогда|запрещ\w*|стоп|отмен\w*|откаж\w*|"
-                     r"отказ\w*|против|погоди|no|not|don.?t|never|stop|wait|hold")
+                     r"отказ\w*|против|погоди|ні|ніколи|no|not|don.?t|never|stop|wait|hold")
 CONDITION = _denylist(r"но|только|лишь|если|после|кроме|когда|позже|потом|"
                       r"подожди|подождём|дождись|пока|однако|сначала|сперва|прежде|перед|"
                       r"при условии|but|only|if|after|unless|before|first|once|when|until|later|except|provided")
@@ -2878,8 +2993,11 @@ CONDITION = _denylist(r"но|только|лишь|если|после|кром�
 # «Да ладно…», «Да ты что…» и условие строкой ниже. Согласие теперь —
 # РАЗРЕШЁННАЯ форма всей реплики целиком: слово согласия и, по желанию,
 # «на <что>». Всё остальное программа согласием не читает.
-CONSENT_FORMULA = re.compile(r"^(ок|окей|да|разрешаю|согласен|согласна|одобряю)"
+CONSENT_WORDS = "ок|окей|да|разрешаю|согласен|согласна|одобряю"
+CONSENT_FORMULA = re.compile(rf"^({CONSENT_WORDS})"
                              r"(?:[,!.]?\s+на\s+(?P<scope>[^\n?]+?))?[.!]*$", re.I)
+# БУ-15: ОК на стадии — голое слово согласия, без «на <что>»: свободный «что» не привязывает ОК к вопросу.
+BARE_CONSENT = re.compile(rf"^({CONSENT_WORDS})[.!]*$", re.I)
 # Название варианта «да» в карточке развилки — только такие формы.
 OPTION_CONSENT = re.compile(r"^(дать\s+(явное\s+)?[«\"]?(да|ок)[»\"]?|да|ок|подтвердить|"
                             r"подтверждаю|разрешаю|разрешить|согласен|согласна)"
@@ -2995,6 +3113,45 @@ def _unambiguous_yes(own: str, quote: str) -> str | None:
     return _refuses(reply)
 
 
+def bare_consent_problem(own: str) -> str | None:
+    """БУ-15: реплика — голое слово согласия («ок», «да», «согласен»…), без отрицания, вопроса и условия.
+
+    Порога длины цитаты нет: короткое «ок» — настоящий ответ человека. «ОК на <что угодно>» сюда не
+    проходит: что именно одобрено, держит строка привязки в ответе ассистента, а не слова реплики.
+    """
+    if "\x00" in own:                       # the trace of a cut-out insertion: the reply is not the human's words alone
+        return "в реплике была вставка: голое слово согласия не отделить от чужого текста"
+    edges = " \t\r\n\x00"
+    reply = _normal(own).strip(edges).rstrip(".!").strip(edges)
+    if not BARE_CONSENT.match(reply):
+        return "реплика — не голое слово согласия («ок», «да», «согласен»…)"
+    return _refuses(reply)
+
+
+def correction_reply_problem(own: str, chose_yes: bool = False) -> str | None:
+    """БУ-2: реплика Антона как основание ПОПРАВКИ — слова поправки, а не согласие, отрицание или вопрос.
+
+    Не принимается всё, что читается как согласие в любой форме: формула согласия (с «на <что>» и без),
+    название варианта «да» развилки, дословная копия такого варианта, реплика, НАЧИНАЮЩАЯСЯ со слова
+    согласия («Да, но…»). Не принимаются отрицание и вопрос. Условие («если…») поправке не мешает.
+    """
+    edges = " \t\r\n\x00"
+    reply = _normal(own).strip(edges)
+    if not reply:
+        return "в реплике нет слов"
+    if chose_yes:
+        return "реплика — копия варианта «да» развилки: это согласие, а не поправка"
+    bare = reply.rstrip(".!").strip(edges)
+    if CONSENT_FORMULA.match(bare) or OPTION_CONSENT.match(bare) or re.match(
+            rf"(?:{CONSENT_WORDS})(?![^\W\d_])", reply, flags=re.I):
+        return "реплика читается как согласие (начинается со слова согласия): её место в ОК, а не в поправке"
+    if NEGATION.search(reply):
+        return "в реплике отрицание: поправкой её не прочесть"
+    if "?" in reply:
+        return "реплика — вопрос, а не поправка"
+    return None
+
+
 def _assistant_turn(record: dict, records: dict) -> str:
     """Текст последнего ответа ассистента прямо перед этой репликой."""
     texts, current, seen = [], record.get("parentUuid"), set()
@@ -3043,8 +3200,84 @@ def _chosen_yes(own: str, record: dict, records: dict) -> str | None:
 
 
 
+def _session_records(session: str, home: Path) -> tuple[dict | None, str | None]:
+    """Записи переписки сессии: (uuid → запись, отказ). Одно место для разрешений и для ОК Антона."""
+    candidates = list(home.glob(f".claude/projects/*/{session}.jsonl"))
+    if not candidates:
+        return None, f"сессии нет: {session}"
+    if len(candidates) > 1:
+        return None, f"сессия {session} записана в нескольких каталогах — какую читать, не доказать"
+    # 🚩 Ревью #39: файл переписки мог оказаться ярлыком наружу — и «основание»
+    # читалось из чего угодно.
+    transcript = candidates[0]
+    projects = (home / ".claude/projects").resolve()
+    if not transcript.resolve().is_relative_to(projects):
+        return None, f"запись сессии ведёт наружу: {transcript.resolve()}"
+    try:
+        return _records(transcript), None
+    except (OSError, UnicodeDecodeError) as error:
+        return None, f"переписка сессии {session} не читается ({type(error).__name__})"
+
+
+def _last_assistant_text(record: dict, records: dict) -> tuple[str | None, str | None]:
+    """(последний текстовый блок ассистента — родитель реплики, время его записи).
+
+    Идём вверх от реплики и берём ближайшую запись ассистента, где есть текст; на реплике человека
+    останавливаемся. Блок — именно последний текстовый блок этой записи.
+    """
+    current, seen = record.get("parentUuid"), set()
+    while isinstance(current, str) and current in records and current not in seen:
+        seen.add(current)
+        entry = records[current]
+        if _is_human_prompt(entry):
+            return None, None
+        if entry.get("type") == "assistant":
+            content = _content(entry)
+            texts = _texts(content if isinstance(content, list) else [])
+            if texts:
+                stamp = entry.get("timestamp")
+                return texts[-1], stamp if isinstance(stamp, str) else None
+        current = entry.get("parentUuid")
+    return None, None
+
+
+def transcript_reply(session: str, native_uuid: str, home: Path | None = None) -> dict | str:
+    """БУ-15: что известно о реплике человека в переписке — или отказ строкой.
+
+    Те же проверки происхождения, что у разрешений (`_session_records`, `_human_text`, `own_words`):
+    запись есть, это реплика человека, а не служебная вставка. Возвращает слова человека без
+    вставок (`own`), время реплики (`timestamp`, как записано, или None), текст ответа ассистента
+    прямо перед ней (`assistant_turn`). Согласие в реплике проверяет `resolve_basis(consent=True)`.
+    """
+    home = Path(home) if home else Path.home()
+    if not _is_uuid(session):
+        return f"сессия не похожа на идентификатор: {session!r}"
+    if not _is_uuid(native_uuid):
+        return f"событие не похоже на идентификатор: {native_uuid!r}"
+    records, problem = _session_records(session, home)
+    if problem:
+        return problem
+    record = records.get(native_uuid)
+    if record is None:
+        return f"{native_uuid}: события нет в сессии"
+    if record.get("type") != "user":
+        return f"{native_uuid}: не реплика пользователя"
+    text, refusal = _human_text(record, records, native_uuid)
+    if refusal:
+        return refusal
+    timestamp = record.get("timestamp")
+    last_text, last_text_at = _last_assistant_text(record, records)
+    own = own_words(text)
+    turn = _assistant_turn(record, records)
+    return {"own": own, "inserted": own != text, "human_prompt": _is_human_prompt(record),
+            "chose_yes": "🗳" in turn and _chosen_yes(own, record, records) is None,
+            "timestamp": timestamp if isinstance(timestamp, str) else None,
+            "assistant_turn": _assistant_turn(record, records), "records": records,
+            "last_text": last_text, "last_text_at": last_text_at}
+
+
 def resolve_basis(basis: dict, home: Path | None = None, *,
-                  consent: bool = False) -> str | None:
+                  consent: bool = False, records: dict | None = None) -> str | None:
     """Actually open what the permission points at. Returns the failure, or None.
 
     Structure checks proved a string was non-empty. That is what let a citation
@@ -3079,20 +3312,12 @@ def resolve_basis(basis: dict, home: Path | None = None, *,
         return f"событие не похоже на идентификатор: {wanted!r}"
     if len(str(quote).strip()) < MIN_QUOTE:
         return f"цитата короче {MIN_QUOTE} знаков — доказывать ей нечего"
-    candidates = list(home.glob(f".claude/projects/*/{session}.jsonl"))
-    if not candidates:
-        return f"сессии нет: {session}"
-    if len(candidates) > 1:
-        return f"сессия {session} записана в нескольких каталогах — какую читать, не доказать"
-    # 🚩 Ревью #39: файл переписки мог оказаться ярлыком наружу — и «основание»
-    # читалось из чего угодно.
-    transcript = candidates[0]
-    projects = (home / ".claude/projects").resolve()
-    if not transcript.resolve().is_relative_to(projects):
-        return f"запись сессии ведёт наружу: {transcript.resolve()}"
+    if records is None:                       # `records`: уже прочитанная переписка — второго разбора нет
+        records, problem = _session_records(session, home)
+        if problem:
+            return problem
     if not isinstance(quote, str):
         return f"цитата не строка: {quote!r}"
-    records = _records(transcript)
     record = records.get(wanted)
     if record is not None:
         if record.get("type") != "user":

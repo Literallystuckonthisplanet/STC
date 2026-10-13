@@ -1222,6 +1222,7 @@ def test_a_missing_scope_hash_is_not_a_wildcard():
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
     _as_open(raw, "Б2")                       # круг 49: Б2 закрыт, опыт открывает его на копии
+    _as_open(raw, "Б15")                      # круг 52: Б15 закрыт и зависит от Б2 — открывается следом
     # разрешение, покрывающее открытый Б2
     at = next(i for i, g in enumerate(raw["blocks"]["разрешения_исполнения"])
               if "Б2" in g["блоки"])
@@ -1747,9 +1748,9 @@ def test_no_finding_can_be_quietly_dropped():
     # so deleting a single row fails.
     findings = _load("findings")["находки"]
     per_round = collections.Counter(f["круг"] for f in findings)
-    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3, 50: 8}, (
+    assert dict(sorted(per_round.items())) == {12: 5, 13: 8, 14: 11, 15: 10, 16: 8, 17: 9, 19: 7, 20: 5, 21: 5, 22: 3, 23: 3, 24: 5, 25: 8, 26: 6, 27: 4, 28: 2, 29: 1, 30: 2, 31: 3, 32: 1, 33: 4, 34: 3, 35: 2, 36: 2, 37: 1, 38: 9, 39: 3, 40: 4, 41: 1, 42: 19, 43: 8, 44: 8, 45: 11, 46: 4, 47: 3, 48: 5, 49: 3, 50: 8, 51: 5, 52: 5}, (
         "находка исчезла или появилась без обновления замка")
-    assert len(findings) == 204
+    assert len(findings) == 214
 
 
 def test_a_finding_marked_fixed_names_a_test_that_actually_exists():
@@ -1857,18 +1858,18 @@ FINDING_PINS = {
     "R22-1": ("e6d64e6d4e48", "53b44945d9f4"),
     "R22-2": ("a6bfae47ddbb", "30119aa7f3ab"),
     "R22-3": ("71cb12d78bf4", "d6ffad4b2500"),
-    "R23-1": ("7e861b64e208", "aec37d45c1fb"),
+    "R23-1": ("7e861b64e208", "32273cf77fa0"),
     "R23-2": ("34280630bd43", "53b44945d9f4"),
     "R23-3": ("f35869380d4c", "cc6a5fc005ff"),
     "R24-1": ("a694ca063639", "ae557c6966cb"),
     "R24-2": ("945fbd19db58", "1640b0a651d7"),
-    "R24-3": ("3a8e7ca36453", "23eae7d0475f"),
+    "R24-3": ("3a8e7ca36453", "6df07196e143"),
     "R24-4": ("b1af8f4b4155", "9dd5d0828467"),
     "R24-5": ("759811342653", "9bfc9bcf799e"),
     "R25-1": ("de91281f1e9c", "bfe633052095"),
-    "R25-2": ("350cf56aacce", "ae1f849438b7"),
+    "R25-2": ("350cf56aacce", "73d5c4b71bae"),
     "R25-3": ("950bc8f39d06", "5d3042f89fcf"),
-    "R25-4": ("aa8f894cc09c", "c817ad2289e9"),
+    "R25-4": ("aa8f894cc09c", "289c06008081"),
     "R25-5": ("86f9eed4daf2", "2447e9cf3b0f"),
     "R25-6": ("ee166703f0ca", "aa36a6d54968"),
     "R25-7": ("5910bba6201c", "9dd5d0828467"),
@@ -1985,11 +1986,21 @@ FINDING_PINS = {
     "R50-1": ("7ab7c534acb9", "16fe8a398af1"),
     "R50-2": ("bdfd38b7bb17", "2420babf39c4"),
     "R50-3": ("a4342ab95066", "ca1cde82eaef"),
-    "R50-4": ("6f3cb482a2d6", "1760c70038c6"),
-    "R50-5": ("bbb9a24f5316", "1760c70038c6"),
-    "R50-6": ("28ac8da3d68f", "ead26ac7eb7c"),
-    "R50-7": ("b0c0f932f823", "1760c70038c6"),
-    "R50-8": ("6dad73e1d3fb", "1760c70038c6"),
+    "R50-4": ("6f3cb482a2d6", "3ae5e8d73cf2"),
+    "R50-5": ("bbb9a24f5316", "a3c162099c2b"),
+    "R50-6": ("28ac8da3d68f", "cae764e066a6"),
+    "R50-7": ("b0c0f932f823", "83fac13b47f9"),
+    "R50-8": ("6dad73e1d3fb", "45e72a3003e7"),
+    "R51-1": ("11b8f7c34779", "cf53a5f424aa"),
+    "R51-2": ("63a410ecefb6", "f6661cf4422f"),
+    "R51-3": ("e70b2cae94ba", "c498bdb97a6a"),
+    "R51-4": ("33fc7445d19a", "dc1aabb9435a"),
+    "R51-5": ("671f79bd8958", "8f16680d054d"),
+    "R52-1": ("e7e0bff43043", "c2998023dd2a"),
+    "R52-2": ("4670a8d5494b", "aa6f3581b19c"),
+    "R52-3": ("1452d8ecf7f9", "92493ad1da24"),
+    "R52-4": ("dfe9e26bae99", "febd4fe6731b"),
+    "R52-5": ("ce9f31f9e691", "1760c70038c6"),
 }
 
 
@@ -2123,16 +2134,16 @@ ACCEPTANCE_PINS = {
     "Б2": "7733a36e8877",
     "БТ2": "5d702ef36ec0",
     "БИ": "29434be6e3e6",
-    "БУ": "70ae8b633cc0",
+    "БУ": "dbf542e47fb4",
     "БА": "b9b744de6264",
-    "Б15": "a8d864b664bc",
+    "Б15": "64b40ccc07b8",
     "Б4": "e9623ee8803e",
     "Ш2": "6918ea7a2711",
     "Б3б": "b21858bd895d",
     "Б5": "174fffb97870",
     "Б6": "f74b1911a848",
     "Б7": "6b3d40b37bc4",
-    "Б8": "3ed32358ea7b",
+    "Б8": "2525557447ce",
     "Б9": "53e3eab8c25e",
     "Б10": "7bc7ef02a2db",
     "БП": "8702cfee5fb5",
@@ -2159,9 +2170,9 @@ DECLARATION_PINS = {
     "Б2": "3e44a1c9dc9e",
     "БТ2": "fa2a9ea3d8e3",
     "БИ": "86d72c212883",
-    "БУ": "902f372b6c42",
+    "БУ": "b785e8b6d282",
     "БА": "b8b4637b2524",
-    "Б15": "be76e85c2c91",
+    "Б15": "f854e58faa90",
     "Б4": "8de62a816674",
     "Ш2": "79d3cf2b43b8",
     "Б3б": "71d5ad81f1bb",
@@ -2172,7 +2183,7 @@ DECLARATION_PINS = {
     "Б9": "18f7d9410d70",
     "Б10": "8538113a68ea",
     "БП": "4af969d39107",
-    "Б0б": "33f3c9fa1037",
+    "Б0б": "e632859aac6b",
     "Б11": "dc30cbb2a0e3",
     "Б12": "1d5631079421",
     "Б13": "60e0862884fc",
@@ -2220,7 +2231,7 @@ def test_the_conveyor_rules_survive_as_acceptance_criteria():
     assert all(condition != "—" for _, condition in pairs), "критерий конвейера пропал"
     digest = hashlib.sha256(
         json.dumps(pairs, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "95437b17498d3db0e1d089ebe60eed8d44f8afbaecd6495ae7cabe1133f592f4", (
+    assert digest == "4650c450ef7c4b7956bb4c4fcb50fcc6be97710075f897c4918294fff06abeba", (
         "правило конвейера удалено или выхолощено под прежним ID")
 
 
@@ -2757,6 +2768,7 @@ def test_a_block_cannot_be_worked_on_under_a_stale_permission():
     module = import_tables_module()
     raw = copy.deepcopy(module.load().raw)
     _as_open(raw, "Б2")
+    _as_open(raw, "Б15")                      # круг 52: закрытый Б15 не может стоять над открытым Б2
     raw["blocks"]["блоки"]["Б2"]["приёмка"].append(
         {"id": "Б2-99", "условие": "дописал себе работы после разрешения"})
     with pytest.raises(module.ContractError, match="Б2: в работе"):
@@ -2843,6 +2855,7 @@ def test_absorption_cannot_be_circular():
     for chain in (["БТ2", "БИ"], ["БТ2", "БИ", "Б9"]):
         raw = _as_open(copy.deepcopy(module.load().raw), "БТ2")
         _as_open(raw, "БИ")                   # круг 50: БИ закрыт, опыт открывает его на копии
+        _as_open(raw, "Б15")                  # круг 52: Б15 закрыт при открытых БТ2/БИ — открывается следом
         blocks = raw["blocks"]["блоки"]
         for name, nxt in zip(chain, chain[1:] + chain[:1]):
             blocks[name]["состояние"] = "объединён_с"
@@ -3187,7 +3200,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert ISSUES["допустимые_решения"] == {'блокер_правкой_круги_исчерпаны': ['принять_риск', 'остановить', 'запросить_ещё_правку'], 'блокер_сменой_решения': ['сменить_решение', 'принять_риск', 'остановить'], 'блокер_только_сменой_цели': ['изменить_цель', 'принять_риск', 'остановить'], 'неизвестное_высокой_существенности': ['принять_риск', 'запросить_ещё_правку', 'остановить']}, (
         "допустимое решение по типу замечания убрано — Антон лишился варианта")
     assert VOCAB["состояния_блока"] == {'рабочие': ['идёт', 'переоткрыт', 'неполный'], 'терминальные': ['сделано', 'объединён_с']}
-    assert {key: VOCAB["коды_условий"][key] for key in VOCAB["коды_условий"]} == {'verdict': ['ОДОБРЕНО', 'НУЖНЫ_ПРАВКИ', 'РЕШЕНИЕ_АНТОНА', 'НЕПОЛНЫЙ_ПРОГОН'], 'decision': ['принять_риск', 'остановить', 'сменить_решение', 'изменить_цель', 'запросить_ещё_правку'], 'framing_decision': ['подтвердить_постановку', 'изменить_цель', 'сменить_решение', 'остановить'], 'budget_allows_round': [True, False], 'budget_fits_quorum': [True, False], 'change_index': ['первая', 'вторая'], 'round_running': [True, False], 'run_finished': [True, False], 'all_verdict_blocking_resolved': [True, False]}
+    assert {key: VOCAB["коды_условий"][key] for key in VOCAB["коды_условий"]} == {'verdict': ['ОДОБРЕНО', 'НУЖНЫ_ПРАВКИ', 'РЕШЕНИЕ_АНТОНА', 'НЕПОЛНЫЙ_ПРОГОН'], 'decision': ['принять_риск', 'остановить', 'сменить_решение', 'изменить_цель', 'запросить_ещё_правку'], 'framing_decision': ['подтвердить_постановку', 'изменить_цель', 'сменить_решение', 'остановить'], 'budget_allows_round': [True, False], 'budget_fits_quorum': [True, False], 'change_index': ['первая', 'вторая'], 'round_running': [True, False], 'run_finished': [True, False], 'all_verdict_blocking_resolved': [True, False], 'budget_remains': [True, False], 'input_can_progress': [True, False], 'ok_binding': [True, False], 'anton_ok': ['есть', 'нет', 'устарел'], 'framing_objection': [True, False], 'turns_left': [True, False], 'blind_cards_ready': [True, False]}
     assert STAGES["слепой_вопрос"]["прячем"] == ['предложенное_решение', 'автор', 'второй_критик'], (
         "из слепого вопроса убрано то, что прячется от критика")
     assert STAGES["слепой_вопрос"]["показываем"] == ['задача', 'ограничения', 'критерий_успеха', 'уже_закрытые_решения']
@@ -3197,7 +3210,7 @@ def test_the_nested_lists_the_ratchet_found_blind_are_pinned():
     assert BLOCKS["списки"] == {'пункты_плана_PEV': ['результат_границы_и_что_не_меняется', 'затронутые_файлы_и_доказательства', 'критерии_приёмки_и_проверка', 'блоки_и_зависимости', 'делегирование_модель_изоляция', 'неразрешённые_решения_пользователя'], 'таблицы': ['vocabulary', 'run', 'issues', 'framing', 'precheck', 'blocks', 'stages', 'findings'], 'фикстуры_репетиции': ['tune-plan.md', 'tune-gold.json', 'holdout-plan.md', 'holdout-gold.json'], 'исходы_идеи': ['возражение_держит_стадию', 'нет_годного_варианта', 'частичная_негодность', 'оба_предпочли_неавторскую_и_назвали_авторскую_непроходной', 'нет_консенсусно_годного', 'подтверждён', 'оба_предпочли_неавторскую', 'расхождение', 'три_подхода_на_столе']}
     # исполнение меняется при каждом закрытии блока — поэтому слепком, и
     # обновляется той же правкой, что закрывает блок
-    assert _finding_digest(BLOCKS["исполнение"]) == "34082d2f6961", (
+    assert _finding_digest(BLOCKS["исполнение"]) == "bdfb41743069", (
         "план исполнения изменён — шаг, проверка блока, роль или волна")
     assert BLOCKS["порядок_критики"]["классы_мутаций"] == ['убрать_правило', 'подменить_значение_на_допустимое', 'подменить_текст_сохранив_ID', 'подсунуть_недопустимое', 'соврать_в_ссылке', 'расширить_себе_объём', 'разорвать_доказательство'], (
         "из метода критика убран или подменён класс поломки")
@@ -3209,11 +3222,24 @@ def test_closed_code_lists_are_pinned_whole():
     assert set(VOCAB["коды_отказа"]) == {
         "БЮДЖЕТ_НЕ_ВМЕЩАЕТ_КВОРУМ", "КОНФЛИКТ_ВХОДА",
         "РЕШЕНИЕ_ВНЕ_ТИПА", "ЕСТЬ_ЗАВИСИМЫЕ_СОБЫТИЯ", "ПРОГОН_ЗАНЯТ",
+        "ПРОДОЛЖИТЬ_НЕЧЕМ",     # БУ-13: added — a named outcome for continuing an exhausted run
+        "НУЖНА_КОРРЕКЦИЯ_ВХОДА",  # БУ-13: added — the budget is there but the continuation changes nothing
+        # БУ-15: added — Anton's OK: not counted / absent at the exit / overtaken by an edit / an open objection
+        "ОК_НЕ_ЗАСЧИТАН", "НЕТ_ОК_АНТОНА", "ОК_УСТАРЕЛ", "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ",
+        "ФЛАГ_ЗАЩИЩЁН",        # БУ-15: the objection flag is taken off by Anton's decision, not by a flag call
+        # БУ-1…БУ-8: the correction — wrong state / not taken / the run can go on without it / the ceiling
+        "ПОПРАВКА_НЕВОЗМОЖНА", "ПОПРАВКА_НЕ_ЗАСЧИТАНА", "КОРРЕКЦИЯ_НЕ_НУЖНА", "ПОТОЛОК_ОБОРОТОВ",
+        "ПОПРАВКА_ТУПИК",      # БУ-2: no set of cards and no valid blind proposal of a critic: nothing to correct
     }
     assert set(VOCAB["коды_условий"]) == {
         "verdict", "decision", "framing_decision", "budget_allows_round",
         "budget_fits_quorum", "change_index", "round_running",
         "run_finished", "all_verdict_blocking_resolved",
+        "budget_remains",       # БУ-13: added — whether the critics without a valid answer have attempts left
+        "input_can_progress",   # БУ-13: added — whether the continuation can change anything (input builds, round pinned)
+        "ok_binding", "anton_ok", "framing_objection",   # БУ-15: added — the OK of Anton: counted, standing at the exit, objection
+        "turns_left",           # БУ-4, БУ-8: added — the turns of the refinement cycle are not used up
+        "blind_cards_ready",    # БУ-2: added — an incomplete run with no set has the blind proposals of both critics
     }
     assert set(VOCAB["решения_по_возражению"]) == {
         "подтвердить_постановку", "изменить_цель", "сменить_решение", "остановить",
@@ -3840,8 +3866,10 @@ def test_a_permission_cannot_be_rewritten_in_place():
         json.dumps(grants, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     # 04.10 19:24: объём пакета и идеи расширен по явному «да» Антона; прежние
     # разрешения на них (22.09 и 04.10 16:04) перенесены в историю целиком —
-    # это и меняет слепок.
-    assert digest == "0ab2c2430d1bcb474a544f5d25fba76eddf50c425ac752e0c7aa9aa2e3a5e2ff", (
+    # это и меняет слепок. 11.10: добавлено разрешение на цикл уточнений и
+    # предпроверку — прежние записи не тронуты. 12.10: расширение цикла
+    # уточнений на проверку продолжения — новой записью.
+    assert digest == "b4b4a0cd54fc76289c78d917bf2a42f491da56e0c167e316fecaa0e17933b0fe", (
         "выданное разрешение переписано: хеш объёма, список блоков или основание")
 
 
@@ -3973,7 +4001,7 @@ def test_the_break_list_itself_is_pinned():
                      for case in mutations.CASES)
     digest = hashlib.sha256(
         json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
-    assert digest == "8cefab94b5fcb38fb640e9108197ec2404eb03c369e1b1b8d95dd1c88d6991c5", f"список опытов изменён: сейчас {len(ids)}"
+    assert digest == "f2300cdf59f8b40054cc2cbba556403661f00dec223f562454e861774ed1df02", f"список опытов изменён: сейчас {len(ids)}"
     for case in mutations.CASES:
         assert case[4].strip(), f"{case[0]}: опыт без ожидаемой причины"
 
@@ -4569,3 +4597,210 @@ def test_idea_outcome_oracle_fixtures_run_through_the_real_table():
             want["вердикт"], want["состояние_прогона"]), path.name
         seen[outcome.reason] = outcome.priority
     assert seen == IDEA_ORACLE, "приоритеты и причины в таблице разошлись с §4.5"
+
+
+# --------------------------------------------------------------------------
+# БУ-11 .. БУ-13: the rows and sections the journal records read
+# --------------------------------------------------------------------------
+
+def _tables_with(mutate):
+    module = import_tables_module()
+    real = module.load()
+    raw = copy.deepcopy(real.raw)
+    mutate(raw)
+    return module.Tables.from_raw(raw)
+
+
+class _LazyTables:
+    """Настоящие таблицы грузятся при первом обращении, а не при сборе тестов.
+
+    Круг 52: загрузка на уровне модуля роняла сбор всего файла, когда опыт
+    мутации ломал таблицу, — сторож по имени не выполнялся, а опыты П87 и П95
+    краснели не по существу.
+    """
+
+    def __getattr__(self, name):
+        return getattr(import_tables_module().load(), name)
+
+
+REAL_TABLES = _LazyTables()
+
+
+def test_bu_the_answer_and_pin_sections_are_declared_and_checked():
+    answer, pins = VOCAB["ответ_критика"], VOCAB["закрепление"]
+    assert answer["порядок_записи"] == ["файл_ответа_на_диск", "событие_получена"]
+    assert answer["имя_файла"] == "sha256" and answer["предел_причины"] == 300
+    assert pins["события"] == ["вход_закреплён", "пакет_закреплён"] and pins["иное_содержимое"] in VOCAB["коды_отказа"]
+    REAL_TABLES.check()                                                       # positive control
+    for mutate in (
+        lambda r: r["vocabulary"]["ответ_критика"].update(порядок_записи=["событие_получена", "файл_ответа_на_диск"]),
+        lambda r: r["vocabulary"]["ответ_критика"].update(каталог="../выше"),
+        lambda r: r["vocabulary"]["ответ_критика"].update(предел_причины=0),
+        lambda r: r["vocabulary"]["ответ_критика"].update(предел_байтов=0),
+        lambda r: r["vocabulary"]["ответ_критика"].update(предел_байтов=r["vocabulary"]["пакет"]["предел_раздела_байт"] - 1),
+        lambda r: r["vocabulary"]["ответ_критика"].update(предел_байтов=True),
+        lambda r: r["vocabulary"]["ответ_критика"].update(имя_файла="md5"),
+        lambda r: r["vocabulary"]["ответ_критика"].update(выдумка=1),
+        lambda r: r["vocabulary"]["закрепление"].update(иное_содержимое="НЕТ_ТАКОГО"),
+        lambda r: r["vocabulary"]["закрепление"].update(события=["вход_закреплён"]),
+        lambda r: r["vocabulary"]["закрепление"].update(на_круг="много"),
+    ):
+        with pytest.raises(_MODULE.ContractError):
+            _tables_with(lambda r: mutate(r)).check()
+
+
+def test_bu_a_pin_event_may_not_move_the_run_or_depend_on_conditions():
+    def moving(raw):
+        for row in raw["run"]["переходы"]:
+            if row["событие"] == "пакет_закреплён":
+                row["в"] = "ждёт_автора"
+    with pytest.raises(_MODULE.ContractError, match="не должно менять состояние"):
+        _tables_with(moving).check()
+    for event in ("вход_закреплён", "пакет_закреплён"):
+        assert REAL_TABLES.decide("идёт_круг", event).to == "идёт_круг"
+    assert REAL_TABLES.decide("создан", "вход_закреплён").to == "создан"
+
+
+def test_bu_continuing_an_incomplete_run_is_three_rows_of_one_operation():
+    rows = [r for r in RUN["переходы"] if r["событие"] == "resume" and r["из"] == "неполный"]
+    got = {(r["условия"].get("budget_remains"), r["условия"].get("input_can_progress")): (r["в"], r.get("отказ"))
+           for r in rows}
+    assert got == {(True, True): ("идёт_круг", None),
+                   (False, None): ("неполный", "ПРОДОЛЖИТЬ_НЕЧЕМ"),
+                   (True, False): ("неполный", "НУЖНА_КОРРЕКЦИЯ_ВХОДА")}
+    assert "resume" in VOCAB["операции"]
+    assert not [r for r in RUN["переходы"] if r["событие"] == "продолжение"]       # one row family, not two ways in
+    for budget in (True, False):                                                    # every combination has exactly one outcome
+        for progress in (True, False):
+            REAL_TABLES.decide("неполный", "resume", {"budget_remains": budget, "input_can_progress": progress})
+
+
+def test_bu15_the_anton_ok_section_and_its_rows_are_declared_and_checked():
+    spec = VOCAB["ок_антона"]
+    assert (spec["событие"], spec["переход"], spec["источник"]) == ("ок_антона", "этап_пройден", "событие_транскрипта")
+    assert spec["длина_хеша"] >= 32 and spec["вердикт"] == "РЕШЕНИЕ_АНТОНА"
+    assert REAL_TABLES.framing["флаг_прогона"] == "есть_открытые_возражения_к_постановке"
+    REAL_TABLES.check()                                                                  # positive control
+    for mutate in (
+        lambda r: r["vocabulary"]["ок_антона"].update(источник="флаг"),
+        lambda r: r["vocabulary"]["ок_антона"].update(маркер="прогон {прогон}"),
+        lambda r: r["vocabulary"]["ок_антона"].update(длина_хеша=3),
+        lambda r: r["vocabulary"]["ок_антона"].update(длина_хеша=31),
+        lambda r: r["vocabulary"]["ок_антона"].update(вердикт="ОДОБРЕНО"),
+        lambda r: r["vocabulary"]["ок_антона"].update(вердикт="выдумка"),
+        lambda r: r["vocabulary"]["ок_антона"].update(этап="выдумка"),
+        lambda r: r["vocabulary"]["ок_антона"].update(переход="resume"),
+        lambda r: r["vocabulary"]["ок_антона"].update(выдумка=1),
+    ):
+        with pytest.raises(_MODULE.ContractError):
+            _tables_with(lambda r: mutate(r)).check()
+
+
+def test_bu15_the_exit_is_a_table_transition_and_every_refusal_has_its_own_code():
+    got = {(c, f): REAL_TABLES.decide("ждёт_Антона", "этап_пройден", {"anton_ok": c, "framing_objection": f})
+           for c in ("есть", "нет", "устарел") for f in (True, False)}
+    assert (got["есть", False].to, got["есть", False].refusal) == ("завершён", None)
+    assert got["есть", True].refusal == "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ"
+    assert got["нет", False].refusal == got["нет", True].refusal == "НЕТ_ОК_АНТОНА"
+    assert got["устарел", False].refusal == "ОК_УСТАРЕЛ"
+    assert all(o.to == "ждёт_Антона" for k, o in got.items() if o.refusal)               # a refusal moves nothing
+    assert REAL_TABLES.decide("ждёт_Антона", "ок_антона", {"ok_binding": True}).to == "ждёт_Антона"   # the record moves nothing
+    assert REAL_TABLES.decide("ждёт_Антона", "ок_антона", {"ok_binding": False}).refusal == "ОК_НЕ_ЗАСЧИТАН"
+    with pytest.raises(_MODULE.ContractError):                                           # `завершён` is final: no record after the exit
+        REAL_TABLES.decide("завершён", "ок_антона", {"ok_binding": True})
+    assert "этап_пройден" not in VOCAB["операции"] and "ок_антона" not in VOCAB["операции"]
+
+
+# БУ-15 / аудит: слова отрицания и условия не прячутся за двойником «i» и «і»; голое слово согласия.
+LOOKALIKE_I = [
+    "нi в коем случае", "погодi", "подождi", "дождiсь ревью", "нi", "нiколи",       # Latin i
+    "ні в коем случае", "ніколи", "погоді",                                          # Ukrainian і
+]
+
+
+@pytest.mark.parametrize("tail", LOOKALIKE_I)
+def test_bu15_a_lookalike_i_does_not_hide_a_negation_or_a_condition(tail):
+    reply = f"ОК на карточку решения, {tail}"
+    assert _MODULE._unambiguous_yes(reply, reply) is not None, f"засчитано: {reply!r}"
+    assert _MODULE.bare_consent_problem(f"ок, {tail}") is not None
+
+
+def test_bu15_the_consent_phrases_keep_working():
+    ok = "ОК на работу над блоками цикла уточнений и предпроверки"          # the phrase of Anton's permission
+    assert _MODULE._unambiguous_yes(ok, ok) is None
+    for phrase in ("ОК на коммит", "да на всё"):                                         # the permission formula still takes «на <что>»
+        assert _MODULE._unambiguous_yes(phrase, phrase) is None
+    for word in ("ок", "Ок.", "окей", "да", "Да!", "согласен", "согласна", "одобряю", "разрешаю", "оk"):
+        assert _MODULE.bare_consent_problem(word) is None, word
+    for word in ("ок на коммит", "да на всё", "ок?", "не ок", "ок, но позже", "нет", "ок нi", "\x00ок на всё"):
+        assert _MODULE.bare_consent_problem(word) is not None, word
+
+
+def test_bu15_a_transcript_that_cannot_be_read_is_a_refusal_for_a_permission_too(tmp_path):
+    module = import_tables_module()
+    session = "11111111-2222-3333-4444-555555555555"
+    directory = tmp_path / ".claude" / "projects" / "proj"
+    directory.mkdir(parents=True)
+    (directory / f"{session}.jsonl").write_bytes(b"\xff\xfe\x80")
+    problem = module.resolve_basis({"вид": "событие_транскрипта", "сессия": session,
+                                    "native_uuid": "aaaaaaaa-bbbb-cccc-dddd-000000000001",
+                                    "цитата": "разрешаю всё это делать"}, tmp_path)
+    assert "не читается" in (problem or "")
+
+
+def test_bu4_the_ceiling_has_one_source_in_the_table_and_a_closed_form():
+    spec = VOCAB["цикл_уточнений"]
+    assert spec["потолок_оборотов"] == 3                                    # Anton's decision of 11.10
+    assert spec["событие"] == "поправка" and spec["источники"] == ["антон", "автор"]
+    assert spec["терминальное"] in VOCAB["состояния_прогона"]["терминальные"]
+    assert spec["потолок_оборотов"] != VOCAB["повтор_невалидного_ответа"]["максимум_на_ответ"]   # a number of its own
+    REAL_TABLES.check()                                                                        # positive control
+    for mutate in (
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(потолок_оборотов=0),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(потолок_оборотов=True),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(потолок_оборотов="три"),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(терминальное="идёт_круг"),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(источники=["антон"]),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(событие="resume"),
+        lambda r: r["vocabulary"]["цикл_уточнений"].update(выдумка=1),
+        lambda r: r["vocabulary"].pop("цикл_уточнений"),
+    ):
+        with pytest.raises(_MODULE.ContractError):
+            _tables_with(lambda r: mutate(r)).check()
+
+
+def test_bu8_without_turns_the_correction_ends_in_the_terminal_state_and_only_when_nothing_else_can_go_on():
+    stop = REAL_TABLES.vocabulary["цикл_уточнений"]["терминальное"]
+    assert REAL_TABLES.decide("ждёт_Антона", "поправка", {"turns_left": False}).to == stop
+    outcome = REAL_TABLES.decide("ждёт_Антона", "поправка", {"turns_left": True})
+    assert outcome.to == "идёт_круг" and "mark_results_stale" in outcome.actions
+    stuck = {"blind_cards_ready": True, "budget_remains": False}                       # nothing to resume with
+    assert REAL_TABLES.decide("неполный", "поправка", {**stuck, "turns_left": False}).to == stop
+    assert REAL_TABLES.decide("неполный", "поправка", {**stuck, "turns_left": True}).to == "идёт_круг"
+    blocked = {"blind_cards_ready": True, "budget_remains": True, "input_can_progress": False}
+    assert REAL_TABLES.decide("неполный", "поправка", {**blocked, "turns_left": False}).to == stop
+    assert REAL_TABLES.decide("неполный", "поправка", {**blocked, "turns_left": True}).to == "идёт_круг"
+    # while the run can go on, the correction is not needed AT ANY number of turns: never the ceiling, never a new round
+    for turns in (True, False):
+        refused = REAL_TABLES.decide("неполный", "поправка", {"blind_cards_ready": True, "budget_remains": True,
+                                                               "input_can_progress": True, "turns_left": turns})
+        assert refused.refusal == "КОРРЕКЦИЯ_НЕ_НУЖНА" and refused.to == "неполный"
+    dead = REAL_TABLES.decide("неполный", "поправка", {"blind_cards_ready": False, "turns_left": False})
+    assert dead.refusal == "ПОПРАВКА_ТУПИК" and dead.to == "неполный"                    # the dead end is a named row, not the ceiling
+    with pytest.raises(_MODULE.ContractError):                      # not from a running round, not from a terminal state
+        REAL_TABLES.decide("идёт_круг", "поправка", {"turns_left": True})
+    with pytest.raises(_MODULE.ContractError):
+        REAL_TABLES.decide(stop, "поправка", {"turns_left": True})
+    assert "поправка" not in VOCAB["операции"]
+    assert not [r for r in RUN["переходы"] if r["событие"] == "вход_закреплён" and r["из"] == "ждёт_Антона"]   # no pin after the show
+
+
+def test_the_ok_artefact_is_the_first_link_of_the_consent_chain():
+    # Замер 12.10: `ок_антона.артефакт` проверялся только непустотой — подмена названия того,
+    # на что Антон даёт ОК, проходила молча. Он обязан быть тем, что принимает первое звено согласий.
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    assert raw["vocabulary"]["ок_антона"]["артефакт"] == raw["blocks"]["согласия"]["цепочка"][0]["принимается"]
+    raw["vocabulary"]["ок_антона"]["артефакт"] = "архитектура_и_план_реализации_вместе"
+    with pytest.raises(module.ContractError, match="первым звеном согласий"):
+        module.Tables.from_raw(raw).check()

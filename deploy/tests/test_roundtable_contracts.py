@@ -6,8 +6,10 @@
 """
 
 import copy
+import hashlib
 import itertools
 import json
+import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -751,9 +753,8 @@ def test_retry_counter_survives_cold_load(directory):
 
     again = Asker({("codex", "compare"): ["мусор"], ("claude", "compare"): [answer],
                    ("claude", "blind"): [], ("codex", "blind"): []})
-    result = stage(directory, again, saved_comparisons={"claude": json.dumps(comparison(
-        IDS, ALL_PASS, "cand_a"))}, new_id=None)
-    # claude не переспрашивается. Вызов 1 codex оборван до ответа: в бюджет повтора он не идёт
+    result = stage(directory, again, new_id=None)
+    # claude не переспрашивается: его сравнение берётся из журнала (БУ-14). Вызов 1 codex оборван до ответа: в бюджет повтора он не идёт
     # (ответа не было), поэтому codex получает ответ (2) и свой ровно один повтор (3)
     assert [c for c in again.calls if c[0] == "claude"] == []
     assert [c for c in again.calls if c[0] == "codex"] == [("codex", "compare", 2), ("codex", "compare", 3)]
@@ -788,7 +789,7 @@ def test_malformed_budget_is_contract_error():
 # БИ-13 — переход без ОК Антона
 # --------------------------------------------------------------------------
 
-def test_transition_without_anton_ok_refused_even_when_critics_agree(directory):
+def test_transition_without_anton_ok_refused_even_when_critics_agree(directory, tmp_path):
     answer = cmp_answer(ALL_PASS, "cand_a")
     ask = Asker({("claude", "blind"): [good_blind("c")], ("codex", "blind"): [good_blind("x")],
                  ("claude", "compare"): [answer], ("codex", "compare"): [answer]})
@@ -796,18 +797,20 @@ def test_transition_without_anton_ok_refused_even_when_critics_agree(directory):
     assert result.outcome.reason == "подтверждён"          # полное согласие критиков
     with locked(directory) as store:
         with pytest.raises(C.AntonOkRequired) as refused:
-            C.leave_idea_stage(store)
+            C.leave_idea_stage(store, home=_TALK_HOME["last"])
         assert refused.value.code == "НЕТ_ОК_АНТОНА"
-        # положительный контроль: с записанным ОК тот же вызов проходит
-        store.set_flag(C.ANTON_OK_FLAG)
-        assert C.leave_idea_stage(store) is True
+    assert _state(directory).state == "ждёт_Антона"
+    # положительный контроль: с записанным ОК тот же вызов проходит и прогон действительно переходит
+    _give_ok(directory, tmp_path)
+    assert _leave(directory) is True
+    assert _state(directory).state == "завершён"
 
 
 def test_other_flags_do_not_stand_in_for_anton_ok(directory):
     with locked(directory) as store:
         store.set_flag(C.OBJECTION_FLAG)
         with pytest.raises(C.AntonOkRequired):
-            C.leave_idea_stage(store)
+            C.leave_idea_stage(store, home=_TALK_HOME["last"])
 
 
 # --------------------------------------------------------------------------
@@ -903,26 +906,43 @@ def test_hostile_answer_gets_the_ordinary_retry(directory):
     assert result.outcome.reason == "подтверждён" and ask.count() == 6
 
 
-# 2 — сохранённые ответы проверяются
-@pytest.mark.parametrize("bad", ["мусор", {"variant": "x"}, None, json.dumps({"x": 1})])
-def test_saved_proposal_is_validated_and_breakage_is_ours(directory, bad):
-    ask = _blind_ask([cmp_answer(ALL_PASS, "cand_a")])
-    with pytest.raises(C.ContractError):
-        stage(directory, ask, saved_proposals={"claude": bad})
-    assert ask.count("compare") == 0
+# 2 — ответы, принятые журналом, перечитываются и проверяются заново (БУ-14; прежние saved_* убраны)
+def test_a_recorded_answer_judged_differently_now_is_our_breakage(directory):
+    _crash_in_compare_run(directory)
+    key = _compare_key(_state(directory), "claude")
+    _tamper(directory, lambda e: {**e, "accepted": False, "reason": "подделка"}
+            if e.get("kind") == "answer_checked" and tuple(e["key"]) == key else e)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="проверен в журнале иначе"):
+        stage(directory, ask)
+    assert ask.count() == 0 and _journal(directory) == before
 
 
-def test_saved_comparison_of_foreign_set_is_contract_error(directory):
-    foreign = comparison(["x1", "x2", "x3"], {"x1": "pass", "x2": "pass", "x3": "pass"}, "x1")
-    ask = _blind_ask([cmp_answer(ALL_PASS, "cand_a")])
-    with pytest.raises(C.ContractError):
-        stage(directory, ask, saved_comparisons={"claude": foreign})
+def test_a_recorded_answer_for_another_question_is_our_breakage(directory):
+    _crash_in_compare_run(directory)
+    key = _compare_key(_state(directory), "claude")
+    other = "f" * 64
+
+    def swap(entry):
+        if entry.get("kind") == "attempt" and tuple(entry["key"]) == key and "answer" in entry:
+            return {**entry, "answer": {**entry["answer"], "question_hash": other}}
+        if entry.get("kind") == "answer_checked" and tuple(entry["key"]) == key:
+            return {**entry, "question_hash": other}
+        return entry
+    _tamper(directory, swap)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="другой вопрос"):
+        stage(directory, ask)
+    assert ask.count() == 0 and _journal(directory) == before
 
 
-def test_valid_saved_proposal_is_used_without_a_call(directory):
-    ask = _blind_ask([cmp_answer(ALL_PASS, "cand_a")])
-    stage(directory, ask, saved_proposals={"claude": proposal(ONE, "сохр")})
-    assert ("claude", "blind", 1) not in ask.calls
+def test_a_valid_recorded_answer_is_used_without_a_call(directory):
+    _crash_in_compare_run(directory)                            # claude blind, codex blind and claude compare are in the journal
+    ask = _happy()
+    result = stage(directory, ask)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [c for c in ask.calls if c[0] == "claude"] == []
+    assert [c for c in ask.calls if c[0] == "codex"] == [("codex", "compare", 2)]
 
 
 # 3 — критерии в запросе сравнения
@@ -961,25 +981,27 @@ def _done(directory, reason_grades=ALL_PASS, selected="cand_a", flag=False):
     return stage(directory, ask)
 
 
-def _leave(directory):
-    with locked(directory) as store:
-        return C.leave_idea_stage(store)
+_TALK_HOME = {"last": None}                    # the home of the latest transcript: the exit looks at it again
 
 
-def test_gate_opens_only_for_ok_after_the_verdict(directory):
+def _leave(directory, tmp_path=None):
     with locked(directory) as store:
-        store.set_flag(C.ANTON_OK_FLAG)              # ОК до исхода
+        return C.leave_idea_stage(store, home=(tmp_path / "home") if tmp_path is not None else _TALK_HOME["last"])
+
+
+def test_gate_opens_only_for_ok_after_the_verdict(directory, tmp_path):
+    with pytest.raises(C.AntonOkRefused):                      # ОК до исхода: давать не на что (и редакции ещё нет)
+        _give_ok(directory, tmp_path)
     _done(directory)
+    with pytest.raises(C.AntonOkRefused, match="раньше последнего вердикта"):
+        _give_ok(directory, tmp_path, at="2000-01-01T00:00:00Z")
     with pytest.raises(C.AntonOkRequired):
         _leave(directory)
-    with locked(directory) as store:
-        store.set_flag(C.ANTON_OK_FLAG)              # повторный ОК уже после вердикта
+    _give_ok(directory, tmp_path)                              # ОК уже после вердикта
     assert _leave(directory) is True
 
 
 def test_gate_closed_before_outcome(directory):
-    with locked(directory) as store:
-        store.set_flag(C.ANTON_OK_FLAG)
     with pytest.raises(C.AntonOkRequired):
         _leave(directory)
 
@@ -987,40 +1009,31 @@ def test_gate_closed_before_outcome(directory):
 def test_gate_closed_on_incomplete_run(directory):
     ask = Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]})
     assert stage(directory, ask).run_state == "неполный"
-    with locked(directory) as store:
-        store.set_flag(C.ANTON_OK_FLAG)
     with pytest.raises(C.AntonOkRequired):
         _leave(directory)
 
 
-def test_gate_closed_with_open_objection(directory):
+def test_gate_closed_with_open_objection(directory, tmp_path):
     _done(directory, flag=True)
-    with locked(directory) as store:
-        store.set_flag(C.ANTON_OK_FLAG)
-    with pytest.raises(C.AntonOkRequired):
+    _give_ok(directory, tmp_path)
+    with pytest.raises(C.AntonOkRequired) as refused:
         _leave(directory)
+    assert refused.value.code == "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ" and _state(directory).state == "ждёт_Антона"
 
 
-def test_ok_does_not_survive_a_new_round_and_revoked_ok_closes_gate(directory):
+def test_ok_does_not_survive_a_new_round(directory, tmp_path):
     _done(directory)
+    _give_ok(directory, tmp_path)
     with locked(directory) as store:
-        store.set_flag(C.ANTON_OK_FLAG)
-        assert C.leave_idea_stage(store)
-        store.start_round(2)
-        with pytest.raises(C.AntonOkRequired):
-            C.leave_idea_stage(store)
-        store.set_flag(C.ANTON_OK_FLAG)              # ОК уже после нового круга, но вердикта нового нет
-        with pytest.raises(C.AntonOkRequired, match="прошлого круга"):      # вердикт прошлого круга выхода не открывает
-            C.leave_idea_stage(store)
-    with locked(directory) as store:
-        store.set_flag(C.ANTON_OK_FLAG, False)
-        with pytest.raises(C.AntonOkRequired):
-            C.leave_idea_stage(store)
+        store._start_round(2)
+        with pytest.raises(C.AntonOkRequired, match="прошлого круга") as refused:      # вердикт прошлого круга выхода не открывает
+            C.leave_idea_stage(store, home=_TALK_HOME["last"])
+    assert refused.value.code == "ОК_УСТАРЕЛ" and _state(directory).state == "ждёт_Антона"
 
 
 def test_critics_agree_parameter_is_gone():
     import inspect
-    assert list(inspect.signature(C.leave_idea_stage).parameters) == ["store"]
+    assert list(inspect.signature(C.leave_idea_stage).parameters) == ["store", "home"]
 
 
 # 5, 9 — неидентичная перестановка и пара автора
@@ -1181,10 +1194,11 @@ def test_reentry_on_finished_stage_is_contract_error_with_zero_calls(directory, 
     other = started(tmp_path / "inc", "run-inc")
     stage(other, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
     again = Asker({})
-    with pytest.raises(C.ContractError, match="возобновление — операция блока уточнений") as info:
+    before = _journal(other)
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ") as info:
         stage(other, again)
     assert "стадия завершена" not in str(info.value)          # неполный прогон не «завершён»
-    assert again.count() == 0
+    assert again.count() == 0 and _journal(other) == before
 
 
 # 16 — значения критика в исключениях обрезаны
@@ -1703,6 +1717,7 @@ def test_audit_h2_the_abort_limit_is_read_from_the_table(tmp_path):
 
 
 def test_audit_h2_a_valid_answer_without_its_bytes_is_an_explicit_contract_error(tmp_path):
+    """БУ-11: an answer the journal counted without its bytes (no receipt) is never taken on trust."""
     directory = _new_run(tmp_path / "run")
     ask = _Ask({("claude", "blind"): [_CARD_C], ("codex", "blind"): [_CARD_X],
                 ("claude", "compare"): [_ANSWERS["критик_1"]]})
@@ -1714,15 +1729,27 @@ def test_audit_h2_a_valid_answer_without_its_bytes_is_an_explicit_contract_error
 
     with pytest.raises(_Crash):
         _run(directory, dying, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
-    again = _Ask({("codex", "blind"): [_CARD_X]})
-    with pytest.raises(C.ContractError, match="байтов нет"):
-        _run(directory, again, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
-    assert again.count() == 0
+    # positive control: the bytes are in the journal now, so claude is not asked again
     saved = _Ask({("codex", "blind"): [_CARD_X], ("claude", "compare"): [_ANSWERS["критик_1"]],
                   ("codex", "compare"): [_ANSWERS["критик_2"]]})
-    result = _run(directory, saved, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"],
-                  saved_proposals={"claude": _CARD_C})                      # the caller's own copy is trusted and used
+    other = _new_run(tmp_path / "forged", "run-f")
+    state = _state(other)                                           # a "validated" attempt whose bytes were never stored:
+    path = Path(other) / S.JOURNAL                                  # the store refuses to write it, so the journal is forged
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for status in TABLES.vocabulary["попытка"]["состояния"]:
+        lines.append(json.dumps({"kind": "attempt", "key": [state.run_id, C.BLIND_STAGE, 1, "claude", 1],
+                                 "status": status, "at": "2026-10-11T00:00:00+00:00", "seq": len(lines) + 1}))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with _locked(other) as store:
+        with pytest.raises(S.StateError, match="без квитанции"):
+            store.record_attempt(C.BLIND_STAGE, 1, "codex", 1, "получена")      # the honest door is shut
+    again = _Ask({("codex", "blind"): [_CARD_X]})
+    with pytest.raises(C.ContractError, match="байтов в журнале нет"):
+        _run(other, again, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert again.count() == 0
+    result = _run(directory, saved, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
     assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ("claude", "blind", 2) not in saved.calls
+    assert [c for c in saved.calls if c[:2] == ("claude", "blind")] == []
 
 
 # -- M4: the second package is pinned in the journal -----------------------------------
@@ -1742,11 +1769,11 @@ def _crash_in_compare(tmp_path, name="run"):
 
 def test_audit_m4_the_hash_of_the_second_package_is_pinned_and_checked_on_resume(tmp_path):
     directory = _crash_in_compare(tmp_path)
-    pinned = [f for f in S.RunStore(directory, TABLES).load().flags if f.startswith(C.PACKAGE_FLAG)]
-    assert len(pinned) == 1 and len(pinned[0]) == len(C.PACKAGE_FLAG) + 64
+    pinned = [p for p in S.RunStore(directory, TABLES).load().pins if p.event == C.PIN_PACKAGE]
+    assert len(pinned) == 1 and len(pinned[0].content_hash) == 64 and len(pinned[0].hidden_hash) == 64
     ask, result = _resume(directory)                                    # positive control: the same inputs
     assert result.verdict == "РЕШЕНИЕ_АНТОНА"
-    assert [f for f in S.RunStore(directory, TABLES).load().flags if f.startswith(C.PACKAGE_FLAG)] == pinned
+    assert [p for p in S.RunStore(directory, TABLES).load().pins if p.event == C.PIN_PACKAGE] == pinned
 
 
 @pytest.mark.parametrize("change", ["section", "criteria", "registries", "withheld"])
@@ -1775,10 +1802,8 @@ def test_audit_m4_a_changed_input_on_resume_is_a_contract_error_with_no_call(tmp
 
 def test_audit_m4_a_stale_package_pin_is_a_contract_error_before_any_call(tmp_path):
     directory = _crash_in_compare(tmp_path)
-    with _locked(directory) as store:
-        for flag in [f for f in store.load().flags if f.startswith(C.PACKAGE_FLAG)]:
-            store.set_flag(flag, False)
-        store.set_flag(C.PACKAGE_FLAG + "0" * 64)
+    _tamper(directory, lambda e: {**e, "pin": {**e["pin"], "content_hash": "0" * 64}}
+            if e.get("event") == C.PIN_PACKAGE else e)
     ask = _Ask({})
     with pytest.raises(C.ContractError, match="второй пакет"):
         _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
@@ -1844,7 +1869,7 @@ def _happy(over=None):
 
 def _journal_clean(directory):
     state = S.RunStore(directory, TABLES).load()
-    return not state.idea_candidates and not [f for f in state.flags if f.startswith(C.PACKAGE_FLAG)]
+    return not state.idea_candidates and not [p for p in state.pins if p.event == C.PIN_PACKAGE]
 
 
 # -- 1: the point of no return needs the whole second package -------------------------------
@@ -1983,10 +2008,10 @@ def test_r2_an_incomplete_result_keeps_the_valid_comparison_and_names_the_reason
 
 def test_r2_reentry_on_an_incomplete_run_does_not_say_finished(directory):
     stage(directory, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
-    with pytest.raises(C.ContractError) as info:
+    with pytest.raises(C.ResumeImpossible) as info:
         stage(directory, Asker({}))
-    assert "возобновление" in str(info.value) and "завершена" not in str(info.value)
-    assert "clarification block" in (C.run_idea_stage.__doc__ or "")
+    assert info.value.code == "ПРОДОЛЖИТЬ_НЕЧЕМ" and "завершена" not in str(info.value)
+    assert "ResumeImpossible" in (C.run_idea_stage.__doc__ or "")
 
 
 # -- 7: the shape of the caller's inputs is OUR error, the content is the author's -------------------
@@ -2037,12 +2062,10 @@ def test_r2_a_changed_withheld_on_resume_is_refused_and_the_run_stays_fit_for_th
     with pytest.raises(Boom):
         stage(directory, _happy({("codex", "compare"): [boom]}))
     ask = _happy()
-    saved = {"claude": comparison(IDS, ALL_PASS, "cand_a")}
     with pytest.raises(C.ContractError, match="вход стадии"):
-        stage(directory, ask, withheld={"автор": "Колобок", "второй_критик": "Бибигон"},
-              saved_comparisons=saved)
+        stage(directory, ask, withheld={"автор": "Колобок", "второй_критик": "Бибигон"})
     assert ask.count() == 0 and S.RunStore(directory, TABLES).load().state == "идёт_круг"
-    result = stage(directory, _happy(), saved_comparisons=saved)
+    result = stage(directory, _happy())
     assert result.verdict == "РЕШЕНИЕ_АНТОНА"
 
 
@@ -2106,13 +2129,15 @@ def test_r2_card_bytes_is_what_is_checked_and_what_is_stored(directory):
 
 # -- 13: the OK of the previous round does not open the exit -------------------------------------------------
 
-def test_r2_an_ok_after_a_new_round_start_does_not_open_the_exit_without_a_new_verdict(directory):
+def test_r2_an_ok_after_a_new_round_start_does_not_open_the_exit_without_a_new_verdict(directory, tmp_path):
     _done(directory)
     with locked(directory) as store:
-        store.start_round(2)
-        store.set_flag(C.ANTON_OK_FLAG)
-        with pytest.raises(C.AntonOkRequired, match="прошлого круга"):
-            C.leave_idea_stage(store)
+        store._start_round(2)
+    with pytest.raises(C.AntonOkRefused, match="вердикта"):          # a reply cannot be an OK with no verdict to give it for
+        _give_ok(directory, tmp_path)
+    with locked(directory) as store:
+        with pytest.raises(C.AntonOkRequired, match="нет записанного ОК|прошлого круга"):
+            C.leave_idea_stage(store, home=_TALK_HOME["last"])
 
 
 # -- 14: a corrupt journal is ContractError --------------------------------------------------------------------
@@ -2253,27 +2278,106 @@ def _journal(directory):
     return (Path(directory) / S.JOURNAL).read_bytes()
 
 
-@pytest.mark.parametrize("name,kw", [
-    ("список вместо словаря", {"saved_proposals": [("claude", "x")]}),
-    ("список сравнений", {"saved_comparisons": ["x"]}),
-    ("строка", {"saved_proposals": "claude"}),
-    ("чужой ключ", {"saved_proposals": {"третий": json.dumps(proposal(ONE, "с"))}}),
-    ("чужой ключ сравнений", {"saved_comparisons": {"третий": "{}"}}),
-    ("ключ не строка", {"saved_proposals": {1: "{}"}}),
-    ("значение число", {"saved_proposals": {"claude": 42}}),
-    ("значение None", {"saved_comparisons": {"codex": None}}),
-])
-def test_critic1_saved_answers_of_a_wrong_shape_are_a_contract_error_before_any_write(directory, name, kw):
+class _Boom(Exception):
+    pass
+
+
+def _boom(_request):
+    raise _Boom
+
+
+def _state(directory):
+    return S.RunStore(directory, TABLES).load()
+
+
+def _compare_key(state, critic, number=1):
+    return (state.run_id, C.COMPARE_STAGE, 1, critic, number)
+
+
+def _tamper(directory, mutate):
+    """Rewrite the journal entry by entry through `mutate(entry) -> entry` (same line format)."""
+    path = Path(directory) / S.JOURNAL
+    lines = [json.dumps(mutate(json.loads(line)), ensure_ascii=False, sort_keys=True)
+             for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _crash_in_compare_run(directory):
+    """Both blind answers and claude's comparison are in the journal; codex's comparison call dies."""
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("codex", "compare"): [_boom]}))
+
+
+def _answer_file(directory, critic, stage_name, number=1):
+    state = _state(directory)
+    receipt = state.attempts[(state.run_id, stage_name, 1, critic, number)].receipt
+    return Path(directory) / TABLES.vocabulary["ответ_критика"]["каталог"] / receipt.sha256
+
+
+# -- подставная переписка для ОК Антона (БУ-15): временный «дом» с JSONL, как у тестов разрешений -------------------
+
+OK_SESSION = "11111111-2222-3333-4444-555555555555"
+OK_REPLY = "ок"                              # the bare word of consent: «ОК на <что угодно>» is not an OK here
+LATE = "2999-01-01T00:00:00Z"                  # после любого вердикта
+
+
+class Talk:
+    """Записи переписки сессии: ответ ассистента, затем реплика пользователя (цепочка parentUuid)."""
+
+    def __init__(self, home, session=OK_SESSION, project="proj"):
+        folder = Path(home) / ".claude" / "projects" / project
+        folder.mkdir(parents=True, exist_ok=True)
+        self.home, self.path, self.session = Path(home), folder / f"{session}.jsonl", session
+        self.last = None
+        _TALK_HOME["last"] = self.home
+
+    def _add(self, record):
+        count = len(self.path.read_text(encoding="utf-8").splitlines()) if self.path.exists() else 0
+        uuid = f"aaaaaaaa-bbbb-cccc-dddd-{count + 1:012d}"
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"uuid": uuid, "parentUuid": self.last, **record}, ensure_ascii=False) + "\n")
+        self.last = uuid
+        return uuid
+
+    def assistant(self, text, at=LATE):
+        return self._add({"type": "assistant", "timestamp": at,
+                          "message": {"content": [{"type": "text", "text": text}]}})
+
+    def human(self, text, at=LATE, **extra):
+        return self._add({"type": "user", "timestamp": at, "message": {"content": text}, **extra})
+
+
+def _talk(tmp_path):
+    return Talk(tmp_path / "home")
+
+
+def _shown(directory):
+    state = _state(directory)
+    return C.ok_marker(state.run_id, state.input_revision or "0" * 64, TABLES)
+
+
+def _reply(directory, tmp_path, reply=OK_REPLY, at=LATE, turn=None, turn_at=LATE, **extra):
+    """An exchange in the transcript: the assistant shows the marker, the human answers. Returns the basis."""
+    talk = _talk(tmp_path)
+    talk.assistant(turn if turn is not None else f"Показываю карточку решения. {_shown(directory)}. Даёте ОК?", at=turn_at)
+    return {"сессия": OK_SESSION, "native_uuid": talk.human(reply, at=at, **extra)}
+
+
+def _give_ok(directory, tmp_path, **kwargs):
+    basis = _reply(directory, tmp_path, **kwargs)
+    with locked(directory) as store:
+        return C.record_anton_ok(store, basis, home=tmp_path / "home")
+
+
+@pytest.mark.parametrize("name", ["saved_proposals", "saved_comparisons"])
+def test_critic1_saved_answers_of_a_wrong_shape_are_a_contract_error_before_any_write(directory, name):
+    """БУ-14: no parameter carries an answer into the stage (it was `saved_*`): handing one in is a TypeError
+    with the journal untouched. The name of this test is pinned by a finding; what it stands for changed."""
     before, ask = _journal(directory), _happy()
-    with pytest.raises(C.ContractError):
-        stage(directory, ask, **kw)
+    with pytest.raises(TypeError):
+        stage(directory, ask, **{name: {"claude": json.dumps(proposal(ONE, "с"))}})
     assert _journal(directory) == before and ask.count() == 0
-
-
-def test_critic1_saved_answers_positive_control(directory):
-    ask = _happy()
-    result = stage(directory, ask, saved_proposals={"claude": json.dumps(proposal(ONE, "с"))}, saved_comparisons=None)
-    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and ("claude", "blind", 1) not in ask.calls
+    assert stage(directory, ask).verdict == "РЕШЕНИЕ_АНТОНА"                # positive control
 
 
 @pytest.mark.parametrize("foreign", ["план", "ревью"])
@@ -2302,31 +2406,22 @@ def _refused_with_no_trace(directory, kw):
     assert _journal(directory) == before and ask.count() == 0
 
 
-@pytest.mark.parametrize("name,raw", [
-    ("не json", "{не json"),
-    ("чужие критерии", proposal(_crit("К9"), "с")),
-    ("след скрытого", {**proposal(ONE, "с"), "variant": "про Лунтика рассказ"}),
-])
-def test_critic1_saved_proposals_of_a_broken_content_are_refused_before_the_first_write(directory, name, raw):
-    _refused_with_no_trace(directory, {"saved_proposals": {"claude": raw}})
-    ask = _happy()                                                       # positive control: the good one is used
-    assert stage(directory, ask, saved_proposals={"claude": proposal(ONE, "с")}).verdict == "РЕШЕНИЕ_АНТОНА"
-
-
-def test_critic1_saved_comparisons_on_a_fresh_run_are_a_contract_error_with_no_write(directory):
-    _refused_with_no_trace(directory, {"saved_comparisons": {"claude": comparison(IDS, ALL_PASS, "cand_a")}})
-
-
-def test_critic1_broken_saved_comparisons_on_a_resumed_run_are_refused_with_no_write(tmp_path):
-    directory = _crash_in_compare(tmp_path)
-    for raw in ("{не json", {"assessments": []}):
-        before, ask = _journal(directory), _Ask({})
-        with pytest.raises(C.ContractError):
-            _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"],
-                 saved_comparisons={"claude": raw})
-        assert _journal(directory) == before and ask.count() == 0
-    ask, result = _resume(directory)                                     # positive control
-    assert result.verdict == "РЕШЕНИЕ_АНТОНА"
+@pytest.mark.parametrize("name", ["подменён другим ответом", "обрезан", "удалён"])
+def test_critic1_a_damaged_answer_file_is_refused_before_the_first_write(directory, name):
+    """БУ-11/14: the bytes behind a receipt are checked against its hash and length; nothing else stands in."""
+    _crash_in_compare_run(directory)
+    blob = _answer_file(directory, "claude", C.COMPARE_STAGE)
+    original = blob.read_bytes()
+    if name == "удалён":
+        blob.unlink()
+    else:
+        blob.write_bytes(json.dumps(proposal(ONE, "чужой")).encode() if name.startswith("подменён") else original[:-3])
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="файл ответа|файла ответа"):
+        stage(directory, ask)
+    assert _journal(directory) == before and ask.count() == 0
+    blob.write_bytes(original)                                          # positive control: the file back, the run goes on
+    assert stage(directory, _happy()).verdict == "РЕШЕНИЕ_АНТОНА"
 
 
 def test_critic1_the_input_print_is_written_before_the_event_so_a_crash_between_them_admits_no_other_input(directory):
@@ -2347,7 +2442,7 @@ def test_critic1_the_input_print_is_written_before_the_event_so_a_crash_between_
             C.run_idea_stage(Failing(), ask=_happy(), criteria=_crit("BASE_A"),
                              author_card=proposal(_crit("BASE_A"), "автор"), sections=SECTIONS, withheld=WITHHELD,
                              new_id=fixed_ids(), shuffle=lambda o: None, tables=TABLES)
-    assert any(f.startswith(C.INPUT_FLAG) for f in S.RunStore(directory, TABLES).load().flags)
+    assert [p.event for p in S.RunStore(directory, TABLES).load().pins] == [C.PIN_INPUT]
     ask = _answering_from_the_package()
     with pytest.raises(C.ContractError, match="вход стадии"):
         stage(directory, ask, criteria=_crit("BASE_B"), author_card=proposal(_crit("BASE_B"), "автор"))
@@ -2387,8 +2482,1534 @@ def test_critic1_not_started_incomplete_and_finished_runs_are_refused_with_the_j
     stage(incomplete, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
     finished = started(tmp_path / "fin", "run-fin")
     stage(finished, _happy())
-    for directory, text in ((created, "не запущен"), (incomplete, "неполный прогон"), (finished, "стадия завершена")):
+    for directory, text in ((created, "не запущен"), (finished, "стадия завершена")):
         before, ask = _journal(directory), _happy()
         with pytest.raises(C.ContractError, match=text):
             stage(directory, ask)
         assert _journal(directory) == before and ask.count() == 0
+    before, ask = _journal(incomplete), _happy()                          # БУ-13: an exhausted run is a named outcome
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ"):
+        stage(incomplete, ask)
+    assert _journal(incomplete) == before and ask.count() == 0
+
+
+# ==========================================================================
+# БУ, часть 1: байты ответов, закрепление, продолжение (БУ-11 … БУ-14)
+# ==========================================================================
+
+def _events(directory, name):
+    return [e for e in (json.loads(line) for line in _journal(directory).decode("utf-8").splitlines() if line.strip())
+            if e.get("event") == name]
+
+
+def _spy(inner, log):
+    """`ask` that remembers what it handed back, per (critic, phase, attempt)."""
+    def ask(critic, request):
+        raw = inner(critic, request)
+        log[(critic, request["phase"], request["attempt"])] = raw
+        return raw
+    return ask
+
+
+def _supervisor_marks_incomplete(directory):
+    """Whoever supervises a broken run closes the round as incomplete (a legal `вердикт` of the table)."""
+    with locked(directory) as store:
+        return store.record_event("вердикт", {"verdict": C.INCOMPLETE_VERDICT})
+
+
+# -- БУ-11: the bytes and the result of the check stay with the attempt -------------------------------------
+
+def test_bu11_the_exact_bytes_of_every_answer_and_the_result_of_its_check_are_kept(directory):
+    log = {}
+    ask = Asker({("claude", "blind"): ["мусор не json", good_blind("c")], ("codex", "blind"): [good_blind("x")],
+                 ("claude", "compare"): [_from_request(ALL_PASS, "cand_a")],
+                 ("codex", "compare"): [_from_request(ALL_PASS, "cand_a")]})
+    assert stage(directory, _spy(ask, log)).verdict == "РЕШЕНИЕ_АНТОНА"
+    cold = _state(directory)                                           # a fresh store: the restart
+    stages = {"blind": C.BLIND_STAGE, "compare": C.COMPARE_STAGE}
+    store = S.RunStore(directory, TABLES)
+    for (critic, phase, number), raw in log.items():
+        attempt = cold.attempts[(cold.run_id, stages[phase], 1, critic, number)]
+        assert store.read_answer(stages[phase], 1, critic, number) == raw.encode("utf-8")
+        assert attempt.receipt.length == len(raw.encode("utf-8")) and len(attempt.receipt.question_hash) == 64
+        assert attempt.validation.question_hash == attempt.receipt.question_hash
+    rejected = cold.attempts[(cold.run_id, C.BLIND_STAGE, 1, "claude", 1)]
+    accepted = cold.attempts[(cold.run_id, C.BLIND_STAGE, 1, "claude", 2)]
+    assert store.read_answer(C.BLIND_STAGE, 1, "claude", 1) == "мусор не json".encode()    # the rejected one too
+    assert rejected.validation.accepted is False and rejected.validation.reason
+    assert accepted.validation.accepted is True and accepted.validation.reason == ""
+    # one question for both tries of one critic; another critic is another question
+    assert rejected.receipt.question_hash == accepted.receipt.question_hash
+    assert rejected.receipt.question_hash != cold.attempts[(cold.run_id, C.BLIND_STAGE, 1, "codex", 1)].receipt.question_hash
+    assert "мусор не json" not in _journal(directory).decode("utf-8")          # the bytes are not in the journal itself
+
+
+def test_bu11_a_failure_between_the_file_and_the_journal_entry_leaves_the_attempt_uncounted(directory, monkeypatch):
+    real = S.RunStore._append
+
+    def failing(self, entry):
+        if "answer" in entry:
+            raise _Boom
+        return real(self, entry)
+
+    monkeypatch.setattr(S.RunStore, "_append", failing)
+    ask = _happy()
+    with pytest.raises(_Boom):
+        stage(directory, ask)
+    monkeypatch.undo()
+    state = _state(directory)
+    key = (state.run_id, C.BLIND_STAGE, 1, "claude", 1)
+    assert state.attempts[key].status == "запущена" and state.attempts[key].receipt is None
+    answers = Path(directory) / TABLES.vocabulary["ответ_критика"]["каталог"]
+    assert len(list(answers.iterdir())) == 1                          # the bytes are on the disk, the journal does not know
+    answered, aborted = C._split_attempts(state, TABLES, C.BLIND_STAGE, 1, "claude")
+    assert answered == [] and len(aborted) == 1                        # the budget is not spent
+    again = _happy()                                                   # positive control: without the failure it is counted
+    assert stage(directory, again).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert _state(directory).attempts[key].possible_duplicate and ("claude", "blind", 2) in again.calls
+
+
+def test_bu11_a_failure_writing_the_file_leaves_no_trace_of_a_received_answer(directory, monkeypatch):
+    def failing(self, raw):
+        raise _Boom
+
+    monkeypatch.setattr(S.RunStore, "_store_blob", failing)
+    with pytest.raises(_Boom):
+        stage(directory, _happy())
+    monkeypatch.undo()
+    state = _state(directory)
+    assert all(a.receipt is None and a.status == "запущена" for a in state.attempts.values())
+    assert not (Path(directory) / TABLES.vocabulary["ответ_критика"]["каталог"]).exists()
+
+
+def test_bu11_a_reason_of_a_rejection_survives_a_restart_and_travels_into_the_retry(directory):
+    ask = _happy({("claude", "blind"): ["мусор", _boom]})
+    with pytest.raises(_Boom):
+        stage(directory, ask)
+    state = _state(directory)
+    reason = state.attempts[(state.run_id, C.BLIND_STAGE, 1, "claude", 1)].validation.reason
+    assert reason and len(reason) <= C.REASON_CLIP + 1
+    seen = []
+    again = _happy({("claude", "blind"): [lambda request: seen.append(request["previous_rejection"]) or good_blind("c")(request)]})
+    assert stage(directory, again).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert seen == [reason]                                            # the retry is asked with the recorded reason
+
+
+def test_bu11_the_reason_limit_comes_from_the_table():
+    assert C.REASON_CLIP == REAL.vocabulary["ответ_критика"]["предел_причины"]
+
+
+# -- БУ-12: the pin is a journal event --------------------------------------------------------------------
+
+def test_bu12_the_input_and_the_package_are_pinned_before_the_first_comparison_call(directory):
+    seen_at_call = []
+
+    def probe(request):
+        seen_at_call.append([e["event"] for e in map(json.loads, _journal(directory).decode().splitlines())
+                             if e.get("kind") == "event"])
+        raise _Boom
+
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "compare"): [probe]}))
+    assert seen_at_call[0].index("вход_закреплён") < seen_at_call[0].index("пакет_собран") < seen_at_call[0].index("пакет_закреплён")
+    state = _state(directory)
+    pins = {p.event: p for p in state.pins}
+    assert set(pins) == {C.PIN_INPUT, C.PIN_PACKAGE} and all(p.round_number == 1 for p in pins.values())
+    assert len(pins[C.PIN_PACKAGE].content_hash) == 64 and pins[C.PIN_PACKAGE].hidden_hash == C.digest(
+        C.canonical_json(WITHHELD))
+    assert pins[C.PIN_PACKAGE].revision == pins[C.PIN_INPUT].revision
+    assert not [f for f in state.flags if f.startswith(("пакет_сравнения:", "вход_стадии_идея:"))]
+
+
+def test_bu12_a_repeated_pin_of_the_same_package_makes_no_second_event(directory):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "compare"): [_boom]}))
+    first = [_events(directory, C.PIN_INPUT), _events(directory, C.PIN_PACKAGE)]
+    assert [len(x) for x in first] == [1, 1]
+    assert stage(directory, _happy()).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [_events(directory, C.PIN_INPUT), _events(directory, C.PIN_PACKAGE)] == first
+
+
+def test_bu12_another_package_in_the_same_round_is_refused_and_the_old_pin_is_not_rewritten(directory):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "compare"): [_boom]}))
+    before = _journal(directory)
+    ask = _happy()
+    with pytest.raises(C.ContractError, match="вход стадии"):
+        stage(directory, ask, sections={**SECTIONS, "задача": "совсем другая задача"})
+    assert ask.count() == 0 and _journal(directory) == before
+    state = _state(directory)
+    with locked(directory) as store:                                    # the package pin itself, asked for another package
+        with pytest.raises(S.Refusal) as refused:
+            store.pin(C.PIN_PACKAGE, round_number=1, revision=state.pins[0].revision, content_hash="1" * 64,
+                      hidden_hash=state.pins[1].hidden_hash)
+    assert refused.value.code == "КОНФЛИКТ_ВХОДА" and _journal(directory) == before
+
+
+# -- БУ-13: an incomplete run goes on in the same run and round -----------------------------------------------
+
+def test_bu13_a_broken_run_goes_on_with_its_cards_pins_answers_and_spent_attempts(directory):
+    _crash_in_compare_run(directory)
+    marked = _supervisor_marks_incomplete(directory)
+    assert marked.state == "неполный"
+    before = _state(directory)
+    ask = _happy()
+    result = stage(directory, ask)
+    assert result.verdict == "РЕШЕНИЕ_АНТОНА" and result.run_state == "ждёт_Антона"
+    after = _state(directory)
+    assert after.run_id == before.run_id and after.round_number == before.round_number
+    assert after.idea_candidates == before.idea_candidates and after.pins == before.pins    # the same cards, the same pins
+    assert [c for c in ask.calls if c[0] == "claude"] == []                                  # valid answers are not asked again
+    assert ask.calls == [("codex", "compare", 2)]                                           # codex's cut-off call stays spent
+    assert after.attempts[_compare_key(after, "codex", 1)].possible_duplicate
+    names = [(e.get("event") or e.get("operation"), (e.get("conditions") or {}))
+             for e in map(json.loads, _journal(directory).decode().splitlines())
+             if e.get("kind") in ("event", "operation")][-3:]
+    assert names == [("вердикт", {"verdict": "НЕПОЛНЫЙ_ПРОГОН"}), ("resume", {"budget_remains": True, "input_can_progress": True}),
+                     ("вердикт", {"verdict": "РЕШЕНИЕ_АНТОНА"})]
+
+
+def test_bu13_spent_attempts_are_not_reset_and_the_rejection_is_remembered(directory):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "blind"): ["мусор", _boom]}))
+    _supervisor_marks_incomplete(directory)
+    seen = []
+
+    def garbage_again(request):
+        seen.append(request["previous_rejection"])
+        return "опять мусор"
+
+    ask = _happy({("claude", "blind"): [garbage_again]})
+    result = stage(directory, ask)
+    # one answer spent (rejected), one call cut off: the third call is the last retry, and it is garbage again
+    assert [c for c in ask.calls if c[0] == "claude"] == [("claude", "blind", 3)]
+    assert seen and seen[0]
+    assert (result.verdict, result.run_state) == ("НЕПОЛНЫЙ_ПРОГОН", "неполный")
+    state = _state(directory)
+    assert len([k for k in state.attempts if k[3] == "claude" and k[1] == C.BLIND_STAGE]) == 3
+    again = _happy()
+    with pytest.raises(C.ResumeImpossible):                              # the spent attempts really are spent
+        stage(directory, again)
+    assert again.count() == 0
+
+
+def test_bu13_an_exhausted_budget_is_a_named_outcome_and_changes_nothing(directory):
+    stage(directory, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ResumeImpossible) as info:
+        stage(directory, ask)
+    assert info.value.code == "ПРОДОЛЖИТЬ_НЕЧЕМ" and info.value.code in REAL.vocabulary["коды_отказа"]
+    assert ask.count() == 0 and _journal(directory) == before and _state(directory).state == "неполный"
+
+
+def test_bu13_calls_cut_off_up_to_the_limit_leave_nothing_to_continue_with(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    for _ in range(C.abort_limit(TABLES)):
+        with pytest.raises(_Boom):
+            stage(directory, _happy({("claude", "blind"): [_boom]}))
+    assert stage(directory, _happy()).run_state == "неполный"            # the loop gives up on claude
+    before = _journal(directory)
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ"):
+        stage(directory, _happy())
+    assert _journal(directory) == before
+
+
+def test_bu13_a_substituted_input_is_refused_before_any_write_or_call_and_the_right_one_goes_on(directory):
+    _crash_in_compare_run(directory)
+    _supervisor_marks_incomplete(directory)
+    before, ask = _journal(directory), _happy()
+    for change in ({"withheld": {"автор": "Колобок", "второй_критик": "Бибигон"}},
+                   {"sections": {**SECTIONS, "задача": "другая задача"}},
+                   {"author_card": proposal(ONE, "другой автор")},
+                   {"criteria": [{"id": "К1", "текст": "иначе", "обязательный": True}]}):
+        with pytest.raises(C.ContractError, match="вход стадии"):
+            stage(directory, ask, **change)
+        assert ask.count() == 0 and _journal(directory) == before
+    assert stage(directory, ask).verdict == "РЕШЕНИЕ_АНТОНА"              # positive control
+
+
+def test_bu13_continuing_is_a_row_of_the_table_not_a_branch_of_the_code():
+    refused = REAL.decide("неполный", "resume", {"budget_remains": False, "input_can_progress": True})
+    allowed = REAL.decide("неполный", "resume", {"budget_remains": True, "input_can_progress": True})
+    assert (allowed.to, allowed.refusal) == ("идёт_круг", None)
+    assert (refused.to, refused.refusal) == ("неполный", "ПРОДОЛЖИТЬ_НЕЧЕМ")
+
+
+# -- БУ-14: only what the journal received is accepted ------------------------------------------------------------
+
+def test_bu14_a_receipt_copied_to_another_critics_attempt_is_not_accepted(directory):
+    _crash_in_compare_run(directory)
+    state = _state(directory)
+    claude, codex = _compare_key(state, "claude"), _compare_key(state, "codex")
+    receipt = next(e["answer"] for e in map(json.loads, _journal(directory).decode().splitlines())
+                   if e.get("kind") == "attempt" and tuple(e["key"]) == claude and "answer" in e)
+    _tamper(directory, lambda e: {**e, "status": "получена", "answer": receipt}
+            if e.get("kind") == "attempt" and tuple(e["key"]) == codex and e["status"] == "запущена" else e)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="другой вопрос"):
+        stage(directory, ask)                                              # the question names the critic
+    assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_bu14_a_receipt_pointing_at_another_valid_answer_is_not_accepted(directory):
+    _crash_in_compare_run(directory)
+    state = _state(directory)
+    key = _compare_key(state, "claude")
+    other = _answer_file(directory, "claude", C.BLIND_STAGE).name         # claude's own blind card: a real, stored answer
+    blob = (Path(directory) / TABLES.vocabulary["ответ_критика"]["каталог"] / other).read_bytes()
+
+    def swap(entry):
+        if entry.get("kind") == "attempt" and tuple(entry["key"]) == key and "answer" in entry:
+            return {**entry, "answer": {**entry["answer"], "sha256": other, "length": len(blob)}}
+        return entry
+    _tamper(directory, swap)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="проверен в журнале иначе"):
+        stage(directory, ask)                                              # the card is not a comparison of this set
+    assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_bu14_the_stage_has_no_door_for_a_caller_supplied_answer_or_hash():
+    import inspect
+    names = set(inspect.signature(C.run_idea_stage).parameters)
+    assert not {n for n in names if "saved" in n or "answer" in n or "hash" in n}
+    assert "saved_proposals" not in (C.run_idea_stage.__doc__ or "").split("Errors:")[0]
+
+
+# -- БУ-13 доработка: условия считает журнал, продолжение должно вести вперёд ----------------------------------
+
+def _gave_up_on_claude_blind(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    for _ in range(C.abort_limit(TABLES)):
+        with pytest.raises(_Boom):
+            stage(directory, _happy({("claude", "blind"): [_boom]}))
+    assert stage(directory, _happy()).run_state == "неполный"
+    return directory
+
+
+def test_bu13_a_forged_condition_on_the_exhausted_run_is_refused_and_changes_nothing(directory):
+    stage(directory, Asker({("claude", "blind"): ["x"], ("codex", "blind"): ["y"]}))
+    before = _journal(directory)
+    with locked(directory) as store:
+        for forged in ({"budget_remains": True}, {"budget_remains": True, "input_can_progress": True}):
+            with pytest.raises(S.StateError):
+                store.submit("resume", forged, body={"reason": "обход"})
+    assert _journal(directory) == before and _state(directory).state == "неполный"
+    with locked(directory) as store:                                  # honest: the journal's count says "nothing to go on with"
+        refused = store.submit("resume", body={"reason": "честно"})
+        again = store.submit("resume", body={"reason": "честно"})
+    assert refused.refusal == "ПРОДОЛЖИТЬ_НЕЧЕМ" and again == refused         # one position, one operation
+    assert _state(directory).state == "неполный"
+    assert len([e for e in map(json.loads, _journal(directory).decode().splitlines())
+                if e.get("operation") == "resume"]) == 1
+
+
+def _two_garbage_the_second_unjudged(directory, second, monkeypatch):
+    """claude's blind answers: the first judged invalid, the second received but never judged (the process died)."""
+    real = S.RunStore.record_validation
+    calls = {"n": 0}
+
+    def dying(self, *args, **kwargs):
+        calls["n"] += args[2] == "claude"                          # (stage, round, critic, attempt, ...)
+        if calls["n"] == 2:
+            raise _Boom
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(S.RunStore, "record_validation", dying)
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "blind"): ["мусор", second]}))
+    monkeypatch.undo()
+    _supervisor_marks_incomplete(directory)
+
+
+def test_bu13_the_last_received_but_unjudged_answer_counts_only_if_it_is_valid(tmp_path, monkeypatch):
+    bad = _new_run(tmp_path / "bad")
+    _two_garbage_the_second_unjudged(bad, "опять мусор", monkeypatch)
+    before, ask = _journal(bad), _happy()
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ"):          # it is invalid, the retries are used up
+        stage(bad, ask)
+    assert ask.count() == 0 and _journal(bad) == before
+    good = _new_run(tmp_path / "good")                                          # positive control: the same, but valid
+    _two_garbage_the_second_unjudged(good, good_blind("c"), monkeypatch)
+    ask = _happy()
+    assert stage(good, ask).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert [c for c in ask.calls if c[:2] == ("claude", "blind")] == []         # judged from the journal, not asked again
+
+
+def test_bu13_a_run_that_cannot_build_its_input_does_not_resume_forever(tmp_path):
+    directory = _new_run(tmp_path / "run")
+    texts = [X.canonical_json(C.normalize_card(_edit(_AUTHOR, variant="значение ≥ 5"))),
+             X.canonical_json(C.normalize_card(_CARD_C)), X.canonical_json(C.normalize_card(_CARD_X))]
+    with _locked(directory) as store:
+        store.assign_idea_candidates([S.IdeaCandidate(f"cand_{i}", src, text)
+                                      for i, (src, text) in enumerate(zip(("автор", "claude", "codex"), texts))])
+    first = _run(directory, _Ask({}), _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+    assert first.run_state == "неполный" and _state(directory).incomplete_cause == S.CAUSE_INPUT_NOT_BUILT
+    before = _journal(directory)
+    for _ in range(2):                                                          # however many times it is entered
+        ask = _Ask({})
+        with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА"):
+            _run(directory, ask, _INJ, author_card=_AUTHOR, sections=_INJ["разделы_пакета_эталон"])
+        assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_bu13_a_package_too_big_for_the_set_is_the_same_named_outcome(tmp_path):
+    small = dict(REAL.vocabulary["пакет"], предел_пакета_байт=2400)
+    tables = _table_patch(("vocabulary", "пакет"), small)
+    pad = "п" * 120
+    directory = started(tmp_path / "big", "run-big")
+    options = dict(tables=tables, author_card={**proposal(ONE, "а"), "variant": pad})
+    result = stage(directory, Asker({("claude", "blind"): [good_blind_with(pad)], ("codex", "blind"): [good_blind_with(pad)]}),
+                   **options)
+    assert result.run_state == "неполный" and "превышение_размера" in result.incomplete_reason
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА"):
+        stage(directory, ask, **options)
+    assert ask.count() == 0 and _journal(directory) == before
+
+
+def test_bu13_a_new_round_of_an_incomplete_run_without_a_changed_input_is_a_named_refusal_before_any_write(directory):
+    _crash_in_compare_run(directory)
+    _supervisor_marks_incomplete(directory)
+    with locked(directory) as store:
+        store._start_round(2)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА") as info:
+        stage(directory, ask)
+    assert "коррекция" in str(info.value) and ask.count() == 0 and _journal(directory) == before
+    assert len([p for p in _state(directory).pins if p.event == C.PIN_INPUT]) == 1      # the spent budget was not renewed
+
+
+def test_bu13_an_incomplete_run_in_the_same_round_returns_its_pin_without_a_write_before_the_resume(directory):
+    _crash_in_compare_run(directory)
+    _supervisor_marks_incomplete(directory)
+    before_pins = _state(directory).pins
+    ask = _happy()
+    assert stage(directory, ask).verdict == "РЕШЕНИЕ_АНТОНА"
+    assert _state(directory).pins == before_pins
+
+
+# -- БУ-11 доработка: размер ответа, причина из журнала -----------------------------------------------------------
+
+def test_bu11_an_over_long_answer_is_cut_to_the_limit_plus_one_and_refused_by_its_length(directory):
+    limit = TABLES.vocabulary["ответ_критика"]["предел_байтов"]
+    huge = "{" + " " * (limit * 3)
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "blind"): [huge, _boom]}))
+    state = _state(directory)
+    attempt = state.attempts[(state.run_id, C.BLIND_STAGE, 1, "claude", 1)]
+    assert attempt.receipt.length == limit + 1 and attempt.validation.accepted is False
+    assert "длиннее" in attempt.validation.reason
+    assert len(_answer_file(directory, "claude", C.BLIND_STAGE).read_bytes()) == limit + 1
+    ok = _happy()                                                          # positive control: the budget goes on as for any bad answer
+    assert stage(directory, ok).verdict == "РЕШЕНИЕ_АНТОНА"
+
+
+def test_bu11_the_reason_that_travels_on_is_the_recorded_one_and_a_divergence_is_our_breakage(directory):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "blind"): ["мусор", _boom]}))
+    state = _state(directory)
+    key = (state.run_id, C.BLIND_STAGE, 1, "claude", 1)
+    recorded = state.attempts[key].validation.reason
+    _tamper(directory, lambda e: {**e, "reason": "записано иначе"}
+            if e.get("kind") == "answer_checked" and tuple(e["key"]) == key else e)
+    before, ask = _journal(directory), _happy()
+    with pytest.raises(C.ContractError, match="расходится с записанной"):
+        stage(directory, ask)
+    assert ask.count() == 0 and _journal(directory) == before
+    _tamper(directory, lambda e: {**e, "reason": recorded}
+            if e.get("kind") == "answer_checked" and tuple(e["key"]) == key else e)
+    seen = []
+    again = _happy({("claude", "blind"): [lambda request: seen.append(request["previous_rejection"]) or good_blind("c")(request)]})
+    assert stage(directory, again).verdict == "РЕШЕНИЕ_АНТОНА" and seen == [recorded]
+
+
+# ==========================================================================
+# БУ, часть 2а: ОК Антона — источник, запись, привязка, переход (БУ-5, БУ-9, БУ-10, БУ-15)
+# ==========================================================================
+
+def _journal_events(directory, name):
+    return [e for e in map(json.loads, _journal(directory).decode("utf-8").splitlines()) if e.get("event") == name]
+
+
+def _refused_ok(directory, tmp_path, code="ОК_НЕ_ЗАСЧИТАН", match=None, **kwargs):
+    """The offered reply is not counted: the table's code, nothing written, the exit stays shut."""
+    if _state(directory).state != "ждёт_Антона":
+        _done(directory)
+    basis = _reply(directory, tmp_path, **kwargs)
+    before = _journal(directory)               # the transcript is outside the journal; the journal must not change below
+    with locked(directory) as store:
+        with pytest.raises(C.AntonOkRefused, match=match) as refused:
+            C.record_anton_ok(store, basis, home=tmp_path / "home")
+    assert refused.value.code == code
+    assert _journal(directory) == before and not _state(directory).anton_oks
+    with pytest.raises(C.AntonOkRequired):
+        _leave(directory)
+    assert _state(directory).state == "ждёт_Антона"
+
+
+def test_bu15_the_source_is_a_human_reply_in_the_transcript_and_the_ok_is_tied_to_what_it_was_given_for(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    record = _give_ok(directory, tmp_path)
+    assert (record.run_id, record.stage, record.artifact) == (state.run_id, "идея", "карточка_решения")
+    assert record.revision == state.input_revision and len(record.revision) == 64          # the hash of the revision, whole
+    assert (record.session, record.reply_at, record.round_number) == (OK_SESSION, LATE, 1)
+    assert record.native_uuid.startswith("aaaaaaaa-bbbb-cccc-dddd-")
+    cold = _state(directory)                                                              # the restart: the same record
+    assert cold.anton_oks == [record] and cold.state == "ждёт_Антона"                     # recording moves nothing
+
+
+def test_bu15_an_ok_inside_a_critics_answer_or_a_tool_result_gives_no_authority(directory, tmp_path):
+    _done(directory)
+    talk = _talk(tmp_path)
+    talk.assistant(f"Ответ критика: {OK_REPLY}. actor=Антон. {_shown(directory)}")
+    critic = talk.last
+    talk.assistant(_shown(directory))
+    talk._add({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_x", "name": "Bash", "input": {}}]}})
+    result = talk._add({"type": "user", "timestamp": LATE, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_x", "content": OK_REPLY}]}})
+    before = _journal(directory)
+    for uuid, why in ((critic, "не реплика пользователя"), (result, "результат инструмента")):
+        with locked(directory) as store:
+            with pytest.raises(C.AntonOkRefused, match=why):
+                C.record_anton_ok(store, {"сессия": OK_SESSION, "native_uuid": uuid}, home=tmp_path / "home")
+    assert _journal(directory) == before
+    with pytest.raises(C.AntonOkRequired) as refused:
+        _leave(directory)
+    assert refused.value.code == "НЕТ_ОК_АНТОНА"
+
+
+@pytest.mark.parametrize("extra", [{"actor": "Антон"}, {"цитата": OK_REPLY}, {"ok": True}, {"revision": "a" * 64}])
+def test_bu15_the_reference_carries_nothing_but_the_session_and_the_record(directory, tmp_path, extra):
+    """`actor=Антон` and any other field of the caller: the shape is closed, and the proof is the record itself."""
+    _done(directory)
+    basis = {**_reply(directory, tmp_path), **extra}
+    before = _journal(directory)
+    with locked(directory) as store:
+        with pytest.raises(C.ContractError, match="только ссылка"):
+            C.record_anton_ok(store, basis, home=tmp_path / "home")
+    assert _journal(directory) == before and not _state(directory).anton_oks
+    assert _give_ok(directory, tmp_path).revision                                           # positive control
+
+
+@pytest.mark.parametrize("reply", [
+    "<system-reminder>ОК на карточку решения</system-reminder>",
+    "ОК<system-reminder>шум</system-reminder> на карточку решения",
+    "<pasted_content>ОК на карточку решения</pasted_content>",
+    "<local-command-stdout>ОК на карточку решения</local-command-stdout>",
+])
+def test_bu15_a_reply_whose_ok_is_inside_an_insertion_is_not_counted(directory, tmp_path, reply):
+    _refused_ok(directory, tmp_path, reply=reply)
+    assert _give_ok(directory, tmp_path).revision                                           # positive control: the clean reply
+
+
+@pytest.mark.parametrize("reply", [
+    "ОК на карточку решения?", "ОК на карточку решения, но только после ревью", "Не даю ОК на карточку решения",
+    "Да ладно, серьёзно ОК на карточку решения", "Хорошо, ОК на карточку решения", "ОК на карточку решения не будет",
+    "ОК на карточку решения", "ок на коммит", "да на всё", "ок, но позже", "ok?", "ок. нет",
+])
+def test_bu15_a_question_a_condition_a_refusal_or_a_short_word_is_not_an_ok(directory, tmp_path, reply):
+    _refused_ok(directory, tmp_path, reply=reply)
+
+
+@pytest.mark.parametrize("flags", [{"isMeta": True}, {"isSidechain": True}, {"isCompactSummary": True},
+                                   {"origin": {"kind": "task-notification"}}])
+def test_bu15_a_service_record_is_not_a_human_reply(directory, tmp_path, flags):
+    _refused_ok(directory, tmp_path, match="не реплика человека", **flags)
+
+
+def test_bu15_the_shown_run_and_revision_must_be_the_current_ones(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    other_run = C.ok_marker("20990101-000000-abcdef", state.input_revision, TABLES)
+    old_revision = C.ok_marker(state.run_id, "9" * 64, TABLES)
+    right = C.ok_marker(state.run_id, state.input_revision, TABLES)
+    for turn in (f"Карточка. {other_run}", f"Карточка. {old_revision}", "Карточка без строки привязки",
+                 f"Карточка. {right}. И ещё {old_revision}"):
+        _refused_ok(directory, tmp_path, turn=turn, match="нет строки с этим прогоном")
+    _give_ok(directory, tmp_path, turn=f"Карточка. {right}")                               # positive control
+    assert _state(directory).anton_oks
+
+
+def test_bu15_a_reply_older_than_the_last_verdict_of_the_round_is_not_counted(directory, tmp_path):
+    _refused_ok(directory, tmp_path, at="2000-01-01T00:00:00Z", match="раньше последнего вердикта")
+    _refused_ok(directory, tmp_path, at="не время", match="порядок")
+    assert _give_ok(directory, tmp_path).reply_at == LATE
+
+
+def test_bu15_the_same_reply_is_the_same_record_and_the_transition_happens_once(directory, tmp_path):
+    _done(directory)
+    basis = _reply(directory, tmp_path)
+    with locked(directory) as store:
+        first = C.record_anton_ok(store, basis, home=tmp_path / "home")
+        size = _journal(directory)
+        assert C.record_anton_ok(store, basis, home=tmp_path / "home") == first             # one record, nothing appended
+        assert _journal(directory) == size
+        assert C.leave_idea_stage(store, home=_TALK_HOME["last"]) is True
+        left = _journal(directory)
+        assert C.leave_idea_stage(store, home=_TALK_HOME["last"]) is True                                            # a repeat: no second transition
+        assert _journal(directory) == left
+    assert _state(directory).state == "завершён" and len(_journal_events(directory, "этап_пройден")) == 1
+    cold = S.RunStore(directory, TABLES)                                                    # a restart: the same state
+    assert cold.load().state == "завершён"
+    with locked(directory) as store:
+        assert C.leave_idea_stage(store, home=_TALK_HOME["last"]) is True
+    assert _journal(directory) == left
+    # the same reply after the exit is the record already kept; another reply is not needed any more
+    with locked(directory) as store:
+        assert C.record_anton_ok(store, basis, home=tmp_path / "home") == first
+    again = _reply(directory, tmp_path)
+    with locked(directory) as store:
+        with pytest.raises(C.AntonOkRefused, match="уже совершён"):
+            C.record_anton_ok(store, again, home=tmp_path / "home")
+        assert C.leave_idea_stage(store, home=_TALK_HOME["last"]) is True
+    assert _journal(directory) == left and len(_state(directory).anton_oks) == 1
+    assert len(_journal_events(directory, "этап_пройден")) == 1 and _state(directory).state == "завершён"
+
+
+def test_bu15_another_reply_with_the_same_words_before_the_exit_is_a_new_record_and_still_one_transition(directory, tmp_path):
+    _done(directory)
+    first = _give_ok(directory, tmp_path)
+    second = _give_ok(directory, tmp_path)
+    assert second.native_uuid != first.native_uuid and len(_state(directory).anton_oks) == 2
+    assert _leave(directory) is True and _leave(directory) is True
+    assert len(_journal_events(directory, "этап_пройден")) == 1 and _state(directory).state == "завершён"
+
+
+def test_bu15_the_same_reply_with_other_content_is_a_conflict_not_a_repeat(directory, tmp_path):
+    _done(directory)
+    basis = _reply(directory, tmp_path)
+    with locked(directory) as store:
+        record = C.record_anton_ok(store, basis, home=tmp_path / "home")
+        with pytest.raises(S.Refusal) as refused:                                           # the store: same reply, other revision
+            store._record_anton_ok(session=record.session, native_uuid=record.native_uuid, reply_at=record.reply_at,
+                                  run_id=record.run_id, stage=record.stage, artifact=record.artifact,
+                                  revision="c" * 64, round_number=1)
+        assert refused.value.code == "КОНФЛИКТ_ВХОДА"
+        with pytest.raises(S.StateError, match="другого прогона"):
+            store._record_anton_ok(session=record.session, native_uuid="aaaaaaaa-bbbb-cccc-dddd-999999999999",
+                                  reply_at=record.reply_at, run_id="чужой", stage=record.stage,
+                                  artifact=record.artifact, revision=record.revision, round_number=1)
+    assert len(_state(directory).anton_oks) == 1
+
+
+def test_bu15_an_edit_after_the_ok_revokes_it_also_after_a_cold_restart(directory, tmp_path):
+    _done(directory)
+    old = _give_ok(directory, tmp_path)
+    # "ОК -> правка": the only way to a new revision is the correction, on Anton's word, and a new round
+    with locked(directory) as store:
+        with pytest.raises(S.Refusal, match="только операция поправки"):
+            store.pin(C.PIN_INPUT, round_number=2, revision="d" * 64, content_hash="e" * 64, frame_hash="f" * 64)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    _next_round(directory, CARD2)
+    for reader in (lambda: locked(directory), lambda: locked(directory)):                  # twice: a fresh store each time
+        with reader() as store:
+            with pytest.raises(C.AntonOkRequired) as refused:
+                C.leave_idea_stage(store, home=_TALK_HOME["last"])
+        assert refused.value.code == "ОК_УСТАРЕЛ"
+    cold = S.RunStore(directory, TABLES).load()
+    assert cold.state == "ждёт_Антона" and cold.stage_exit_position == -1
+    assert len([p for p in cold.pins if p.event == C.PIN_INPUT]) == 2 and cold.anton_oks[0].revision == old.revision != cold.input_revision
+    assert _give_ok(directory, tmp_path).revision == cold.input_revision                  # the OK on the new, judged revision
+    assert _leave(directory) is True
+
+
+def test_bu15_a_new_round_without_a_new_verdict_does_not_count_the_old_ok(directory, tmp_path):
+    _done(directory)
+    _give_ok(directory, tmp_path)
+    with locked(directory) as store:
+        store._start_round(2)
+    basis, before = _reply(directory, tmp_path), None
+    before = _journal(directory)
+    with locked(directory) as store:
+        with pytest.raises(C.AntonOkRefused, match="вердикта"):
+            C.record_anton_ok(store, basis, home=tmp_path / "home")
+    assert _journal(directory) == before and len(_state(directory).anton_oks) == 1
+
+
+# -- БУ-2а, доработка: ОК привязан к вопросу, голое слово, редакция судима, чтение переписки ---------------------------
+
+def _ok_refused(directory, tmp_path, basis, match=None, code="ОК_НЕ_ЗАСЧИТАН"):
+    before = _journal(directory)
+    with locked(directory) as store:
+        with pytest.raises(C.AntonOkRefused, match=match) as refused:
+            C.record_anton_ok(store, basis, home=tmp_path / "home")
+    assert refused.value.code == code and _journal(directory) == before and not _state(directory).anton_oks
+
+
+@pytest.mark.parametrize("reply", ["ОК на коммит", "ок на коммит", "да на всё", "Согласен на что угодно",
+                                   "ок, на коммит", "ОК на карточку решения"])
+def test_bu15_ok_on_something_is_not_an_ok_even_after_the_right_marker(directory, tmp_path, reply):
+    """«ок на коммит» в ответ на другой вопрос не открывает выход: что одобрено, держит строка привязки, а не слова."""
+    _done(directory)
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply=reply), match="голое слово")
+    assert _give_ok(directory, tmp_path).revision                                        # positive control: the bare word
+
+
+@pytest.mark.parametrize("reply", ["ок", "ОК", "Ок.", "окей", "да", "Да!", "согласен", "согласна.", "одобряю", "разрешаю",
+                                   "оk"])                                                  # the last: a Latin k
+def test_bu15_the_bare_word_of_consent_after_the_card_with_the_marker_is_an_ok(directory, tmp_path, reply):
+    _done(directory)
+    assert _give_ok(directory, tmp_path, reply=reply).revision == _state(directory).input_revision
+    assert _leave(directory) is True and _state(directory).state == "завершён"
+
+
+def test_bu15_the_marker_must_stand_in_the_last_text_block_of_the_assistant(directory, tmp_path):
+    _done(directory)
+    talk = _talk(tmp_path)
+    talk.assistant(f"Карточка решения. {_shown(directory)}")                              # an early block of the turn
+    talk.assistant("Что скажете?")                                                       # the question itself has no marker
+    early = {"сессия": OK_SESSION, "native_uuid": talk.human("ок")}
+    _ok_refused(directory, tmp_path, early, match="последнем блоке")
+    # positive control: the marker in the last block; tool calls in between do not matter
+    talk.assistant(f"Карточка решения. {_shown(directory)}")
+    talk._add({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}})
+    basis = {"сессия": OK_SESSION, "native_uuid": talk.human("ок")}
+    with locked(directory) as store:
+        assert C.record_anton_ok(store, basis, home=tmp_path / "home").revision == _state(directory).input_revision
+
+
+def test_bu15_the_block_with_the_question_is_not_older_than_the_last_verdict(directory, tmp_path):
+    _done(directory)
+    basis = _reply(directory, tmp_path, turn_at="2000-01-01T00:00:00Z")
+    _ok_refused(directory, tmp_path, basis, match="блок ассистента")
+    _give_ok(directory, tmp_path)                                                         # positive control
+
+
+def test_bu15_a_reply_without_a_time_is_not_counted(directory, tmp_path):
+    _done(directory)
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, at=None), match="нет времени")
+    assert _give_ok(directory, tmp_path).reply_at == LATE
+
+
+FORK = ("🗳 Развилка: выйти со стадии? {marker}\n"
+        "- Дать явное «ОК» — Для тебя: выход со стадии, дальше работа идёт (советую)\n"
+        "- Отложить — Для тебя: прогон ждёт дальше\n")
+
+
+def test_bu15_in_fork_mode_the_marker_is_inside_the_card_and_the_reply_is_the_yes_option_verbatim(directory, tmp_path):
+    _done(directory)
+    yes = "Дать явное «ОК» — Для тебя: выход со стадии, дальше работа идёт (советую)"
+    marker = _shown(directory)
+    good = FORK.format(marker=marker)
+    # the marker only BEFORE the card: not inside the slice after 🗳
+    outside = f"Прогон. {marker}\n" + FORK.format(marker="").replace("? \n", "?\n")
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply=yes, turn=outside), match="в карточке после")
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply="ок", turn=good), match="короче|не вариант|выбор")
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply="Отложить — Для тебя: прогон ждёт дальше",
+                                            turn=good), match="не согласие|выбор")
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply=yes + " позже", turn=good))
+    assert _give_ok(directory, tmp_path, reply=yes, turn=good).revision                  # positive control: the yes option verbatim
+    assert _leave(directory) is True
+
+
+def test_bu15_the_marker_is_a_long_hash_and_a_short_one_is_not_a_marker(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    assert re.search(r"редакция [0-9a-f]{32}\b", C.ok_marker(state.run_id, state.input_revision, TABLES))
+    assert TABLES.vocabulary["ок_антона"]["длина_хеша"] >= 32
+    short = f"прогон {state.run_id}, редакция {state.input_revision[:12]}"
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, turn=f"Карточка. {short}"), match="нет строки")
+    _give_ok(directory, tmp_path)
+
+
+def test_bu15_a_transcript_that_cannot_be_read_is_a_named_refusal_not_an_exception(directory, tmp_path):
+    _done(directory)
+    talk = _talk(tmp_path)
+    talk.path.write_bytes(b'{"uuid": "x"}\n\xff\xfe\x80 not utf-8\n')
+    basis = {"сессия": OK_SESSION, "native_uuid": "aaaaaaaa-bbbb-cccc-dddd-000000000001"}
+    _ok_refused(directory, tmp_path, basis, match="не читается")
+    talk.path.unlink()
+    talk.path.mkdir()                                                                     # a directory under the transcript's name
+    _ok_refused(directory, tmp_path, basis, match="не читается")
+    talk.path.rmdir()
+    assert _give_ok(directory, tmp_path).revision                                        # positive control
+
+
+def test_bu15_a_transcript_linked_outside_or_present_twice_is_refused_on_the_ok_path(directory, tmp_path):
+    _done(directory)
+    talk = _talk(tmp_path)
+    talk.assistant(f"Карточка. {_shown(directory)}")
+    basis = {"сессия": OK_SESSION, "native_uuid": talk.human("ок")}
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(talk.path.read_bytes())
+    talk.path.unlink()
+    talk.path.symlink_to(outside)
+    _ok_refused(directory, tmp_path, basis, match="ведёт наружу")
+    talk.path.unlink()
+    outside.rename(talk.path)
+    second = Talk(tmp_path / "home", project="proj2")                                    # the same session in a second directory
+    second.path.write_bytes(talk.path.read_bytes())
+    _ok_refused(directory, tmp_path, basis, match="нескольких каталогах")
+    second.path.unlink()
+    with locked(directory) as store:                                                      # positive control
+        assert C.record_anton_ok(store, basis, home=tmp_path / "home").revision
+
+
+def test_bu15_the_transcript_is_read_once_per_ok(directory, tmp_path, monkeypatch):
+    _done(directory)
+    yes = "Дать явное «ОК» — Для тебя: выход со стадии, дальше работа идёт (советую)"
+    basis = _reply(directory, tmp_path, reply=yes, turn=FORK.format(marker=_shown(directory)))
+    reads = []
+    original = T._records
+    monkeypatch.setattr(T, "_records", lambda path: reads.append(path) or original(path))
+    with locked(directory) as store:
+        C.record_anton_ok(store, basis, home=tmp_path / "home")
+    assert len(reads) == 1
+
+
+def test_bu15_the_exit_looks_at_the_transcript_again_a_vanished_or_changed_reply_shuts_it(directory, tmp_path):
+    _done(directory)
+    record = _give_ok(directory, tmp_path)
+    path = _talk(tmp_path).path
+    original = path.read_text(encoding="utf-8")
+    for damaged in ("", original.replace('"ок"', '"ок, но позже"'), original.replace(LATE, "2000-01-01T00:00:00Z")):
+        path.write_text(damaged, encoding="utf-8")
+        before = _journal(directory)
+        with pytest.raises(C.AntonOkRequired) as refused:
+            _leave(directory)
+        assert refused.value.code == "ОК_УСТАРЕЛ" and _journal(directory) == before and _state(directory).state == "ждёт_Антона"
+    path.write_text(original, encoding="utf-8")                                          # positive control: the reply is back
+    assert _leave(directory) is True and _state(directory).anton_oks[-1].native_uuid == record.native_uuid
+
+
+def test_bu15_the_session_of_the_ok_is_the_session_the_run_started_in(tmp_path):
+    other = "99999999-2222-3333-4444-555555555555"
+    for session, expected_refusal in ((OK_SESSION, False), (other, True), (None, False)):
+        directory = tmp_path / f"run-{session}"
+        S.RunStore(directory, TABLES).create("run-1", "идея", session)
+        with locked(directory) as store:
+            store.submit("start")
+        _done(directory)
+        talk = Talk(tmp_path / f"home-{session}", session=OK_SESSION)
+        talk.assistant(f"Карточка. {_shown(directory)}")
+        basis = {"сессия": OK_SESSION, "native_uuid": talk.human("ок")}
+        with locked(directory) as store:
+            if expected_refusal:
+                with pytest.raises(C.AntonOkRefused, match="другой сессии"):
+                    C.record_anton_ok(store, basis, home=tmp_path / f"home-{session}")
+            else:
+                assert C.record_anton_ok(store, basis, home=tmp_path / f"home-{session}").session == OK_SESSION
+    # a run started in the other session takes an OK from that one (positive control for the refusal above)
+    directory = tmp_path / "run-other"
+    S.RunStore(directory, TABLES).create("run-1", "идея", other)
+    with locked(directory) as store:
+        store.submit("start")
+    _done(directory)
+    talk = Talk(tmp_path / "home-other", session=other)
+    talk.assistant(f"Карточка. {_shown(directory)}")
+    with locked(directory) as store:
+        assert C.record_anton_ok(store, {"сессия": other, "native_uuid": talk.human("ок")},
+                                 home=tmp_path / "home-other").session == other
+
+
+def test_bu15_the_objection_flag_is_not_taken_off_by_a_flag_call_and_still_holds_the_exit(directory, tmp_path):
+    _done(directory, flag=True)
+    _give_ok(directory, tmp_path)
+    with locked(directory) as store:
+        with pytest.raises(S.Refusal) as refused:
+            store.set_flag(C.OBJECTION_FLAG, False)
+    assert refused.value.code == "ФЛАГ_ЗАЩИЩЁН" and C.OBJECTION_FLAG in _state(directory).flags
+    assert C.OBJECTION_FLAG == TABLES.framing["флаг_прогона"]
+    with pytest.raises(C.AntonOkRequired) as held:
+        _leave(directory)
+    assert held.value.code == "ЕСТЬ_ОТКРЫТОЕ_ВОЗРАЖЕНИЕ" and _state(directory).state == "ждёт_Антона"
+
+
+def test_bu15_the_direct_doors_are_shut(directory, tmp_path):
+    _done(directory)
+    record = _give_ok(directory, tmp_path)
+    with locked(directory) as store:
+        for event, conditions in (("этап_пройден", {"anton_ok": "есть", "framing_objection": False}),
+                                  ("ок_антона", {"ok_binding": True})):
+            with pytest.raises(S.StateError):
+                store.record_event(event, conditions)
+        with pytest.raises(S.Refusal):                                                    # the closed door, a foreign revision
+            store._record_anton_ok(session=record.session, native_uuid="aaaaaaaa-bbbb-cccc-dddd-000000000077",
+                                   reply_at=LATE, run_id=record.run_id, stage=record.stage, artifact=record.artifact,
+                                   revision="c" * 64, round_number=1)
+    assert _state(directory).state == "ждёт_Антона" and len(_state(directory).anton_oks) == 1
+
+
+# ==========================================================================
+# БУ, часть 2б: поправки, редакции, новый круг, потолок (БУ-1 … БУ-8, БУ-16)
+# ==========================================================================
+
+_NEW_IDS = itertools.count()
+CARD2 = proposal(ONE, "автор-2")
+CARD3 = proposal(ONE, "автор-3")
+CARD4 = proposal(ONE, "автор-4")
+ANTON_WORDS = "Давай переделаем: пусть решение будет проще и дешевле, без нового сервиса"
+
+
+def _round_answer(request):
+    """A comparison built from the request: every candidate passes, the first one shown is chosen."""
+    ids = [c["candidate_id"] for c in request_candidates(request)]
+    mandatory = [c["id"] for c in request_criteria(request) if c["mandatory"]]
+    rows = [{"candidate_id": i, "criteria": [{"criterion_id": m, "grade": "pass", "reason": "р"} for m in mandatory]}
+            for i in ids]
+    pairs = [{"pair": list(p), "relation": "unknown"} for p in itertools.combinations(ids, 2)]
+    return json.dumps({"assessments": rows, "selected_candidate_id": ids[0], "mechanism_relations": pairs,
+                       "reasons": ["р"], "unknowns": [], "blockers": []})
+
+
+def _round_ask():
+    """Answers for a comparison round whatever the IDs of the set are."""
+    return Asker({("claude", "compare"): [_round_answer], ("codex", "compare"): [_round_answer]})
+
+
+_NO_BASIS = object()
+
+
+def _correct(directory, new_card, source="автор", basis=None, from_candidate=None, tmp_path=None, **kw):
+    """A correction. Anton's word is required for ANY correction: unless told otherwise, he says something
+    (after the answer that shows the current revision) and that reply is the basis."""
+    kw.setdefault("sections", SECTIONS)
+    kw.setdefault("withheld", WITHHELD)
+    kw.setdefault("criteria", ONE)
+    kw.setdefault("new_id", lambda: "cand_n%d" % next(_NEW_IDS))
+    kw.setdefault("shuffle", lambda order: None)
+    kw.setdefault("tables", TABLES)
+    if basis is None and tmp_path is not None:
+        basis = _anton_says(directory, tmp_path)
+    elif basis is _NO_BASIS:
+        basis = None
+    if tmp_path is not None:
+        kw["home"] = tmp_path / "home"
+    with locked(directory) as store:
+        return C.submit_correction(store, new_card=new_card, source=source, basis=basis,
+                                   from_candidate=from_candidate, **kw)
+
+
+def _next_round(directory, card, ask=None, **kw):
+    """Run the comparison of the new round with the corrected card (the only phase that repeats)."""
+    return stage(directory, ask or _round_ask(), author_card=card, new_id=None, **kw)
+
+
+def _anton_says(directory, tmp_path, words=ANTON_WORDS, **extra):
+    """Anton's own words in the transcript after the answer that shows the current revision."""
+    return _reply(directory, tmp_path, reply=words, turn=f"Показываю карточку. {_shown(directory)}. Что изменить?", **extra)
+
+
+def test_bu10_the_whole_scenario_round_show_anton_correction_new_round_show_ok_exit(directory, tmp_path):
+    first = _done(directory)
+    assert first.run_state == "ждёт_Антона" and [t["turn"] for t in first.turns] == [0]
+    old = _state(directory)
+    old_revision, old_set = old.input_revision, old.idea_candidates
+    basis = _anton_says(directory, tmp_path)
+    after = _correct(directory, CARD2, source="антон", basis=basis, tmp_path=tmp_path)
+    assert after.state == "идёт_круг" and after.round_number == 2                                 # БУ-1: back to work, a new round
+    assert after.input_revision != old_revision and after.input_revision == hashlib.sha256(C.card_bytes(CARD2)).hexdigest()   # БУ-3: own hash
+    assert [c.source for c in after.idea_candidates].count("автор") == 1
+    assert {c.candidate_id for c in after.idea_candidates}.isdisjoint({c.candidate_id for c in old_set})    # БУ-7: new IDs
+    kept = lambda cards: sorted((c.source, c.canonical_bytes) for c in cards if c.source != "автор")      # noqa: E731
+    assert kept(after.idea_candidates) == kept(old_set)                                          # the critics' cards are untouched
+    assert after.idea_candidate_history[0][1] == old_set and after.stale_rounds == [1]           # the old set stays; old scores stale
+    ask = _round_ask()
+    second = _next_round(directory, CARD2, ask)
+    assert second.verdict == "РЕШЕНИЕ_АНТОНА" and ask.count("blind") == 0 and ask.count("compare") == 2   # only phase C repeats
+    assert second.turns[-1]["proposed_by"] == "антон" and second.turns[-1]["ended"] == "вердикт:РЕШЕНИЕ_АНТОНА"
+    # the OK of the old revision does not reach the new one; the OK on the new one, after the new verdict, opens the exit
+    with pytest.raises(C.AntonOkRequired):
+        _leave(directory)
+    assert _give_ok(directory, tmp_path).revision == _state(directory).input_revision
+    assert _leave(directory) is True and _state(directory).state == "завершён"
+    history = _state(directory) and S.RunStore(directory, TABLES).refinement_history()
+    assert [(t["turn"], t["proposed_by"], t["ended"]) for t in history] == [
+        (0, "автор", "вердикт:РЕШЕНИЕ_АНТОНА"), (1, "антон", "ок_и_выход")]
+    assert history[1]["basis"]["native_uuid"] == basis["native_uuid"] and history[1]["from_revision"] == old_revision
+
+
+def _refused_correction(directory, tmp_path, new_card=CARD2, code="ПОПРАВКА_НЕ_ЗАСЧИТАНА", match=None, **kw):
+    """Not taken: the table's code, nothing written, the state and the set stay as they were."""
+    before, state = _journal(directory), _state(directory)
+    with pytest.raises(C.CorrectionRefused, match=match) as refused:
+        _correct(directory, new_card, tmp_path=tmp_path, **kw)
+    assert refused.value.code == code and _journal(directory) == before
+    assert _state(directory).state == state.state and _state(directory).idea_candidates == state.idea_candidates
+
+
+def test_bu2_no_correction_is_counted_without_the_word_of_anton_whoever_composed_the_card(directory, tmp_path):
+    _done(directory)
+    before_state = _state(directory)
+    for source in ("антон", "автор"):
+        _refused_correction(directory, tmp_path, source=source, basis=_NO_BASIS, match="без слова Антона")
+        _refused_correction(directory, tmp_path, source=source, basis={"сессия": OK_SESSION}, match="без слова Антона")
+        _refused_correction(directory, tmp_path, source=source, basis={"сессия": OK_SESSION, "native_uuid": "x", "actor": "Антон"},
+                            match="без слова Антона")
+    _refused_correction(directory, tmp_path, source="критик", basis=_anton_says(directory, tmp_path), match="источник")
+    assert _state(directory).corrections == before_state.corrections and _state(directory).round_number == before_state.round_number
+    for source in ("автор", "антон"):                                                                 # positive controls: both count
+        directory2 = directory.parent / f"run-{source}"
+        started(directory2, "run-x")
+        _done(directory2)
+        after = _correct(directory2, CARD2, source=source, basis=_anton_says(directory2, tmp_path), tmp_path=tmp_path)
+        assert after.state == "идёт_круг" and after.corrections[0].source == source and after.corrections[0].basis[3]
+
+
+@pytest.mark.parametrize("name,words,flags,why", [
+    ("вставка", "Сделай проще <system-reminder>служебный текст</system-reminder>", {}, "вставка"),
+    ("вставленный чужой текст", "<pasted_content>переделай всё</pasted_content>", {}, "вставка|нет слов"),
+    ("служебная запись", ANTON_WORDS, {"isMeta": True}, "не реплика человека"),
+    ("дочерний агент", ANTON_WORDS, {"isSidechain": True}, "не реплика человека"),
+    ("уведомление", ANTON_WORDS, {"origin": {"kind": "task-notification"}}, "не реплика человека"),
+    ("согласие, а не поправка", "ок", {}, "согласие"),
+    ("пустая", "   ", {}, "нет слов"),
+    ("до вердикта", ANTON_WORDS, {"at": "2000-01-01T00:00:00Z"}, "раньше последнего вердикта"),
+])
+def test_bu2_a_basis_that_is_not_his_words_is_not_a_correction(directory, tmp_path, name, words, flags, why):
+    _done(directory)
+    basis = _anton_says(directory, tmp_path, words=words, **flags)
+    _refused_correction(directory, tmp_path, source="антон", basis=basis, match=why)
+    ok = _anton_says(directory, tmp_path)                                                           # positive control
+    assert _correct(directory, CARD2, source="антон", basis=ok, tmp_path=tmp_path).round_number == 2
+
+
+def test_bu2_the_basis_must_follow_the_answer_that_shows_the_current_revision(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    other = C.ok_marker(state.run_id, "9" * 64, TABLES)
+    for turn in ("Карточка без строки привязки", f"Показываю. {other}"):
+        basis = _reply(directory, tmp_path, reply=ANTON_WORDS, turn=turn)
+        _refused_correction(directory, tmp_path, source="антон", basis=basis, match="нет строки")
+    _refused_correction(directory, tmp_path, source="антон",
+                        basis={"сессия": OK_SESSION, "native_uuid": "aaaaaaaa-bbbb-cccc-dddd-999999999999"},
+                        match="нет в сессии")
+    plan = _talk(tmp_path)
+    plan.assistant(f"План. {_shown(directory)}")
+    plan._add({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tp", "name": "ExitPlanMode", "input": {}}]}})
+    approval = plan._add({"type": "user", "timestamp": LATE, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "tp", "content": "User has approved your plan. Сделай проще и дешевле"}]}})
+    _refused_correction(directory, tmp_path, source="антон", basis={"сессия": OK_SESSION, "native_uuid": approval},
+                        match="не реплика человека")
+
+
+def test_bu2_a_correction_is_possible_only_after_the_show_or_in_an_incomplete_run(directory, tmp_path):
+    with pytest.raises(_Boom):
+        stage(directory, _happy({("claude", "compare"): [_boom]}))                                  # идёт_круг: nothing shown yet
+    assert _state(directory).state == "идёт_круг"
+    _refused_correction(directory, tmp_path, code="ПОПРАВКА_НЕВОЗМОЖНА", match="идёт_круг")
+    assert _state(directory).corrections == []
+
+
+def test_bu3_the_same_revision_is_a_refusal_and_a_new_one_leaves_the_old_untouched(directory, tmp_path):
+    _done(directory)
+    before = _state(directory)
+    journal_before = _journal(directory)
+    same = proposal(ONE, "автор")                                                                    # the card of the first round
+    _refused_correction(directory, tmp_path, new_card=same, match="та же редакция")
+    _refused_correction(directory, tmp_path, new_card=json.dumps(same, ensure_ascii=False, indent=3), match="та же редакция")
+    after = _correct(directory, CARD2, tmp_path=tmp_path)
+    assert after.input_revision != before.input_revision
+    assert after.pins[:len(before.pins)] == before.pins                                              # the old pins are not rewritten
+    assert _journal(directory).startswith(journal_before)                                            # the history is only appended to
+    assert S.RunStore(directory, TABLES).load().idea_candidate_history[0][1] == before.idea_candidates
+
+
+def test_bu3_a_card_the_stage_would_refuse_is_refused_before_any_write(directory, tmp_path):
+    _done(directory)
+    before = _journal(directory)
+    for bad in ({**proposal(ONE, "x"), "variant": "про Лунтика рассказ"}, {"variant": "только это"}, "не json"):
+        with pytest.raises(C.AuthorCardRefused):                                                      # exactly this one
+            _correct(directory, bad, tmp_path=tmp_path)
+        assert _journal(directory) == before
+    assert _correct(directory, CARD2, tmp_path=tmp_path).round_number == 2                            # positive control
+
+
+def test_bu3_only_the_card_changes_a_changed_frame_is_a_new_run(directory, tmp_path):
+    _done(directory)
+    _refused_correction(directory, tmp_path, sections={**SECTIONS, "задача": "совсем другая задача"}, match="рамка")
+    _refused_correction(directory, tmp_path, withheld={"автор": "Колобок", "второй_критик": "Бибигон"}, match="рамка")
+    _refused_correction(directory, tmp_path, criteria=CRITERIA[:2], new_card=proposal(CRITERIA[:2], "x"), match="рамка")
+    assert _correct(directory, CARD2, tmp_path=tmp_path).round_number == 2
+
+
+def test_bu16_a_correction_from_a_candidate_keeps_the_source_the_critics_cards_and_the_authors_alone(directory, tmp_path):
+    _done(directory)
+    before = _state(directory)
+    critic = next(c for c in before.idea_candidates if c.source == "claude")
+    unknown = "cand_нет_такого"
+    _refused_correction(directory, tmp_path, from_candidate=unknown, match="в журнале нет")
+    with pytest.raises(TypeError):                                                                   # the source is not the caller's to name
+        _correct(directory, CARD2, tmp_path=tmp_path, from_candidate_source="автор")
+    after = _correct(directory, CARD2, from_candidate=critic.candidate_id, tmp_path=tmp_path)
+    assert after.corrections[-1].from_candidate == (critic.candidate_id, "claude")                   # the journal's source
+    kept = lambda cards: sorted((c.source, c.canonical_bytes) for c in cards if c.source != "автор")   # noqa: E731
+    assert kept(after.idea_candidates) == kept(before.idea_candidates)                                # the critics' cards are the same
+    assert S.RunStore(directory, TABLES).refinement_history()[1]["from_candidate"] == {
+        "id": critic.candidate_id, "source": "claude"}
+    # the candidates shown to the critics carry no source: the origin is in the journal only
+    seen = []
+    ask = Asker({("claude", "compare"): [lambda r: seen.append(r["package"]) or _round_answer(r)],
+                 ("codex", "compare"): [_round_answer]})
+    _next_round(directory, CARD2, ask)
+    assert "candidate_id" in seen[0] and '"source"' not in seen[0] and "claude" not in seen[0]
+
+
+def test_bu16_a_critics_card_cannot_be_rewritten_through_the_doors(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    critic = next(c for c in state.idea_candidates if c.source == "claude")
+    basis = _anton_says(directory, tmp_path)
+    reply = {"session": OK_SESSION, "native_uuid": basis["native_uuid"], "reply_at": LATE,
+             "words_hash": "ab" * 32, "words_clip": "слова"}
+    with locked(directory) as store:
+        with pytest.raises(S.Refusal) as conflict:                                                    # a second set is not assigned
+            store.assign_idea_candidates([S.IdeaCandidate("cand_z", "claude", b"{}")])
+        assert conflict.value.code == "КОНФЛИКТ_ВХОДА"
+        with pytest.raises(S.StateError):                                                             # the event has one door
+            store.record_event("поправка", {"turns_left": True})
+        author = b'{"variant": "other"}'
+        tampered = [S.IdeaCandidate("cand_t1", "автор", author),
+                    S.IdeaCandidate("cand_t2", "claude", critic.canonical_bytes + b" "),             # the critic's card, changed
+                    S.IdeaCandidate("cand_t3", "codex", next(c for c in state.idea_candidates if c.source == "codex").canonical_bytes)]
+        frame = [p for p in state.pins if p.event == C.PIN_INPUT][-1].frame_hash
+        with pytest.raises(S.Refusal, match="неизменны"):
+            store._record_correction(source="автор", basis=reply, from_candidate=None,
+                                     to_revision=hashlib.sha256(author).hexdigest(), candidates=tampered,
+                                     permutation=[0, 1, 2], input_pin={"content_hash": "a" * 64, "frame_hash": frame},
+                                     package_pin={"content_hash": "c" * 64, "hidden_hash": [
+                                         p for p in state.pins if p.event == C.PIN_PACKAGE][-1].hidden_hash})
+    assert _state(directory).idea_candidates == state.idea_candidates and not _state(directory).corrections
+
+
+def _turn(directory, card, tmp_path, source="автор", ask=None):
+    """One whole turn: the correction, then the comparison of the new round. Returns the stage result."""
+    _correct(directory, card, source=source, tmp_path=tmp_path)
+    return _next_round(directory, card, ask)
+
+
+def test_bu4_the_ceiling_is_three_turns_the_fourth_stops_the_run_and_no_ok_follows(directory, tmp_path):
+    ceiling = TABLES.vocabulary["цикл_уточнений"]["потолок_оборотов"]
+    assert ceiling == 3
+    _done(directory)
+    for number, card in enumerate((CARD2, CARD3, CARD4), start=1):
+        assert _turn(directory, card, tmp_path).run_state == "ждёт_Антона"
+        assert len(_state(directory).corrections) == number
+    before = _journal(directory)
+    with pytest.raises(C.RefinementCeiling) as stopped:                                              # the fourth turn
+        _correct(directory, proposal(ONE, "автор-5"), tmp_path=tmp_path)
+    assert stopped.value.code == "ПОТОЛОК_ОБОРОТОВ" and _journal(directory).startswith(before)
+    state = _state(directory)
+    assert state.state == TABLES.vocabulary["цикл_уточнений"]["терминальное"] == "остановлено_для_перепроектирования"
+    assert len(state.corrections) == ceiling and state.ceiling_stop["source"] == "автор"           # the fourth card is not a revision
+    assert stopped.value.history[-1]["ended"] == "потолок" and stopped.value.history[-1]["turn"] == 4
+    # no automatic agreement and no OK after the stop: the exit stays shut, every door says so
+    with pytest.raises(C.AntonOkRefused):
+        _give_ok(directory, tmp_path)
+    with pytest.raises(C.AntonOkRequired):
+        _leave(directory)
+    assert not state.anton_oks and state.stage_exit_position == -1
+    with pytest.raises(C.CorrectionRefused) as again:
+        _correct(directory, proposal(ONE, "автор-6"), tmp_path=tmp_path)
+    assert again.value.code == "ПОПРАВКА_НЕВОЗМОЖНА"
+    assert _state(directory).state == "остановлено_для_перепроектирования"
+
+
+def test_bu8_the_third_turn_is_still_allowed_and_can_end_in_an_ok(directory, tmp_path):
+    _done(directory)
+    for card in (CARD2, CARD3, CARD4):
+        _turn(directory, card, tmp_path)
+    assert _give_ok(directory, tmp_path).revision == _state(directory).input_revision
+    assert _leave(directory) is True and _state(directory).state == "завершён"
+    assert [t["ended"] for t in S.RunStore(directory, TABLES).refinement_history()] == [
+        "вердикт:РЕШЕНИЕ_АНТОНА"] * 3 + ["ок_и_выход"]
+
+
+def test_bu4_the_ceiling_comes_from_its_own_table_entry_and_not_from_the_retry_limit(directory, tmp_path):
+    retry = REAL.vocabulary["повтор_невалидного_ответа"]
+    ceiling = REAL.vocabulary["цикл_уточнений"]
+    one_turn = tables_with(цикл_уточнений={**ceiling, "потолок_оборотов": 1},
+                           повтор_невалидного_ответа={**retry, "максимум_на_ответ": 5})
+    assert C.retry_budget(one_turn) == 5                                                              # the retry limit is not touched
+    _done(directory)
+    with locked(directory, one_turn) as store:
+        assert store.turns_left()
+        C.submit_correction(store, new_card=CARD2, source="автор", basis=_anton_says(directory, tmp_path), criteria=ONE,
+                            sections=SECTIONS, withheld=WITHHELD, home=tmp_path / "home",
+                            new_id=lambda: "cand_n%d" % next(_NEW_IDS), shuffle=lambda order: None, tables=one_turn)
+        assert not store.turns_left()                                                                 # ceiling 1: used up at once
+    zero_retry = tables_with(повтор_невалидного_ответа={**retry, "максимум_на_ответ": 0})
+    with locked(directory, zero_retry) as store:
+        assert store.turns_left()                                                                     # the retry limit did not change it (1 of 3)
+    assert TABLES.vocabulary["цикл_уточнений"]["потолок_оборотов"] == 3 and C.retry_budget(TABLES) == 1
+
+
+def test_bu4_a_resumed_round_is_not_a_turn(directory, tmp_path):
+    _done(directory)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    with pytest.raises(_Boom):
+        _next_round(directory, CARD2, Asker({("claude", "compare"): [_round_answer], ("codex", "compare"): [_boom]}))
+    _supervisor_marks_incomplete(directory)
+    ask = _round_ask()
+    assert _next_round(directory, CARD2, ask).run_state == "ждёт_Антона"                             # resumed in the SAME new round
+    assert [c for c in ask.calls if c[0] == "claude"] == []                                          # claude's valid answer is not asked again
+    state = _state(directory)
+    assert len(state.corrections) == 1 and state.round_number == 2                                    # one turn, not two
+    assert S.RunStore(directory, TABLES).turns_left()
+
+
+def test_bu7_a_new_round_has_its_own_budget_and_the_spent_one_is_not_carried(directory, tmp_path):
+    first_ask = Asker({("claude", "blind"): [good_blind("c")], ("codex", "blind"): [good_blind("x")],
+                       ("claude", "compare"): ["мусор", _round_answer_fixed()], ("codex", "compare"): [_from_request(ALL_PASS, "cand_a")]})
+    stage(directory, first_ask)                                                                      # round 1: claude spent a retry
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    garbage = Asker({("claude", "compare"): ["опять мусор"], ("codex", "compare"): [_round_answer]})
+    result = _next_round(directory, CARD2, garbage)                                                  # round 2: its own two tries
+    assert result.run_state == "неполный" and garbage.count("compare") == 3                           # claude 2 (try + retry), codex 1
+    keys = [k for k in _state(directory).attempts if k[1] == C.COMPARE_STAGE and k[3] == "claude"]
+    assert sorted((k[2], k[4]) for k in keys) == [(1, 1), (1, 2), (2, 1), (2, 2)]                      # numbering restarts per round
+    with pytest.raises(C.ResumeImpossible):                                                          # round 2 is exhausted by ITS tries
+        _next_round(directory, CARD2, _round_ask())
+
+
+def _round_answer_fixed():
+    return _from_request(ALL_PASS, "cand_a")
+
+
+def test_bu1_an_exhausted_incomplete_round_does_not_end_the_run_a_correction_opens_a_fresh_round(directory, tmp_path):
+    _done(directory)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    bad = Asker({("claude", "compare"): ["мусор"], ("codex", "compare"): ["мусор"]})
+    assert _next_round(directory, CARD2, bad).run_state == "неполный"
+    with pytest.raises(C.ResumeImpossible, match="ПРОДОЛЖИТЬ_НЕЧЕМ"):
+        _next_round(directory, CARD2, _round_ask())
+    result = _turn(directory, CARD3, tmp_path)                                                       # from `неполный`: a new revision
+    assert result.run_state == "ждёт_Антона" and len(_state(directory).corrections) == 2
+    assert [t["ended"] for t in result.turns] == ["вердикт:РЕШЕНИЕ_АНТОНА", "вердикт:НЕПОЛНЫЙ_ПРОГОН", "вердикт:РЕШЕНИЕ_АНТОНА"]
+
+
+def test_bu1_an_incomplete_run_that_can_simply_go_on_needs_no_correction(directory, tmp_path):
+    _done(directory)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    with pytest.raises(_Boom):
+        _next_round(directory, CARD2, Asker({("claude", "compare"): [_round_answer], ("codex", "compare"): [_boom]}))
+    _supervisor_marks_incomplete(directory)                                                          # budget is left: resume works
+    _refused_correction(directory, tmp_path, new_card=CARD3, code="КОРРЕКЦИЯ_НЕ_НУЖНА", match="возможно и без")
+    assert _next_round(directory, CARD2, _round_ask()).run_state == "ждёт_Антона"
+
+
+def test_bu1_a_package_that_cannot_be_built_is_mended_by_a_shorter_card(tmp_path):
+    small = dict(REAL.vocabulary["пакет"], предел_пакета_байт=2400)
+    tables = _table_patch(("vocabulary", "пакет"), small)
+    pad = "п" * 120
+    directory = started(tmp_path / "big", "run-big")
+    options = dict(tables=tables)
+    result = stage(directory, Asker({("claude", "blind"): [good_blind_with(pad)], ("codex", "blind"): [good_blind_with(pad)]}),
+                   author_card={**proposal(ONE, "а"), "variant": pad}, **options)
+    assert result.run_state == "неполный" and "превышение_размера" in result.incomplete_reason
+    with pytest.raises(C.ResumeImpossible, match="НУЖНА_КОРРЕКЦИЯ_ВХОДА"):
+        stage(directory, _happy(), author_card={**proposal(ONE, "а"), "variant": pad}, **options)
+    short = proposal(ONE, "к")
+    with locked(directory, tables) as store:                                                         # no set was ever made: the blind cards are taken
+        after = C.submit_correction(store, new_card=short, source="автор", basis=_anton_says(directory, tmp_path),
+                                    criteria=ONE, sections=SECTIONS, withheld=WITHHELD, tables=tables,
+                                    home=tmp_path / "home", shuffle=lambda order: None)
+    assert after.state == "идёт_круг" and len(after.idea_candidates) == 3 and after.round_number == 2
+    assert _next_round(directory, short, _round_ask(), tables=tables).run_state == "ждёт_Антона"
+
+
+def test_bu9_the_ok_of_the_old_revision_does_not_survive_a_correction(directory, tmp_path):
+    _done(directory)
+    old = _give_ok(directory, tmp_path)
+    _correct(directory, CARD2, tmp_path=tmp_path)
+    with pytest.raises(C.AntonOkRequired):                                                           # the run is back in work
+        _leave(directory)
+    _next_round(directory, CARD2)
+    with pytest.raises(C.AntonOkRequired) as stale:                                                  # the new verdict, but the old OK
+        _leave(directory)
+    assert stale.value.code == "ОК_УСТАРЕЛ" and old.revision != _state(directory).input_revision
+    basis = _reply(directory, tmp_path, turn=f"Карточка. {C.ok_marker(old.run_id, old.revision, TABLES)}")
+    with locked(directory) as store:
+        with pytest.raises(C.AntonOkRefused, match="нет строки"):                                    # a marker of the old revision
+            C.record_anton_ok(store, basis, home=tmp_path / "home")
+    assert _give_ok(directory, tmp_path).revision == _state(directory).input_revision
+    assert _leave(directory) is True
+
+
+def test_bu6_every_turn_is_in_the_history_with_who_what_and_how_it_ended(directory, tmp_path):
+    result = _done(directory)
+    critic = next(c for c in _state(directory).idea_candidates if c.source == "codex")
+    _correct(directory, CARD2, source="антон", basis=_anton_says(directory, tmp_path), tmp_path=tmp_path)
+    _next_round(directory, CARD2)
+    _correct(directory, CARD3, from_candidate=critic.candidate_id, tmp_path=tmp_path)
+    final = _next_round(directory, CARD3)
+    history = final.turns
+    assert history == S.RunStore(directory, TABLES).refinement_history()
+    assert [(t["turn"], t["proposed_by"], t["round"]) for t in history] == [(0, "автор", 1), (1, "антон", 2), (2, "автор", 3)]
+    assert history[1]["basis"]["reply_at"] == LATE and history[2]["basis"]["reply_at"] == LATE     # every turn is on his word
+    assert history[1]["basis"]["words_clip"] == ANTON_WORDS[:200] and len(history[1]["basis"]["words_hash"]) == 64
+    assert history[1]["basis"]["native_uuid"] != history[2]["basis"]["native_uuid"]
+    assert history[0]["to_revision"] == history[1]["from_revision"] and history[1]["to_revision"] == history[2]["from_revision"]
+    assert history[1]["to_revision"] != history[1]["from_revision"]
+    assert history[2]["from_candidate"] == {"id": critic.candidate_id, "source": "codex"} and history[1]["from_candidate"] is None
+    assert [t["ended"] for t in history] == ["вердикт:РЕШЕНИЕ_АНТОНА"] * 3 and result.turns[0]["ended"].startswith("вердикт")
+
+
+def test_bu_the_correction_has_no_door_but_its_own_a_reply_is_used_once(directory, tmp_path):
+    _done(directory)
+    basis = _anton_says(directory, tmp_path)
+    _correct(directory, CARD2, source="антон", basis=basis, tmp_path=tmp_path)
+    _next_round(directory, CARD2)
+    after = _state(directory)
+    wire = {"session": basis["сессия"], "native_uuid": basis["native_uuid"], "reply_at": LATE,
+            "words_hash": "ab" * 32, "words_clip": "слова"}
+    frame = [p for p in after.pins if p.event == C.PIN_INPUT][-1].frame_hash
+    author = b'{"variant": "other"}'
+    kept = [(c.source, c.canonical_bytes) for c in after.idea_candidates if c.source != "автор"]
+    candidates = [S.IdeaCandidate("cand_q0", "автор", author)] + [S.IdeaCandidate(f"cand_q{i + 1}", s_, b) for i, (s_, b) in enumerate(kept)]
+    arguments = dict(source="антон", from_candidate=None, to_revision=hashlib.sha256(author).hexdigest(),
+                     candidates=candidates, permutation=[0, 1, 2], input_pin={"content_hash": "a" * 64, "frame_hash": frame},
+                     package_pin={"content_hash": "c" * 64, "hidden_hash": [p for p in after.pins if p.event == C.PIN_PACKAGE][-1].hidden_hash})
+    with locked(directory) as store:
+        with pytest.raises(S.Refusal, match="уже использована"):
+            store._record_correction(basis=wire, **arguments)
+        with pytest.raises(S.Refusal, match="без слова Антона"):
+            store._record_correction(basis=None, **arguments)
+    assert _state(directory).corrections == after.corrections
+
+
+# -- БУ-2б, доработка: слово Антона обязательно, потолок, возврат, дубль, двери, утечки ---------------------------------
+
+def test_bu_the_exceptions_of_the_cycle_have_a_common_base_and_the_ceiling_is_not_a_refusal():
+    assert issubclass(C.CorrectionRefused, C.RefinementError) and issubclass(C.RefinementCeiling, C.RefinementError)
+    assert not issubclass(C.RefinementCeiling, C.CorrectionRefused)          # "nothing written" vs "the stop is written"
+    assert not issubclass(C.CorrectionRefused, C.RefinementCeiling)
+
+
+@pytest.mark.parametrize("words,why", [
+    ("ок", "согласие"), ("Да", "согласие"), ("согласен", "согласие"), ("ОК на коммит", "согласие"),
+    ("Да, но сделай проще", "согласие"), ("одобряю.", "согласие"),
+    ("Не нужен новый сервис, сделай проще", "отрицание"), ("А если сделать проще и дешевле?", "вопрос"),
+])
+def test_bu2_a_reply_that_reads_as_consent_a_negation_or_a_question_is_no_correction(directory, tmp_path, words, why):
+    _done(directory)
+    _refused_correction(directory, tmp_path, source="автор", basis=_anton_says(directory, tmp_path, words=words), match=why)
+    assert _correct(directory, CARD2, tmp_path=tmp_path).round_number == 2                            # positive control
+
+
+def test_bu2_a_copy_of_the_yes_option_of_a_fork_card_is_no_correction(directory, tmp_path):
+    _done(directory)
+    yes = "Дать явное «ОК» — Для тебя: выход со стадии, дальше работа идёт (советую)"
+    basis = _reply(directory, tmp_path, reply=yes, turn=FORK.format(marker=_shown(directory)))
+    _refused_correction(directory, tmp_path, source="автор", basis=basis, match="вариант")
+    other = "Отложить — Для тебя: прогон ждёт дальше"                                            # a copy of the OTHER option is words
+    ok_basis = _reply(directory, tmp_path, reply=other, turn=FORK.format(marker=_shown(directory)))
+    assert _correct(directory, CARD2, source="автор", basis=ok_basis, tmp_path=tmp_path).round_number == 2
+
+
+def test_bu4_the_fourth_turn_without_the_word_of_anton_does_not_stop_the_run(directory, tmp_path):
+    _done(directory)
+    for card in (CARD2, CARD3, CARD4):
+        _turn(directory, card, tmp_path)
+    before = _journal(directory)
+    for basis in (_NO_BASIS, _anton_says(directory, tmp_path, words="ок")):
+        with pytest.raises(C.CorrectionRefused):                                                      # not a RefinementCeiling
+            _correct(directory, proposal(ONE, "автор-5"), basis=basis, tmp_path=tmp_path)
+    assert _state(directory).state == "ждёт_Антона" and _state(directory).ceiling_stop is None
+    assert _journal(directory).startswith(before)
+    with pytest.raises(C.RefinementCeiling):                                                          # with his word it does
+        _correct(directory, proposal(ONE, "автор-5"), tmp_path=tmp_path)
+    stop = _state(directory).ceiling_stop
+    assert stop["basis"]["words_clip"] == ANTON_WORDS and len(stop["basis"]["words_hash"]) == 64     # the reply is spent
+    assert [p for p in S.RunStore(directory, TABLES).refinement_history()][-1]["basis"]["native_uuid"] == stop["basis"]["native_uuid"]
+
+
+def test_bu4_an_incomplete_run_that_can_go_on_is_never_stopped_by_the_ceiling(directory, tmp_path):
+    _done(directory)
+    _turn(directory, CARD2, tmp_path)
+    _turn(directory, CARD3, tmp_path)
+    _correct(directory, CARD4, tmp_path=tmp_path)                                                     # the third and last turn ...
+    assert not S.RunStore(directory, TABLES).turns_left()
+    with pytest.raises(_Boom):                                                                        # ... its round is broken
+        _next_round_from(directory, CARD4)
+    _supervisor_marks_incomplete(directory)                                                           # budget is left: it can resume
+    _refused_correction(directory, tmp_path, new_card=proposal(ONE, "автор-5"), code="КОРРЕКЦИЯ_НЕ_НУЖНА", match="возможно и без")
+    assert _state(directory).state == "неполный" and _state(directory).ceiling_stop is None
+    assert _next_round(directory, CARD4, _round_ask()).run_state == "ждёт_Антона"                      # it simply goes on
+
+
+def _next_round_from(directory, card):
+    """The comparison of the CURRENT round cut off by a crash (the comparison of codex dies)."""
+    return _next_round(directory, card, Asker({("claude", "compare"): [_round_answer], ("codex", "compare"): [_boom]}))
+
+
+def test_bu4_an_incomplete_run_that_cannot_go_on_and_has_no_turns_left_is_stopped(tmp_path):
+    one = tables_with(цикл_уточнений={**REAL.vocabulary["цикл_уточнений"], "потолок_оборотов": 1})
+    other = started(tmp_path / "other", "run-o")
+    stage(other, _happy())
+
+    def correct(card):
+        with locked(other, one) as store:
+            return C.submit_correction(store, new_card=card, source="автор", basis=_anton_says(other, tmp_path), criteria=ONE,
+                                       sections=SECTIONS, withheld=WITHHELD, home=tmp_path / "home",
+                                       new_id=lambda: "cand_n%d" % next(_NEW_IDS), shuffle=lambda order: None, tables=one)
+
+    correct(CARD2)                                                                                     # the only turn of the ceiling
+    bad = Asker({("claude", "compare"): ["мусор"], ("codex", "compare"): ["мусор"]})
+    assert stage(other, bad, author_card=CARD2, new_id=None).run_state == "неполный"                  # exhausted: nothing to resume with
+    with pytest.raises(C.RefinementCeiling):
+        correct(CARD3)
+    assert _state(other).state == "остановлено_для_перепроектирования" and _state(other).ceiling_stop["source"] == "автор"
+
+
+def test_bu2_the_dead_end_without_blind_cards_has_its_own_named_outcome(tmp_path):
+    directory = started(tmp_path / "run", "run-d")
+    ask = Asker({("claude", "blind"): ["x"], ("codex", "blind"): [good_blind("x")]})                  # claude never gives a valid card
+    assert stage(directory, ask).run_state == "неполный" and not _state(directory).idea_candidates
+    before = _journal(directory)
+    with pytest.raises(C.CorrectionRefused) as refused:
+        _correct(directory, CARD2, tmp_path=tmp_path)
+    assert refused.value.code == "ПОПРАВКА_ТУПИК" and _journal(directory) == before
+    assert REAL.decide("неполный", "поправка", {"blind_cards_ready": False}).refusal == "ПОПРАВКА_ТУПИК"
+
+
+def test_bu3_a_return_to_an_earlier_revision_is_refused_cleanly_and_costs_no_turn(directory, tmp_path):
+    _done(directory)
+    _turn(directory, CARD2, tmp_path)                                                                 # A -> B
+    before, turns = _journal(directory), len(_state(directory).corrections)
+    for back in (proposal(ONE, "автор"), json.dumps(proposal(ONE, "автор"), indent=2)):              # B -> A, however written
+        _refused_correction(directory, tmp_path, new_card=back, match="возврат к прежней")
+    assert len(_state(directory).corrections) == turns
+    assert _turn(directory, CARD3, tmp_path).run_state == "ждёт_Антона"                               # a new card goes on at once
+
+
+def test_bu3_a_card_equal_to_a_critics_card_is_a_copy_and_is_refused(directory, tmp_path):
+    _done(directory)
+    state = _state(directory)
+    for source in ("claude", "codex"):
+        critic = next(c for c in state.idea_candidates if c.source == source)
+        copy_of = json.loads(critic.canonical_bytes)
+        _refused_correction(directory, tmp_path, new_card=copy_of, match="дубль")                    # also with the candidate as its source
+        _refused_correction(directory, tmp_path, new_card=copy_of, from_candidate=critic.candidate_id, match="дубль")
+
+
+def test_bu7_the_new_round_has_its_own_non_identity_order_and_the_critics_see_it(directory, tmp_path):
+    _done(directory)
+    after = _correct(directory, CARD2, tmp_path=tmp_path, shuffle=lambda order: order.reverse())
+    assert after.idea_candidates_permutation == (2, 1, 0) != tuple(range(3))
+    seen = []
+    ask = Asker({("claude", "compare"): [lambda r: seen.append(request_candidates(r)) or _round_answer(r)],
+                 ("codex", "compare"): [_round_answer]})
+    assert _next_round(directory, CARD2, ask).run_state == "ждёт_Антона"
+    shown = [c["candidate_id"] for c in seen[0]]
+    assert shown == [after.idea_candidates[i].candidate_id for i in (2, 1, 0)]                      # the recorded order, as shown
+
+
+def test_bu16_nothing_about_the_source_the_hint_or_the_words_of_anton_reaches_the_critics(directory, tmp_path):
+    _done(directory)
+    critic = next(c for c in _state(directory).idea_candidates if c.source == "codex")
+    _correct(directory, CARD2, from_candidate=critic.candidate_id, tmp_path=tmp_path)
+    requests = []
+    spy = lambda r: requests.append(json.dumps(r, ensure_ascii=False)) or _round_answer(r)         # noqa: E731
+    _next_round(directory, CARD2, Asker({("claude", "compare"): [spy], ("codex", "compare"): [spy]}))
+    assert len(requests) == 2                                                                          # BOTH critics, the WHOLE request
+    forbidden = ["claude", "codex", critic.candidate_id, ANTON_WORDS, ANTON_WORDS[:30], WITHHELD["автор"],
+                 WITHHELD["второй_критик"], "source", "from_candidate", "basis", "native_uuid", OK_SESSION]
+    for request in requests:
+        for word in forbidden:
+            if word in ("claude", "codex") and f'"critic": "{word}"' in request:
+                continue                                                                               # the request names its own addressee
+            assert word not in request.replace(f'"critic": "claude"', "").replace(f'"critic": "codex"', ""), word
+
+
+def test_bu3_one_journal_line_carries_a_correction_and_a_failed_write_leaves_the_run_as_it_was(directory, tmp_path, monkeypatch):
+    _done(directory)
+    basis = _anton_says(directory, tmp_path)
+    lines = _journal(directory).count(b"\n")
+    real = S.RunStore._append
+
+    def failing(self, entry):
+        if entry.get("event") == "поправка":
+            raise _Boom
+        return real(self, entry)
+
+    monkeypatch.setattr(S.RunStore, "_append", failing)
+    before = _journal(directory)
+    with pytest.raises(_Boom):
+        _correct(directory, CARD2, basis=basis, tmp_path=tmp_path)
+    monkeypatch.undo()
+    assert _journal(directory) == before and _state(directory).state == "ждёт_Антона" and not _state(directory).corrections
+    _correct(directory, CARD2, basis=basis, tmp_path=tmp_path)                                         # the same reply still serves
+    assert _journal(directory).count(b"\n") == lines + 1                                              # exactly ONE line for the turn
+    assert len([e for e in map(json.loads, _journal(directory).decode().splitlines()) if e.get("event") == "поправка"]) == 1
+
+
+def test_bu2_a_reply_from_another_session_than_the_runs_own_is_no_basis(tmp_path):
+    other = "99999999-2222-3333-4444-555555555555"
+    directory = tmp_path / "run"
+    S.RunStore(directory, TABLES).create("run-s", "идея", OK_SESSION)
+    with locked(directory) as store:
+        store.submit("start")
+    _done(directory)
+    talk = Talk(tmp_path / "home", session=other)
+    talk.assistant(f"Показываю карточку. {_shown(directory)}. Что изменить?")
+    basis = {"сессия": other, "native_uuid": talk.human(ANTON_WORDS)}
+    _refused_correction(directory, tmp_path, source="антон", basis=basis, match="другой сессии")
+    assert _correct(directory, CARD2, source="антон", tmp_path=tmp_path).round_number == 2           # his own session goes
+
+
+def test_bu2_a_correction_after_the_exit_is_impossible(directory, tmp_path):
+    _done(directory)
+    _give_ok(directory, tmp_path)
+    assert _leave(directory) is True
+    _refused_correction(directory, tmp_path, code="ПОПРАВКА_НЕВОЗМОЖНА", match="завершён")
+    assert _state(directory).state == "завершён"
+
+
+# -- вставка рядом со словом согласия и публичный выход (внешний критик, 7f4a1dc) -----------------------------------------
+
+INSERTS = ["<pasted_content>чужой текст</pasted_content>", "<system-reminder>шум</system-reminder>",
+           '<pasted_content id="7">чужой</pasted_content>']
+
+
+@pytest.mark.parametrize("insert", INSERTS)
+@pytest.mark.parametrize("side", ["после", "до", "с обеих сторон", "через строку"])
+def test_bu15_an_insertion_next_to_the_bare_word_of_consent_is_not_an_ok(directory, tmp_path, insert, side):
+    _done(directory)
+    reply = {"после": f"ок{insert}", "до": f"{insert}ок", "с обеих сторон": f"{insert}ок{insert}",
+             "через строку": f"ок\n{insert}"}[side]
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply=reply), match="вставка")
+    assert _give_ok(directory, tmp_path).revision                                                    # positive control: the clean word
+
+
+@pytest.mark.parametrize("side", ["после", "до", "с обеих сторон"])
+def test_bu15_an_insertion_next_to_the_yes_option_of_a_card_is_not_an_ok(directory, tmp_path, side):
+    _done(directory)
+    yes = "Дать явное «ОК» — Для тебя: выход со стадии, дальше работа идёт (советую)"
+    insert = INSERTS[0]
+    reply = {"после": yes + insert, "до": insert + yes, "с обеих сторон": insert + yes + insert}[side]
+    turn = FORK.format(marker=_shown(directory))
+    _ok_refused(directory, tmp_path, _reply(directory, tmp_path, reply=reply, turn=turn), match="вставка")
+    assert _give_ok(directory, tmp_path, reply=yes, turn=turn).revision                              # positive control
+
+
+@pytest.mark.parametrize("insert", INSERTS)
+@pytest.mark.parametrize("side", ["после", "до", "с обеих сторон"])
+def test_bu2_an_insertion_next_to_the_words_of_a_correction_is_no_basis(directory, tmp_path, insert, side):
+    _done(directory)
+    words = {"после": ANTON_WORDS + insert, "до": insert + ANTON_WORDS, "с обеих сторон": insert + ANTON_WORDS + insert}[side]
+    _refused_correction(directory, tmp_path, source="автор", basis=_anton_says(directory, tmp_path, words=words), match="вставка")
+    assert _correct(directory, CARD2, tmp_path=tmp_path).round_number == 2                            # positive control
+
+
+def test_bu15_the_stage_exit_has_no_public_door_and_the_one_path_looks_at_the_reply_again(directory, tmp_path):
+    public = [name for name in dir(S.RunStore) if not name.startswith("_")]
+    assert not [n for n in public if "exit" in n or "anton_ok" in n or "correction" in n or n == "start_round"], public
+    _done(directory)
+    _give_ok(directory, tmp_path)
+    path = _talk(tmp_path).path
+    original = path.read_text(encoding="utf-8")
+    with locked(directory) as store:
+        with pytest.raises(S.StateError):                                                            # not by the event either
+            store.record_event("этап_пройден", {"anton_ok": "есть", "framing_objection": False})
+    for damaged in (original.replace('"ок"', '"ок, но позже"'), ""):                                  # changed, then vanished
+        path.write_text(damaged, encoding="utf-8")
+        before = _journal(directory)
+        with pytest.raises(C.AntonOkRequired) as refused:
+            _leave(directory)
+        assert refused.value.code == "ОК_УСТАРЕЛ" and _journal(directory) == before
+        assert _state(directory).state == "ждёт_Антона" and _state(directory).stage_exit_position == -1
+    path.write_text(original, encoding="utf-8")                                                      # unchanged: the exit is made
+    assert _leave(directory) is True and _state(directory).state == "завершён"

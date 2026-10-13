@@ -548,6 +548,11 @@ class Package:
         return self.as_dict().get("кандидаты", [])
 
     @property
+    def revision(self) -> str | None:
+        """The edition the trusted caller set at build time (None when none was set)."""
+        return self.as_dict().get("редакция")
+
+    @property
     def canonical_bytes(self) -> bytes:
         return self._bytes
 
@@ -589,6 +594,20 @@ def comparison_sections(tables, stage: str) -> set:
 
 def _bad(detail: str):
     return PackageRefused("некорректный_вход", detail)
+
+
+REVISION_ALPHABET = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:+-")
+REVISION_LIMIT = 64
+
+
+def check_revision(revision) -> None:
+    """The one rule for an edition: refuse unless a short string of `REVISION_ALPHABET`."""
+    if revision is None:
+        return
+    if (not isinstance(revision, str) or not 1 <= len(revision) <= REVISION_LIMIT
+            or not set(revision) <= REVISION_ALPHABET):
+        raise _bad(f"редакция: непустая строка до {REVISION_LIMIT} знаков из латиницы, цифр и ._:+-")
 
 
 def _validate_input(root, declared_files, sections, registries, stage):
@@ -791,6 +810,16 @@ _LEET_KEYS = frozenset("4357829" + "10" + "@$|!+")
 
 def _skeleton(text: str, leet: bool = False) -> str:
     return _skeleton_checked(text, leet=leet)[0]
+
+
+def fold_name(text: str) -> str:
+    """A name as a human sees it, with no separators at all: the skeleton of the whole text.
+
+    The same fold as the trace search and `fold_identifier` (look-alikes of other scripts,
+    invisible and format characters, hyphens of every kind dropped), so two names that a
+    reader cannot tell apart fold to one string. Empty when nothing visible is left.
+    """
+    return _skeleton(text)
 
 
 _ID_SEPARATORS = re.compile(r"[^._\-]+")
@@ -1224,7 +1253,8 @@ def _check_root_place(root: Path) -> None:
 
 
 def build_package(root, declared_files, sections, registries, stage,
-                  blind: bool = False, tables=None, withheld=None, criteria=None) -> Package:
+                  blind: bool = False, tables=None, withheld=None, criteria=None,
+                  revision=None) -> Package:
     """Assemble one verifiable package.
 
     `declared_files` is an explicit list of `(path, class)` pairs -- the manifest
@@ -1236,11 +1266,17 @@ def build_package(root, declared_files, sections, registries, stage,
     `criteria` (`{id, text, mandatory}` rows) is the blind mode's `критерии` block -- the same
     `_criteria_block` / `_criteria_leaves` as the comparison package, judged with the rest.
     Outside the blind mode it is refused (`некорректный_вход`).
+
+    `revision` (Б15-7) is the artefact's edition, set by the TRUSTED caller (never read from
+    the artefact itself): a short string of `REVISION_ALPHABET`. When given it enters the
+    canonical body as `редакция` -- so the package hash covers it, and the precheck compares
+    the artefact's header with it. Without it the bytes are exactly what they were.
     """
     tables = tables or tables_module.load()
     limits = tables.vocabulary["пакет"]
 
     _validate_input(root, declared_files, sections, registries, stage)
+    check_revision(revision)
     root = Path(_root_text(root))
     if stage not in tables.stages["стадии"]:
         raise PackageRefused("неизвестная_стадия", stage)
@@ -1281,6 +1317,8 @@ def build_package(root, declared_files, sections, registries, stage,
     }
     if criteria_block is not None:
         body["критерии"] = criteria_block
+    if revision is not None:
+        body["редакция"] = revision
     packed = canonical_json(body)
     # The size is settled before any search: a refusal for size must not wait for
     # an expensive comparison.

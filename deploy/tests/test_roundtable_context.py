@@ -3666,3 +3666,26 @@ def test_criteria_outside_the_blind_mode_or_of_a_wrong_shape_are_refused(root):
     with pytest.raises(C.PackageRefused) as refused:
         _blind_crit(root, [{"id": "К1"}])
     assert refused.value.reason == "некорректный_вход"
+
+
+# -- Б15-7: the edition of the package is set by the trusted caller ----------------------
+
+def test_a_package_without_a_revision_is_byte_for_byte_what_it_was(root):
+    package = _build(root)
+    assert package.revision is None and "редакция" not in package.as_dict()
+    assert package.hash == _build(root, revision=None).hash
+
+
+def test_the_revision_enters_the_canonical_body_and_the_hash(root):
+    plain, first, second = _build(root), _build(root, revision="r1"), _build(root, revision="r2")
+    assert first.revision == "r1" and first.as_dict()["редакция"] == "r1"
+    assert len({plain.hash, first.hash, second.hash}) == 3
+    assert first.hash == _build(root, revision="r1").hash
+
+
+@pytest.mark.parametrize("bad", ["", "x" * 65, "r 1", "р1", "r\n1", 5, b"r1", ["r1"]])
+def test_a_revision_outside_the_length_and_alphabet_is_refused(root, bad):
+    with pytest.raises(C.PackageRefused) as refused:
+        _build(root, revision=bad)
+    assert refused.value.reason == "некорректный_вход"
+

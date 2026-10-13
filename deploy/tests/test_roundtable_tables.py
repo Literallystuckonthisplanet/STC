@@ -4793,3 +4793,14 @@ def test_bu8_without_turns_the_correction_ends_in_the_terminal_state_and_only_wh
         REAL_TABLES.decide(stop, "поправка", {"turns_left": True})
     assert "поправка" not in VOCAB["операции"]
     assert not [r for r in RUN["переходы"] if r["событие"] == "вход_закреплён" and r["из"] == "ждёт_Антона"]   # no pin after the show
+
+
+def test_the_ok_artefact_is_the_first_link_of_the_consent_chain():
+    # Замер 12.10: `ок_антона.артефакт` проверялся только непустотой — подмена названия того,
+    # на что Антон даёт ОК, проходила молча. Он обязан быть тем, что принимает первое звено согласий.
+    module = import_tables_module()
+    raw = copy.deepcopy(module.load().raw)
+    assert raw["vocabulary"]["ок_антона"]["артефакт"] == raw["blocks"]["согласия"]["цепочка"][0]["принимается"]
+    raw["vocabulary"]["ок_антона"]["артефакт"] = "архитектура_и_план_реализации_вместе"
+    with pytest.raises(module.ContractError, match="первым звеном согласий"):
+        module.Tables.from_raw(raw).check()

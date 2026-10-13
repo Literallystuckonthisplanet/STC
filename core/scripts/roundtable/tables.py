@@ -677,11 +677,10 @@ SHAPES = {
                                              "журнал_необязательные")),
         "попытка": Record("ключ", "состояния", "флаг_неопределённого_окна", "почему"),
         "коды_условий": Mapping(LIST),
-        "ответ_критика": Record("каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов", "почему"),
+        "ответ_критика": Record("каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов"),
         "закрепление": Record("события", "на_круг", "иное_содержимое"),
-        "цикл_уточнений": Record("потолок_оборотов", "событие", "источники", "терминальное", "почему"),
-        "ок_антона": Record("событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша",
-                            "почему"),
+        "цикл_уточнений": Record("потолок_оборотов", "событие", "источники", "терминальное"),
+        "ок_антона": Record("событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша"),
         "повтор_невалидного_ответа": Record(
             "максимум_на_ответ", "область", "тратит_бюджет", "порядок", "оба_невалидны",
             "сохранённый_валидный_ответ_не_повторять", "после_исчерпания",
@@ -1797,7 +1796,7 @@ class Tables:
         where = "vocabulary.ответ_критика"
         if not isinstance(answer, dict):
             raise ContractError(f"{where}: ожидалась карта")
-        _require(answer, {"каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов", "почему"},
+        _require(answer, {"каталог", "имя_файла", "порядок_записи", "предел_причины", "предел_байтов"},
                  set(), where)
         folder = answer["каталог"]
         if not isinstance(folder, str) or not re.fullmatch(r"[\w-]{1,32}", folder):
@@ -1815,7 +1814,6 @@ class Tables:
                 isinstance(section, int) and size < section):
             raise ContractError(f"{where}.предел_байтов: целое не меньше пакет.предел_раздела_байт ({section!r}), "
                                 f"получено {size!r}")
-        _nonempty_string(answer["почему"], f"{where}.почему")
 
         pins = self.vocabulary.get("закрепление")
         where = "vocabulary.закрепление"
@@ -1843,8 +1841,8 @@ class Tables:
         spec = self.vocabulary.get("ок_антона")
         if not isinstance(spec, dict):
             raise ContractError(f"{where}: ожидалась карта")
-        _require(spec, {"событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша",
-                        "почему"}, set(), where)
+        _require(spec, {"событие", "переход", "источник", "этап", "артефакт", "вердикт", "маркер", "длина_хеша"},
+                 set(), where)
         if spec["вердикт"] not in self.vocabulary["вердикты"] or spec["вердикт"] == "ОДОБРЕНО":
             raise ContractError(f"{where}.вердикт: {spec['вердикт']!r} не вердикт, ведущий к Антону")
         if spec["источник"] != "событие_транскрипта":
@@ -1852,8 +1850,11 @@ class Tables:
         stages = set(self.vocabulary["стадии"]["в_MVP"]) | set(self.vocabulary["стадии"]["вне_MVP"])
         if spec["этап"] not in stages:
             raise ContractError(f"{where}.этап: {spec['этап']!r} не стадия")
-        _nonempty_string(spec["артефакт"], f"{where}.артефакт")
-        _nonempty_string(spec["почему"], f"{where}.почему")
+        # Замер 12.10: «артефакт» проверялся только непустотой — подмена названия того, на что даётся ОК,
+        # проходила. ОК стадии «идея» — первое звено цепочки согласий: его артефакт и есть принимаемый.
+        chain = self.plan.get("согласия", {}).get("цепочка") or [{}]
+        if spec["артефакт"] != chain[0].get("принимается"):
+            raise ContractError(f"{where}.артефакт: {spec['артефакт']!r} не то, что принимается первым звеном согласий")
         marker = spec["маркер"]
         if not isinstance(marker, str) or marker.count("{прогон}") != 1 or marker.count("{хеш}") != 1:
             raise ContractError(f"{where}.маркер: нужна строка с одним {{прогон}} и одним {{хеш}}")
@@ -1874,7 +1875,7 @@ class Tables:
         spec = self.vocabulary.get("цикл_уточнений")
         if not isinstance(spec, dict):
             raise ContractError(f"{where}: ожидалась карта")
-        _require(spec, {"потолок_оборотов", "событие", "источники", "терминальное", "почему"}, set(), where)
+        _require(spec, {"потолок_оборотов", "событие", "источники", "терминальное"}, set(), where)
         ceiling = spec["потолок_оборотов"]
         if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
             raise ContractError(f"{where}.потолок_оборотов: целое от 1, получено {ceiling!r}")
@@ -1882,7 +1883,6 @@ class Tables:
             raise ContractError(f"{where}.источники: ожидалось [антон, автор]")
         if spec["терминальное"] not in self.vocabulary["состояния_прогона"]["терминальные"]:
             raise ContractError(f"{where}.терминальное: {spec['терминальное']!r} не терминальное состояние")
-        _nonempty_string(spec["почему"], f"{where}.почему")
         event = spec["событие"]
         if event in self.vocabulary["операции"] or event not in self.events:
             raise ContractError(f"{where}.событие: {event!r} — не событие движка из run.yaml")

@@ -824,9 +824,20 @@ def test_codex_hook_bundle_carries_direct_delegation_reminder():
     stc, registry, adapters, _ = D._gather()
     provider = R.provider_for(stc, "codex", REPO)
     rr = R.render_harness(stc, registry, provider, adapters["codex"], D.CORE, REPO)
-    body = rr.files["AGENTS.stc.md"]
-    for required in ("## Direct execution reminder", "cheapest capable executor",
-                     "# in-main", "never ownership"):
+    body = " ".join(rr.files["AGENTS.stc.md"].split()).lower()
+    for required in (
+        "## direct execution reminder",
+        "cheapest capable executor",
+        "# in-main",
+        "never ownership",
+        "luna owns source, tests, tools, and fixes",
+        "sol owns the short brief",
+        "one planned targeted verification packet",
+        "after two failed repair cycles",
+        "owner about further scope",
+        "no automatic repair cycle",
+        "optional improvements are separate scope",
+    ):
         assert required in body
 
 

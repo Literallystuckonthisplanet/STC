@@ -43,12 +43,17 @@ config/generated/throwaway work follows its own contract.
 <!-- FR-27 FR-28 -->
 
 <!-- codex-direct-reminder:start -->
-- Across projects and continuation/fix turns, main's model does not replace the
-  cheapest capable executor. Builders own source/tests/tools/fixes;
-  main owns diagnosis, brief, integration, and reporting.
-- After two failures, diagnose, correct brief, return cheap. Expensive
-  implementation needs concrete insufficiency and bounded scope. `# in-main`
-  or a passing guard grants only the annotated integration step, never ownership.
+- Across projects and continuation/fix turns, Luna owns source, tests, tools,
+  and fixes; Luna is the cheapest capable executor with initial diagnosis/logs
+  and operational iterations. Sol owns the short
+  brief, genuine architecture decisions, integration, and short acceptance.
+- Use one planned targeted verification packet per block; after a fix, rerun
+  the failed check and direct neighbors only. After two failed repair cycles,
+  STOP, record cause/remaining work/cost or scope, and ask the owner about
+  further scope. No automatic repair cycle or expensive executor.
+- `# in-main` is only a bounded integration exception and never ownership.
+  Money/access/data changes need independent review; the Claude + Codex panel
+  remains unchanged. Optional improvements are separate scope.
 <!-- codex-direct-reminder:end -->
 
 - Main default = **Luna Max**; decompose M/L work and delegate streams
@@ -77,9 +82,8 @@ Agent role triggers and prompt contracts → `skills_triggers.md` and playbook
 
 ### Targeted execution policy
 
-This policy applies globally to every project and continuation when a block has
-an accepted targeted verification packet. It does not change the main model or
-disable security guards or coding gates.
+This policy applies by default to every project and continuation. It does not
+change the main model or disable security guards or coding gates.
 
 - Luna owns source, tests, tools, and fixes, including the initial diagnosis
   and bounded operational iterations.
@@ -98,7 +102,7 @@ disable security guards or coding gates.
 ## Execute
 - Work one accepted block at a time. The executor changes only its declared
   write scope and returns status, files, checks, AC, `DECIDED`, and `FORK`.
-- Main owns decomposition, decisions, diagnosis, integration, acceptance,
+- Main owns decomposition, decision-level diagnosis, integration, acceptance,
   commits, and reporting; update the plan on a plan-breaking constraint.
 - Acceptance briefly records the implementation/fix owner; executor launch alone
   is not proof of compliance.

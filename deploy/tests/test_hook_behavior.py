@@ -186,7 +186,12 @@ def test_h06_claude_delivers_full_rules_in_bounded_parts(tmp_path):
     assert "----- rules/session.md -----" in combined
     assert "2–5 files" in combined
     assert "6+ files" in combined
-    assert "Caveman only for read-only" in combined
+    assert "Caveman is read-only" in combined
+    delivered = combined.lower()
+    assert "operational work defaults" in delivered
+    assert "large source contexts/logs" in delivered
+    assert "stay with executor" in delivered
+    assert "after fix, rerun failed scenario + direct neighbors" in delivered
 
 
 def test_h17_secret_read_guard_has_allow_and_block_branches(tmp_path):

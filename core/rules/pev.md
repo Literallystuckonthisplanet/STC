@@ -43,10 +43,9 @@ config/generated/throwaway work follows its own contract.
 <!-- FR-27 FR-28 -->
 
 <!-- codex-direct-reminder:start -->
-- Across projects and continuation/fix turns, Luna owns source, tests, tools,
-  and fixes; Luna is the cheapest capable executor with initial diagnosis/logs
-  and operational iterations. Sol owns the short
-  brief, genuine architecture decisions, integration, and short acceptance.
+- Across projects and continuation/fix turns, the cheapest capable executor
+  owns source, tests, tools, fixes, and operational discovery; main owns the
+  short brief, architecture decisions, integration, and acceptance.
 - Use one planned targeted verification packet per block; after a fix, rerun
   the failed check and direct neighbors only. After two failed repair cycles,
   STOP, record cause/remaining work/cost or scope, and ask the owner about
@@ -54,6 +53,13 @@ config/generated/throwaway work follows its own contract.
 - `# in-main` is only a bounded integration exception and never ownership.
   Money/access/data changes need independent review; the Claude + Codex panel
   remains unchanged. Optional improvements are separate scope.
+- Operational work defaults to the cheapest capable executor for inventory,
+  search, docs, logs, diagnostics, tests, triage, reports, and mechanical fixes.
+- Main keeps brief, decisions, integration, acceptance; large source contexts/logs
+  stay with executor. If main is cheapest capable, no subagent is needed;
+  no trivial acknowledgement/tiny-integration agents.
+- After fix, rerun failed scenario + direct neighbors; widen only for
+  a shared contract/schema/runtime dependency/auth boundary or release gate.
 <!-- codex-direct-reminder:end -->
 
 - Main default = **Luna Max**; decompose M/L work and delegate streams
@@ -85,19 +91,43 @@ Agent role triggers and prompt contracts → `skills_triggers.md` and playbook
 This policy applies by default to every project and continuation. It does not
 change the main model or disable security guards or coding gates.
 
-- Luna owns source, tests, tools, and fixes, including the initial diagnosis
-  and bounded operational iterations.
-- Sol owns the short brief, genuine architecture and high-risk decisions, and
-  integration and final short acceptance. Escalation beyond the bounded Luna
-  work requires owner approval and a concrete insufficiency.
+- The cheapest capable executor owns source, tests, tools, fixes, initial
+  diagnosis, and bounded operational iterations.
+- Main owns the short brief, architecture/high-risk decisions, integration, and
+  final short acceptance. Escalation beyond bounded work requires owner
+  approval and concrete insufficiency.
 - Use one planned targeted verification packet per block. After a fix, rerun
   only the failed check and its directly impacted neighbors unless a changed
   dependency or concrete unresolved risk requires more.
-- Money, access, or data-layer changes require an independent review. The
+- Money, access, or data-layer changes require independent review. The
   accepted architecture panel remains Claude + Codex, both blocking.
 - After two failed repair cycles, stop the block, record the cause, remaining
   work, and cost or scope, and ask the owner about further volume. Do not
   automatically start another repair round or switch to an expensive executor.
+
+### Common operational delegation
+
+Operational work defaults to the cheapest capable executor, including
+inventory/search, facts, docs, logs, diagnostics, tests, triage, reports, and
+mechanical fixes. Batch related operations. Main reads minimally for
+decisions/brief/integration, then gets a short result with paths; large source
+contexts/logs stay with executor. If main is cheapest capable, no subagent is
+needed; do not force unavailable delegation or trivial agents.
+
+Role mapping: Codex Luna executor, Sol main; Claude Sonnet code/diagnosis,
+Haiku mechanical work, configured main model decisions. No auto-route change.
+
+### Verification impact scope
+
+At block start, declare behavior, invariants, affected modules, and checks.
+After a fix, rerun failed scenario and direct neighbors, preserving
+positive/negative controls. Do not restart block/review automatically.
+
+Use wider/full checks only for shared contract/schema/runtime dependency/auth
+impact or explicit release/CI gate; record paths, reason, scope.
+"Just in case", "for confidence", and a tiny fix are insufficient. No
+mandatory final full-block rerun. Money, access, and data changes require
+independent review; Claude + Codex remains blocking.
 
 ## Execute
 - Work one accepted block at a time. The executor changes only its declared

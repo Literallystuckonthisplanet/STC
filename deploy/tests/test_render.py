@@ -830,8 +830,8 @@ def test_codex_hook_bundle_carries_direct_delegation_reminder():
         "cheapest capable executor",
         "# in-main",
         "never ownership",
-        "luna owns source, tests, tools, and fixes",
-        "sol owns the short brief",
+        "cheapest capable executor owns source, tests, tools, fixes",
+        "main owns the short brief",
         "one planned targeted verification packet",
         "after two failed repair cycles",
         "owner about further scope",
@@ -857,6 +857,26 @@ def test_codex_direct_reminder_rejects_malformed_source_markers():
         except ValueError:
             continue
         raise AssertionError(f"malformed reminder accepted: {source!r}")
+
+
+def test_common_operational_policy_reaches_claude_and_codex():
+    """The rendered delivery paths retain the common PEV policy."""
+    stc, registry, adapters, _ = D._gather()
+    claude_provider = R.provider_for(stc, "claude", REPO)
+    claude = R.render_harness(stc, registry, claude_provider, adapters["claude"], D.CORE, REPO)
+    h06 = next(k for k in claude.files if "session-start-context" in k)
+    assert "rules/${f}.md" in claude.files[h06] or "rules/pev.md" in claude.files[h06]
+
+    codex_provider = R.provider_for(stc, "codex", REPO)
+    codex = R.render_harness(stc, registry, codex_provider, adapters["codex"], D.CORE, REPO)
+    body = " ".join(codex.files["AGENTS.stc.md"].split()).lower()
+    for phrase in (
+        "operational work defaults",
+        "large source contexts/logs",
+        "stay with executor",
+            "after fix, rerun failed scenario + direct neighbors",
+    ):
+        assert phrase in body, f"codex delivery missing {phrase!r}"
 
 
 def test_commands_and_skills_substitute_render_vars():

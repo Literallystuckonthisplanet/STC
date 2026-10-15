@@ -25,3 +25,22 @@ def test_pev_has_explicit_file_thresholds_and_overrides():
         assert trigger in text
     assert "Routine\nproduction/deploy is not an override" in text
     assert "one unresolved implementation fork" in text
+
+
+def test_pev_has_bounded_targeted_execution_policy_with_precedence():
+    text = PEV.read_text(encoding="utf-8").lower()
+
+    required = (
+        "one planned targeted verification packet per block",
+        "luna owns source, tests, tools, and fixes",
+        "sol owns the short brief",
+        "after two failed repair cycles, stop the block",
+        "owner approval",
+        "money, access, or data-layer changes",
+        "claude + codex",
+        "targeted execution policy takes precedence",
+    )
+    for phrase in required:
+        assert phrase in text, f"missing targeted policy phrase: {phrase!r}"
+
+    assert "do not" in text and "automatically start another repair round" in text

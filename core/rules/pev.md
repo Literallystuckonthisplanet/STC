@@ -63,7 +63,9 @@ config/generated/throwaway work follows its own contract.
 - Escalate after two bounded failed Luna attempts, a `FORK/BLOCKED/UNVERIFIED`
   result, contradictory evidence, an unbounded blast radius, missing recovery,
   or a security/irreversibility decision. File count and routine production
-  alone are not escalation triggers.
+  alone are not escalation triggers. For a block using the targeted execution
+  policy below, the targeted execution policy takes precedence over the generic
+  three-failure repair threshold in this file.
 - Before escalation, report trigger, insufficiency, recommended scope, and what
   can continue on Luna.
 - Read-only roles get read-only isolation; parallel writers get
@@ -72,6 +74,26 @@ config/generated/throwaway work follows its own contract.
 
 Agent role triggers and prompt contracts → `skills_triggers.md` and playbook
 § Agent prompt contract. H04 validates dispatch metadata.
+
+### Targeted execution policy
+
+This policy applies globally to every project and continuation when a block has
+an accepted targeted verification packet. It does not change the main model or
+disable security guards or coding gates.
+
+- Luna owns source, tests, tools, and fixes, including the initial diagnosis
+  and bounded operational iterations.
+- Sol owns the short brief, genuine architecture and high-risk decisions, and
+  integration and final short acceptance. Escalation beyond the bounded Luna
+  work requires owner approval and a concrete insufficiency.
+- Use one planned targeted verification packet per block. After a fix, rerun
+  only the failed check and its directly impacted neighbors unless a changed
+  dependency or concrete unresolved risk requires more.
+- Money, access, or data-layer changes require an independent review. The
+  accepted architecture panel remains Claude + Codex, both blocking.
+- After two failed repair cycles, stop the block, record the cause, remaining
+  work, and cost or scope, and ask the owner about further volume. Do not
+  automatically start another repair round or switch to an expensive executor.
 
 ## Execute
 - Work one accepted block at a time. The executor changes only its declared

@@ -41,10 +41,13 @@ import sys
 
 # make the sibling modules importable when run as a script
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Do not create __pycache__ as a side effect of a read-only deploy preview.
+sys.dont_write_bytecode = True
 import render as R          # noqa: E402
 import checks as C          # noqa: E402
 import stc_block as B       # noqa: E402
 import toml_merge as T      # noqa: E402   add-only merge for config.toml (Codex)
+import hook_patch as HP     # noqa: E402   selected Codex H17 install/restore
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 CORE = os.path.join(REPO, "core")
@@ -936,6 +939,37 @@ def cmd_restore(args):
     return 0
 
 
+def cmd_apply_hook(args):
+    try:
+        return HP.apply_hook(
+            repo_root=REPO,
+            home=os.path.expanduser("~"),
+            target=args.target,
+            hook=args.hook,
+            language=args.language,
+            expected_source_sha256=args.expected_source_sha256,
+            expected_native_sha256=args.expected_native_sha256,
+            dry_run=args.dry_run,
+        )
+    except HP.HookPatchError as exc:
+        suffix = f" backup_id={exc.backup_id}" if exc.backup_id else ""
+        print(f"✗ apply-hook refused: {exc}{suffix}")
+        return 1
+
+
+def cmd_restore_hook(args):
+    try:
+        return HP.restore_hook(
+            home=os.path.expanduser("~"),
+            backup_id=args.backup_id,
+            dry_run=args.dry_run,
+        )
+    except HP.HookPatchError as exc:
+        suffix = f" backup_id={exc.backup_id}" if exc.backup_id else ""
+        print(f"✗ restore-hook refused: {exc}{suffix}")
+        return 1
+
+
 # ---------------------------------------------------------------------------
 # internal helpers
 # ---------------------------------------------------------------------------
@@ -1189,6 +1223,20 @@ def main(argv=None):
     pst = sub.add_parser("restore", help="roll back JSON from a backup snapshot")
     pst.add_argument("backup_id")
     pst.set_defaults(func=cmd_restore)
+
+    pah = sub.add_parser("apply-hook", help="apply one versioned Codex hook with a scoped backup")
+    pah.add_argument("--target", required=True, choices=["codex"])
+    pah.add_argument("--hook", required=True, choices=["H17"])
+    pah.add_argument("--language", required=True, choices=["en", "ru"])
+    pah.add_argument("--expected-source-sha256", required=True)
+    pah.add_argument("--expected-native-sha256", required=True)
+    pah.add_argument("--dry-run", action="store_true")
+    pah.set_defaults(func=cmd_apply_hook)
+
+    prh = sub.add_parser("restore-hook", help="restore one scoped Codex hook backup")
+    prh.add_argument("backup_id")
+    prh.add_argument("--dry-run", action="store_true")
+    prh.set_defaults(func=cmd_restore_hook)
 
     args = p.parse_args(argv)
     rc = args.func(args)

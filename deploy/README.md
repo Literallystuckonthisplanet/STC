@@ -51,11 +51,65 @@ python3 deploy/deploy.py uninstall --target claude
 python3 deploy/deploy.py restore 20260701-120000
 ```
 
+### Scoped Codex H17 guard update
+
+The versioned `apply-hook` command updates only the H17 guard in the two
+managed code locations below. It checks the existing H17 entry in
+`~/.codex/hooks.json` but never edits that file. It does not run the general
+`apply` flow, copy the full `core/` tree, or need `stc.yaml`, `user/`, or secret
+configuration. The expected-before hashes must come from the saved preflight
+record for these exact targets; do not guess or reuse hashes from another
+machine or checkout.
+
+```bash
+python3 deploy/deploy.py apply-hook \
+  --target codex --hook H17 --language ru --dry-run \
+  --expected-source-sha256 "$SOURCE_BEFORE_SHA256" \
+  --expected-native-sha256 "$NATIVE_BEFORE_SHA256"
+
+python3 deploy/deploy.py apply-hook \
+  --target codex --hook H17 --language ru \
+  --expected-source-sha256 "$SOURCE_BEFORE_SHA256" \
+  --expected-native-sha256 "$NATIVE_BEFORE_SHA256"
+```
+
+The only target files are `~/.stc/core/hooks/block-secret-read.sh` and
+`~/.codex/hooks/block-secret-read.stc.sh`. Before either target is replaced,
+the command saves and verifies both original byte streams and modes under
+`~/.stc/backups/hook-patch/<backup-id>/`. Keep the printed backup id for a
+possible rollback. The backup also records both exact paths and both
+before/after hashes and modes. The operation refuses missing or mismatched
+binding, unsafe paths, symlinks, unexpected target bytes/modes, or stale
+preflight hashes.
+
+Preview and restore the selected backup with the matching scoped command:
+
+```bash
+python3 deploy/deploy.py restore-hook "$BACKUP_ID" --dry-run
+python3 deploy/deploy.py restore-hook "$BACKUP_ID"
+```
+
+Restore verifies the backup files and both current targets before changing
+either. A conflict already present in either target makes the entire restore
+refuse before changing either target. Before each replacement, the command
+checks the full destination bytes and mode again after preparing the temporary
+file; a detected late edit is preserved and that replacement is refused. If
+an unrelated edit arrives after an earlier restore write, the restore can be
+partial and the backup remains available for recovery.
+
+The operation lock serializes only other `apply-hook` and `restore-hook`
+operations using this same lock. The final content/mode comparison followed
+by rename is not an operating-system compare-and-swap; an unrelated writer can
+still race in that very small interval. Keep other writers of these two files
+inactive during installation or restore. A successful rerun recognizes the
+existing backup and does not create a new before-state snapshot.
+
 ## Files
 
 ```
 deploy/
 ├── deploy.py        # CLI + orchestration (the entry point)
+├── hook_patch.py    # selected, reversible Codex H17 install/restore
 ├── render.py        # 7-layer renderer (pure: returns artifacts, no disk writes)
 ├── stc_block.py     # the single marker-block mechanism (one @import line)
 ├── checks.py        # precheck / collision-detect / backup / postcheck / onboarding

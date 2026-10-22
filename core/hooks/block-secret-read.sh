@@ -20,15 +20,62 @@ case "$TOOL" in
     ;;
 esac
 
-# Collect path/pattern/command variants from current Codex payloads. Values are
-# used only for matching and are never included in diagnostics.
-VALUES=$(echo "$INPUT" | jq -r '
+# A simple rg -l invocation has an unambiguous search-pattern/target boundary.
+# shlex only tokenizes: it never evaluates shell text. Any unsupported or failed
+# parse falls back to matching the complete original command below.
+RG_INFO='{"ok":false,"targets":[]}'
+case "$TOOL" in
+  Bash|exec|unified_exec|unifiedExec|LocalShell|shell)
+    RG_INFO=$(printf '%s' "$INPUT" | python3 -I -c '
+import json
+import shlex
+import sys
+
+try:
+    event = json.load(sys.stdin)
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str) or not command or "#" in command or any(char in command for char in "\0\n\r"):
+        raise ValueError
+    lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    words = list(lexer)
+    operators = "|&;<>()"
+    if any(word and all(char in operators for char in word) for word in words):
+        raise ValueError
+    if any(any(char in word for char in "$`*?[]{}") or word.startswith("~") for word in words):
+        raise ValueError
+    if len(words) < 4 or words[:2] != ["rg", "-l"]:
+        raise ValueError
+    has_separator = words[2] == "--"
+    pattern_index = 3 if has_separator else 2
+    if len(words) <= pattern_index + 1:
+        raise ValueError
+    targets = words[pattern_index + 1:]
+    if words[pattern_index].startswith("-") and not has_separator:
+        raise ValueError
+    if any(target.startswith("-") for target in targets):
+        raise ValueError
+    print(json.dumps({"ok": True, "targets": targets}))
+except Exception:
+    print(json.dumps({"ok": False, "targets": []}))
+')
+    ;;
+esac
+
+RG_OK=$(printf '%s' "$RG_INFO" | jq -r '.ok == true' 2>/dev/null)
+case "$RG_OK" in true) ;; *) RG_OK=false ;; esac
+
+# Exclude only a recognized search pattern. Every other structured field and
+# every explicit target still reaches the same protected-pattern matcher.
+VALUES=$(echo "$INPUT" | jq -r --argjson skip_command "$RG_OK" '
   [
     .tool_input.file_path?,
     .tool_input.path?,
     .tool_input.pattern?,
     (.tool_input.paths[]?),
-    .tool_input.command?,
+    (if $skip_command then empty else .tool_input.command? end),
     .tool_input.input?,
     .tool_input.cmd?,
     .tool_input.script?,
@@ -37,6 +84,10 @@ VALUES=$(echo "$INPUT" | jq -r '
     .input?
   ] | .[]? | select(type == "string")
 ' 2>/dev/null)
+if [ "$RG_OK" = true ]; then
+  RG_TARGETS=$(printf '%s' "$RG_INFO" | jq -r '.targets[]?')
+  VALUES=$(printf '%s\n%s\n' "$VALUES" "$RG_TARGETS")
+fi
 
 PATTERN=""
 while IFS= read -r value; do

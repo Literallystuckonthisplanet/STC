@@ -734,6 +734,89 @@ def test_codex_h17_blocks_secret_reads_from_read_and_exec_tools_without_leaks(tm
     assert allowed.returncode == 0
 
 
+def test_h17_rg_l_skips_only_pattern_and_keeps_targets_conservative(tmp_path):
+    """A simple rg pattern is data; targets and ambiguous shell stay guarded."""
+
+    def run(command, **extra_fields):
+        tool_input = {"command": command, **extra_fields}
+        return _run(
+            "block-secret-read.sh",
+            _codex_event(
+                tmp_path,
+                tool_name="exec",
+                tool_input=tool_input,
+            ),
+            tmp_path,
+            HARNESS_NAME="codex",
+        )
+
+    # The alternation and protected-class word are search data; src/ is the target.
+    pattern = "'guard refusal|credentials|helper'"
+    assert run(f"rg -l {pattern} src/").returncode == 0
+    assert run(f"rg -l -- {pattern} src/").returncode == 0
+
+    protected_targets = [
+        ("src/credentials.json", "credentials"),
+        ("src/.env", ".env"),
+        ("src/client.pem", "pem"),
+        ("src/id_rsa", "id_rsa"),
+    ]
+    for target, label in protected_targets:
+        blocked = run(f"rg -l -- 'dummy' {target}")
+        assert blocked.returncode == 2
+        assert label in blocked.stderr.lower()
+
+    assert run("rg -l -- 'dummy' src/README.md").returncode == 0
+
+    # Compound, substituted, redirected, unsupported, and target-less forms fall back.
+    ambiguous = [
+        "rg -l 'credentials' src/ && cat README.md",
+        "rg -l 'credentials' src/$(printf src)",
+        "rg -l 'credentials' src/ > result.txt",
+        "rg --hidden -l 'credentials' src/",
+        "rg -l -e 'credentials' src/",
+        "rg -l 'credentials'",
+    ]
+    for command in ambiguous:
+        blocked = run(command)
+        assert blocked.returncode == 2
+        assert "credentials" in blocked.stderr.lower()
+
+    commented_no_target = run("rg -l 'credentials' # harmless trailing comment")
+    assert commented_no_target.returncode == 2
+    assert "credentials" in commented_no_target.stderr.lower()
+
+    additional_target = run("rg -l 'credentials' src/", file_path=".env")
+    assert additional_target.returncode == 2
+    assert ".env" in additional_target.stderr.lower()
+
+
+def test_h17_parser_does_not_import_project_shadow_module(tmp_path):
+    """The tokenizer must not import same-named modules from cwd or PYTHONPATH."""
+    shadow_modules = tmp_path / "shadow-modules"
+    shadow_modules.mkdir()
+    marker = tmp_path / "shadow-module-imported"
+    (shadow_modules / "json.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "raise RuntimeError('shadow module executed')\n",
+        encoding="utf-8",
+    )
+    result = _run(
+        "block-secret-read.sh",
+        _codex_event(
+            tmp_path,
+            tool_name="exec",
+            tool_input={"command": "rg -l 'credentials' src/"},
+        ),
+        tmp_path,
+        HARNESS_NAME="codex",
+        PYTHONPATH=str(shadow_modules),
+    )
+    assert not marker.exists()
+    assert result.returncode == 0
+
+
 def _slice_layer(tmp_path, desc):
     """Крошечный отжатый слой: одна заметка, по которой хук должен сработать."""
     research = tmp_path / "mem" / "notes" / "research"

@@ -11,6 +11,16 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed — one H17 policy across the existing adapters
+- Commits `e66a6d7` and `2d9f401` use one shared H17 policy for Claude,
+  Codex and ZCode. Search text that names a protected pattern is not treated
+  as a file target; reads of protected files remain blocked.
+- The scoped STC update checks each existing H17 binding and saves one
+  verified backup for its fixed file set, with a matching restore path. The
+  legacy Codex-only update remains available only when the shared policy is
+  already installed at the exact version.
+- Key-grant behavior is unchanged and is not part of this update.
+
 ### Added — disk cleanup with a low-space reminder
 - `core/scripts/disk_tidy.py` measures what can be safely freed and frees it
   only with `--apply`: Docker build cache and images unused for 3+ days,

@@ -76,23 +76,27 @@ Beyond the 6-guard map (legitimate extras):
 | `buy-vs-build-reminder.sh` H14 | PreToolUse(EnterPlanMode) + PreToolUse(Write\|Edit\|MultiEdit) | 💉 FR-24/DEP-4 buy-vs-build inject on plan entry **+ 🔒 FR-28 ORCHESTRATOR GATE**: after plan mode, EVERY main edit of a project file blocks once per file (retry passes — the stated WHY is the audit trail); sub-agents (the executor tier) pass; memory/docs/*.md/.env/STC-infra excluded; no-plan sessions ungated |
 | `exec-offload-guard.sh` H15 | PreToolUse(Bash) | 🔒 expensive-Bash-offload block (noisy data-scripts import/seed/scrape/sync → ephemeral agent; audit without --json) |
 | `integration-docs-gate.sh` H16 | PreToolUse(Write\|Edit\|MultiEdit) | 🔒 FR-26 docs-first block: editing a named integration's code without saved research → block (lifted by research-save or `// docs-checked:`). Generic-English service names (openai/stripe/aws/…) require a USAGE signal (import/API-host/`_api_key`/netcall) so a bare mention in a comment/regex doesn't false-block; niche/regional names match bare. |
-| `secret-read-guard.sh` H17; `block-secret-read.sh` on Codex | PreToolUse(Read\|Glob\|Grep), plus Codex shell tools | 🔒 block protected-file reads (`.env`, `.pem`, `id_rsa`; Codex also checks credentials names) and separate supported `rg` queries from file operands. No prompt-marker override. |
+| `secret-read-guard.sh` H17; `block-secret-read.sh` on Codex | PreToolUse(Read\|Glob\|Grep), plus Codex shell tools | 🔒 share one protected-path policy across adapters; distinguish structured search text from target paths and parse the supported Codex `rg` forms. No prompt-marker override. |
 | `graphify-first.sh` H18 | PreToolUse(Grep\|Bash) | 🔒 in a repo with a built code-graph (`graphify-out/graph.json`), the first grep-style search is blocked once → nudge `graphify query`/`affected`/`explain` for how/why/connect questions (acknowledge-once; repeat passes for an exact-string lookup). A missing graph gives a nonblocking pointer to `graphify_on_demand.py`; exact lookups never build it. |
 | `exit-plan-grill.sh` H21 | PreToolUse(ExitPlanMode) | 🔒 FR-28 exit-plan-gate: leaving plan mode blocks once unless the plan carries AC/DoD + a block→executor decomposition + an explicit forks-resolved line (plan text from tool_input.plan or the freshest `$NATIVE_DIR/plans/*.md`). Acknowledge-once — the deliberate re-exit passes; sub-agents pass. Pairs with plan-mode-default (every session starts in plan) + H14 (orchestrator gate). |
 | `prompt-lens.sh` H22 | UserPromptSubmit | 💉 FR-30 prompt lens: **additive hint, NOT a rewrite** — the user's text reaches the model untouched; the hook only appends flags. Detects degree words without a measure («немного нейтральнее»), dangling refs («это/там»), ≥3 tasks in one message, and project nicks from the user's private dictionary → each gets a one-line hint pointing at echo-reformulation. Deterministic (python3, no model — errors don't multiply). **Rules live in one place — `scripts/lens_rules.py`** — imported by the hook, the monthly audit and the guard test: a rule and its own counter must be the same code, otherwise the monitoring measures something else and cannot see the rule die. Context gates (each measured on the corpus, not guessed): dangling ref only when the conversation has no context yet (transcript has no assistant turn — 130 of 137 firings were mid-session, where the hint was simply false); degree word only when editing text/view; quoted text is not a task; a nick is expanded only when no path/file names the project already. **Retired 2026-08-12: the open-verb rule** — 78 firings over 42 days of live traffic (45% of all flags) and not one followed by a rollback or a clarifying question, i.e. noise by the audit's own definition; it fired on ordinary questions like «обнови статус». Total flag rate on the corpus: **11.3% of messages** (15.3% before the retirement, 24.6% before the review). Every rule AND every nick alias is **counted against the transcript corpus** (≥3 real hits, guard test `tests/prompt-lens.test.sh`, which FAILS when the corpus is missing) — «candidate ≠ bug»; per-alias counting is what caught latin aliases that could never match after normalization. A lost or crashed rules module prints a visible line instead of going quiet. Monthly health via `scripts/prompt-audit.py`. Corpus AND the nick dictionary = private data, both live outside the repo (`$STC_CORPUS`, default `~/.stc/.corpus/`; `$STC_LENS_NICKS`, default `~/.stc/lens_nicks.json` — template: `scripts/lens_nicks.example.json`; without it the NICK rule is simply off, and the audit says so). |
 
-Codex H17 behavior: a supported plain `rg` invocation treats its search expression
-as data and checks file operands (`-f` is a file read); both `tool_input.command`
-and `tool_input.cmd` are accepted when unambiguous. Directory scans are allowed
-only with the complete protected-pattern exclusion set. Unsupported or ambiguous
-commands that mention protected patterns fail with a generic safe-analysis
-message. Structured `Write`/`apply_patch` calls are outside this read guard. No
-prompt marker grants an exception.
+H17 shares its canonical path and query policy in `secret_read_policy.py`.
+Structured `Grep.pattern` is search text; `path`/`paths` are read targets.
+Direct targets are normalized through `..` and symlinks. Structured folder
+searches fail closed because these adapter inputs do not provide the complete
+protected-file exclusion set. `Glob` only lists matching names, so ordinary
+wildcard patterns (for example `**/*.md`) pass; an explicit protected pattern
+or protected base path is still blocked. Codex accepts a bounded plain `rg`
+form; `-f` remains a file read, and `command`/`cmd` must agree when both are
+present. A Codex directory scan passes only with every canonical
+protected-pattern exclusion. Unsupported or ambiguous syntax with protected
+hints gets a generic refusal without query or path text. Structured
+`Write`/`apply_patch` is outside this read guard. A prompt marker cannot grant
+an exception.
 
-Implementation choice: reuse Python's standard-library `shlex` and path
-canonicalization; keep only the bounded `rg` option policy here. A general shell
-parser or interpreter would add scope without making arbitrary executed code
-safe, so unsupported forms remain conservative and no new dependency is added.
+The shared helper uses only Python's standard library, `shlex`, and path
+canonicalization. It does not parse or execute arbitrary shell programs.
 
 ## Settings wiring
 

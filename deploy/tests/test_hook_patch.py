@@ -35,6 +35,9 @@ def _seed_home(home):
     native.write_bytes(native_bytes)
     source.chmod(0o755)
     native.chmod(0o755)
+    shared_policy = home / ".stc/core/hooks/secret_read_policy.py"
+    shared_policy.write_bytes((REPO / "core/hooks/secret_read_policy.py").read_bytes())
+    shared_policy.chmod(0o644)
     hooks_bytes = (
         json.dumps(
             {
@@ -176,6 +179,128 @@ def test_apply_hook_dry_run_is_read_only_and_scoped_to_two_code_targets(tmp_path
     assert not (tmp_path / ".stc/backups/hook-patch").exists()
 
 
+def test_all_adapter_scoped_dry_run_then_apply_uses_one_aggregate_snapshot(tmp_path, monkeypatch):
+    patch = _hook_patch_module()
+    home = tmp_path
+    (home / ".stc/core/hooks").mkdir(parents=True)
+    (home / ".claude/hooks").mkdir(parents=True)
+    (home / ".codex/hooks").mkdir(parents=True)
+    zcode_root = home / ".zcode" / patch.R.PLUGIN_DIR
+    (zcode_root / "hooks").mkdir(parents=True)
+    (home / ".stc/core/hooks/secret-read-guard.sh").write_bytes(b"old shared generic wrapper\n")
+    (home / ".stc/core/hooks/block-secret-read.sh").write_bytes(b"old shared codex wrapper\n")
+    (home / ".stc/core/hooks/secret-read-guard.sh").chmod(0o755)
+    (home / ".stc/core/hooks/block-secret-read.sh").chmod(0o755)
+
+    targets = {
+        "claude": home / ".claude/hooks/secret-read-guard.stc.sh",
+        "codex": home / ".codex/hooks/block-secret-read.stc.sh",
+        "zcode": zcode_root / "hooks/secret-read-guard.stc.sh",
+    }
+    configs = {}
+    config_before = {}
+    for target, native in targets.items():
+        adapter = patch.R.load_adapter(str(REPO), target)
+        rendered_path, _, native_mode, config_path, entry = patch._adapter_h17_render(REPO, home, target, adapter)
+        assert rendered_path == native
+        native.write_bytes(f"synthetic prior {target} H17\n".encode())
+        native.chmod(native_mode)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"hooks": {"PreToolUse": [entry]}}) + "\n", encoding="utf-8")
+        configs[target] = config_path
+        config_before[target] = config_path.read_bytes()
+    (home / ".stc/core/hooks/secret_read_policy.py").unlink(missing_ok=True)
+
+    dry = _run_cli(home, "apply-hook", "--target", "claude,codex,zcode", "--hook", "H17", "--language", "ru", "--dry-run")
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    match = re.search(r"expected-before-state-sha256=([a-f0-9]{64})", dry.stdout)
+    assert match, dry.stdout
+    assert all(path.exists() for path in targets.values())
+    assert not (home / ".stc/core/hooks/secret_read_policy.py").exists()
+    backup_root = home / ".stc/backups/hook-patch"
+    assert not backup_root.exists()
+
+    applied = _run_cli(
+        home,
+        "apply-hook", "--target", "claude,codex,zcode", "--hook", "H17", "--language", "ru",
+        "--expected-before-state-sha256", match.group(1),
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "applied H17 artifact set" in applied.stdout
+    assert (home / ".stc/core/hooks/secret_read_policy.py").read_bytes() == (REPO / "core/hooks/secret_read_policy.py").read_bytes()
+    assert all(_digest(path.read_bytes()) != _digest(f"synthetic prior {target} H17\n".encode()) for target, path in targets.items())
+    assert all(config.read_bytes() == config_before[target] for target, config in configs.items())
+    manifests = list(backup_root.glob("*/manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["version"] == 2 and manifest["target_set"] == ["claude", "codex", "zcode"]
+    backup_id = manifests[0].parent.name
+    _, verified_manifest, _, _ = patch._read_multi_backup(backup_root, backup_id, home)
+    assert verified_manifest["before_state_sha256"] == match.group(1)
+    applied_plan = patch._make_multi_plan(REPO, home, ("claude", "codex", "zcode"), "ru")
+    assert patch._matching_multi_backup(backup_root, home, applied_plan, match.group(1)) == backup_id
+    rerun = _run_cli(
+        home, "apply-hook", "--target", "claude,codex,zcode", "--hook", "H17", "--language", "ru",
+        "--expected-before-state-sha256", match.group(1),
+    )
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert "already current" in rerun.stdout
+    assert len(list(backup_root.glob("*/manifest.json"))) == 1
+
+    backup_id = manifests[0].parent.name
+    restored = _run_cli(home, "restore-hook", backup_id)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert not (home / ".stc/core/hooks/secret_read_policy.py").exists()
+    assert (home / ".stc/core/hooks/secret-read-guard.sh").read_bytes() == b"old shared generic wrapper\n"
+    assert (home / ".stc/core/hooks/block-secret-read.sh").read_bytes() == b"old shared codex wrapper\n"
+    assert all(path.read_text(encoding="utf-8").startswith("synthetic prior ") for path in targets.values())
+
+    assert all(config.read_bytes() == config_before[target] for target, config in configs.items())
+
+    partial_plan = patch._make_multi_plan(REPO, home, ("claude", "codex", "zcode"), "ru")
+    original_atomic_write = patch._atomic_write
+    fail_path = targets["claude"]
+
+    def fail_first_native_write(path, data, mode, **kwargs):
+        if path == fail_path:
+            raise OSError("synthetic native write failure")
+        return original_atomic_write(path, data, mode, **kwargs)
+
+    monkeypatch.setattr(patch, "_atomic_write", fail_first_native_write)
+    with pytest.raises(patch.HookPatchError) as partial_error:
+        patch.apply_hook(
+            repo_root=str(REPO), home=str(home), target="claude,codex,zcode", hook="H17", language="ru",
+            expected_source_sha256=None, expected_native_sha256=None,
+            expected_before_state_sha256=partial_plan["expected_before_state_sha256"],
+        )
+    partial_backup = partial_error.value.backup_id
+    assert partial_backup
+    assert (home / ".stc/core/hooks/secret_read_policy.py").exists()
+    monkeypatch.setattr(patch, "_atomic_write", original_atomic_write)
+    rollback_partial = _run_cli(home, "restore-hook", partial_backup)
+    assert rollback_partial.returncode == 0, rollback_partial.stdout + rollback_partial.stderr
+    assert not (home / ".stc/core/hooks/secret_read_policy.py").exists()
+    assert (home / ".stc/core/hooks/secret-read-guard.sh").read_bytes() == b"old shared generic wrapper\n"
+    assert (home / ".stc/core/hooks/block-secret-read.sh").read_bytes() == b"old shared codex wrapper\n"
+    assert all(path.read_text(encoding="utf-8").startswith("synthetic prior ") for path in targets.values())
+
+    conflict_plan = patch._make_multi_plan(REPO, home, ("claude", "codex", "zcode"), "ru")
+    conflict_apply = _run_cli(
+        home, "apply-hook", "--target", "claude,codex,zcode", "--hook", "H17", "--language", "ru",
+        "--expected-before-state-sha256", conflict_plan["expected_before_state_sha256"],
+    )
+    assert conflict_apply.returncode == 0, conflict_apply.stdout + conflict_apply.stderr
+    conflict_id = re.search(r"backup_id=([0-9]{8}-[0-9]{6}-[a-f0-9]{12})", conflict_apply.stdout).group(1)
+    installed_claude = targets["claude"].read_bytes()
+    targets["zcode"].write_bytes(b"later external edit\n")
+    conflict_restore = _run_cli(home, "restore-hook", conflict_id)
+    assert conflict_restore.returncode != 0
+    assert "restore conflict" in conflict_restore.stdout
+    assert targets["claude"].read_bytes() == installed_claude
+    assert targets["zcode"].read_bytes() == b"later external edit\n"
+    assert (home / ".stc/core/hooks/secret_read_policy.py").exists()
+
+
 def test_apply_hook_writes_only_rendered_guard_targets_and_verified_backup(tmp_path):
     before = _seed_home(tmp_path)
     dry_run = _run_cli(tmp_path, *_apply_args(before, dry_run=True))
@@ -287,6 +412,96 @@ def test_apply_hook_rerun_with_original_before_hashes_is_verified_noop(tmp_path)
     assert rerun.returncode == 0, rerun.stderr
     assert "already current" in rerun.stdout
     assert list((tmp_path / ".stc/backups/hook-patch").glob("*/manifest.json")) == backup_ids
+
+
+@pytest.mark.parametrize("helper_state", ["missing", "stale"])
+def test_legacy_codex_apply_refuses_missing_or_stale_shared_policy_before_backup(tmp_path, helper_state):
+    before = _seed_home(tmp_path)
+    helper = tmp_path / ".stc/core/hooks/secret_read_policy.py"
+    if helper_state == "stale":
+        helper.write_bytes(b"stale shared policy\n")
+        helper.chmod(0o644)
+    else:
+        helper.unlink()
+
+    result = _run_cli(tmp_path, *_apply_args(before))
+
+    assert result.returncode != 0
+    assert "shared H17 policy" in result.stdout
+    assert "claude,codex,zcode" in result.stdout
+    assert before["source"].read_bytes() == before["source_bytes"]
+    assert before["native"].read_bytes() == before["native_bytes"]
+    assert not list((tmp_path / ".stc/backups/hook-patch").glob("*/manifest.json"))
+
+
+def _claude_h17_binding(path):
+    return {
+        "matcher": "Read|Glob|Grep",
+        "_stc_managed": True,
+        "_stc_cap": "H17_secret_read_guard",
+        "hooks": [{"type": "command", "command": str(path)}],
+    }
+
+
+def test_claude_binding_accepts_exact_untagged_legacy_entry_and_hashes_actual_entry(tmp_path):
+    patch = _hook_patch_module()
+    native = tmp_path / ".claude/hooks/secret-read-guard.stc.sh"
+    config = tmp_path / ".claude/settings.json"
+    config.parent.mkdir(parents=True)
+    actual_entry = _claude_h17_binding(native)
+    actual_entry.pop("_stc_managed")
+    actual_entry.pop("_stc_cap")
+    config.write_text(json.dumps({"hooks": {"PreToolUse": [actual_entry]}}), encoding="utf-8")
+
+    expected_digest = patch._verify_adapter_binding(config, "claude", _claude_h17_binding(native))
+
+    expected_actual_digest = patch._sha256(
+        json.dumps(("PreToolUse", actual_entry), sort_keys=True, separators=(",", ":")).encode()
+    )
+    assert expected_digest == expected_actual_digest
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["wrong-path-same-basename", "wrong-matcher", "false-managed", "foreign-cap", "duplicate"],
+)
+def test_claude_binding_refuses_untagged_lookalike_or_duplicate(tmp_path, defect):
+    patch = _hook_patch_module()
+    native = tmp_path / ".claude/hooks/secret-read-guard.stc.sh"
+    wrong_path = tmp_path / "other/secret-read-guard.stc.sh"
+    expected = _claude_h17_binding(native)
+    first = json.loads(json.dumps({key: value for key, value in expected.items() if not key.startswith("_stc_")}))
+    if defect == "wrong-path-same-basename":
+        first["hooks"][0]["command"] = str(wrong_path)
+    elif defect == "wrong-matcher":
+        first["matcher"] = "Read|Glob"
+    entries = [first]
+    if defect == "false-managed":
+        first["_stc_managed"] = False
+    elif defect == "foreign-cap":
+        first["_stc_cap"] = "H16_other_guard"
+    if defect == "duplicate":
+        entries.append(expected)
+    config = tmp_path / ".claude/settings.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"hooks": {"PreToolUse": entries}}), encoding="utf-8")
+
+    with pytest.raises(patch.HookPatchError, match="binding is missing or mismatched"):
+        patch._verify_adapter_binding(config, "claude", expected)
+
+
+def test_claude_binding_still_accepts_exact_tagged_entry(tmp_path):
+    patch = _hook_patch_module()
+    native = tmp_path / ".claude/hooks/secret-read-guard.stc.sh"
+    expected = _claude_h17_binding(native)
+    config = tmp_path / ".claude/settings.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"hooks": {"PreToolUse": [expected]}}), encoding="utf-8")
+
+    digest = patch._verify_adapter_binding(config, "claude", expected)
+
+    expected_digest = patch._sha256(json.dumps(("PreToolUse", expected), sort_keys=True, separators=(",", ":")).encode())
+    assert digest == expected_digest
 
 
 def test_second_target_write_failure_retains_backup_and_is_recoverable(tmp_path, monkeypatch):

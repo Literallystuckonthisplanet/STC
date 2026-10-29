@@ -1,54 +1,33 @@
 #!/bin/bash
-# H17 — hook: secret-read-guard (defense-in-depth on READ)
-# PreToolUse(Read|Glob|Grep): blocks reading secret files (.env / .pem / id_rsa).
+# H17 — shared structured-read wrapper for Claude and ZCode.
 #
-# Why: Layer-8 permissions.deny does this on Claude Code natively. This hook
-# is the harness-neutral equivalent — the SAME 5 rules rendered into settings.json
-# on claude. On claude it runs alongside permissions.deny (belt + suspenders);
-# a native deny that never reaches the tool is faster, but this hook covers the
-# path where a harness ignores/has no permissions layer.
+# The shared policy lives in secret_read_policy.py under the installed core.
+# Claude's native permissions.deny remains an independent direct-read layer.
+# This hook also covers ZCode, which has no native permissions.deny engine.
 #
-# Scope: only the secret-file patterns below. This hook has no prompt-marker
-# override; the old `// secret-exception:` comment described behavior that was
-# never implemented here.
-#
-# The secret VALUE is never printed — only the file pattern that fired.
-#
-# Render-time vars: ${USER_LANG} (message language: en|ru).
+# Render-time vars: ${STC_CORE}, ${HARNESS_NAME}, ${USER_LANG} (en|ru, default en).
 
 INPUT=$(cat)
-TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
-[ -z "$TOOL" ] && exit 0
+USER_LANG="${USER_LANG:-en}"
+HARNESS_NAME="${HARNESS_NAME:-claude}"
+RESULT=$(printf '%s' "$INPUT" | python3 -I \
+  "${STC_CORE}/hooks/secret_read_policy.py" --harness "$HARNESS_NAME" 2>/dev/null) || RESULT=unparsed
 
-# gather the paths/patterns this tool call targets
-HAY=$(echo "$INPUT" | jq -r '
-  [.tool_input.file_path // empty,
-   .tool_input.path // empty,
-   .tool_input.pattern // empty,
-   (.tool_input.paths[]? // empty)
-  ] | join(" ")
-' 2>/dev/null)
-
-[ -z "$HAY" ] && exit 0
-
-# the 5 secret-file patterns (mirror adapters/*/permissions.deny)
-SECRET_HIT=""
-case "$HAY" in
-  *".env.local"*)    SECRET_HIT=".env.local" ;;
-  *".env.*.local"*)  SECRET_HIT=".env.*.local" ;;
-  *".env"*)          SECRET_HIT=".env" ;;
-  *".pem"*)          SECRET_HIT="*.pem" ;;
-  *"id_rsa"*)        SECRET_HIT="id_rsa" ;;
-esac
-[ -z "$SECRET_HIT" ] && exit 0
-
-LANG_CODE="${USER_LANG:-en}"
-case "$LANG_CODE" in
-  ru)
-    echo "🔒 secret-read-guard БЛОК — попытка чтения защищённого файла ($SECRET_HIT). Содержимое файла не выведено в контекст. Для диагностики используйте безопасные сведения без чтения значения." >&2
+case "$RESULT" in
+  allow) exit 0 ;;
+  blocked:*)
+    PATTERN="${RESULT#blocked:}"
+    case "$USER_LANG" in
+      ru) echo "BLOCKED: H17 запрещает чтение защищённого файла ${PATTERN}. Значение, путь и запрос не выводятся." >&2 ;;
+      *)  echo "BLOCKED: H17 denies a protected file read (${PATTERN}). Values, paths, and queries are not printed." >&2 ;;
+    esac
+    exit 2
     ;;
   *)
-    echo "🔒 secret-read-guard BLOCK — attempt to read a protected file ($SECRET_HIT). File contents were not sent to context. Use safe diagnostic information without reading the value." >&2
+    case "$USER_LANG" in
+      ru) echo "BLOCKED: H17 не удалось безопасно разобрать чтение; защищённые данные не открыты." >&2 ;;
+      *)  echo "BLOCKED: H17 could not safely analyze the read; protected data was not opened." >&2 ;;
+    esac
+    exit 2
     ;;
 esac
-exit 2

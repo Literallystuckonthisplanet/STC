@@ -949,6 +949,7 @@ def cmd_apply_hook(args):
             language=args.language,
             expected_source_sha256=args.expected_source_sha256,
             expected_native_sha256=args.expected_native_sha256,
+            expected_before_state_sha256=args.expected_before_state_sha256,
             dry_run=args.dry_run,
         )
     except HP.HookPatchError as exc:
@@ -1224,16 +1225,17 @@ def main(argv=None):
     pst.add_argument("backup_id")
     pst.set_defaults(func=cmd_restore)
 
-    pah = sub.add_parser("apply-hook", help="apply one versioned Codex hook with a scoped backup")
-    pah.add_argument("--target", required=True, choices=["codex"])
+    pah = sub.add_parser("apply-hook", help="apply a versioned H17 hook set with a scoped backup")
+    pah.add_argument("--target", required=True, help="codex (legacy) or an explicit comma-separated adapter set")
     pah.add_argument("--hook", required=True, choices=["H17"])
     pah.add_argument("--language", required=True, choices=["en", "ru"])
-    pah.add_argument("--expected-source-sha256", required=True)
-    pah.add_argument("--expected-native-sha256", required=True)
+    pah.add_argument("--expected-source-sha256")
+    pah.add_argument("--expected-native-sha256")
+    pah.add_argument("--expected-before-state-sha256")
     pah.add_argument("--dry-run", action="store_true")
     pah.set_defaults(func=cmd_apply_hook)
 
-    prh = sub.add_parser("restore-hook", help="restore one scoped Codex hook backup")
+    prh = sub.add_parser("restore-hook", help="restore one scoped H17 hook backup")
     prh.add_argument("backup_id")
     prh.add_argument("--dry-run", action="store_true")
     prh.set_defaults(func=cmd_restore_hook)

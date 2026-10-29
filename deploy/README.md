@@ -51,36 +51,49 @@ python3 deploy/deploy.py uninstall --target claude
 python3 deploy/deploy.py restore 20260701-120000
 ```
 
-### Scoped Codex H17 guard update
+### Scoped H17 guard update
 
-The versioned `apply-hook` command updates only the H17 guard in the two
-managed code locations below. It checks the existing H17 entry in
-`~/.codex/hooks.json` but never edits that file. It does not run the general
-`apply` flow, copy the full `core/` tree, or need `stc.yaml`, `user/`, or secret
-configuration. The expected-before hashes must come from the saved preflight
-record for these exact targets; do not guess or reuse hashes from another
-machine or checkout.
+The versioned `apply-hook` command can update H17 across an explicit adapter
+set without running the general `apply` flow. It checks each existing H17
+binding and leaves the settings files unchanged. It does not copy the full
+`core/` tree or need `stc.yaml`, `user/`, or secret configuration. Start with
+the read-only dry-run and pass its aggregate state hash to the installation
+command; do not guess or reuse that hash from another machine or checkout.
 
 ```bash
 python3 deploy/deploy.py apply-hook \
-  --target codex --hook H17 --language ru --dry-run \
-  --expected-source-sha256 "$SOURCE_BEFORE_SHA256" \
-  --expected-native-sha256 "$NATIVE_BEFORE_SHA256"
+  --target claude,codex,zcode --hook H17 --language ru --dry-run
 
 python3 deploy/deploy.py apply-hook \
-  --target codex --hook H17 --language ru \
-  --expected-source-sha256 "$SOURCE_BEFORE_SHA256" \
-  --expected-native-sha256 "$NATIVE_BEFORE_SHA256"
+  --target claude,codex,zcode --hook H17 --language ru \
+  --expected-before-state-sha256 "$EXPECTED_BEFORE_STATE_SHA256"
 ```
 
-The only target files are `~/.stc/core/hooks/block-secret-read.sh` and
-`~/.codex/hooks/block-secret-read.stc.sh`. Before either target is replaced,
-the command saves and verifies both original byte streams and modes under
-`~/.stc/backups/hook-patch/<backup-id>/`. Keep the printed backup id for a
-possible rollback. The backup also records both exact paths and both
-before/after hashes and modes. The operation refuses missing or mismatched
-binding, unsafe paths, symlinks, unexpected target bytes/modes, or stale
-preflight hashes.
+The fixed targets are the shared H17 policy and source wrappers under
+`~/.stc/core/hooks/`, plus the rendered wrapper under each selected native
+adapter. ZCode's wrapper is scoped to the renderer's existing versioned plugin
+cache path; the adapter remains frozen and this operation does not change its
+plugin identity or activate the platform. The command reads only the matching
+H17 routing entry from Claude settings, Codex hooks, and the ZCode plugin hooks
+file. It records a digest of that entry and the canonical target paths in the
+aggregate precondition, without printing the surrounding config.
+
+Before writing, the command snapshots and verifies every fixed target's
+existence, bytes, and mode. One verified backup directory records the complete
+before/after state. If the shared policy did not exist before installation,
+the backup records that absence; restore removes it only while its installed
+bytes and mode still match. The operation refuses missing or mismatched H17
+bindings, unsafe paths, symlinks, unexpected target modes, or a stale aggregate
+precondition. Keep the printed backup id for rollback.
+
+The legacy Codex-only command using `--expected-source-sha256` and
+`--expected-native-sha256` remains supported. Its version-1 backup format is
+still restored by the same command; explicit adapter-set installs use the
+version-2 manifest. Because the current Codex launcher calls the shared H17
+policy, the legacy path now requires that policy to already exist in
+`~/.stc/core/hooks/secret_read_policy.py` with the exact source bytes and mode.
+If it is missing or stale, use the explicit aggregate adapter-set path; the
+legacy command will not silently add a third file outside its two-file backup.
 
 Preview and restore the selected backup with the matching scoped command:
 
@@ -89,20 +102,20 @@ python3 deploy/deploy.py restore-hook "$BACKUP_ID" --dry-run
 python3 deploy/deploy.py restore-hook "$BACKUP_ID"
 ```
 
-Restore verifies the backup files and both current targets before changing
-either. A conflict already present in either target makes the entire restore
-refuse before changing either target. Before each replacement, the command
-checks the full destination bytes and mode again after preparing the temporary
-file; a detected late edit is preserved and that replacement is refused. If
-an unrelated edit arrives after an earlier restore write, the restore can be
-partial and the backup remains available for recovery.
+Restore verifies the backup files, binding metadata, and every current target
+before changing any target. A conflict in any target makes the entire restore
+refuse before changing the rest. Native wrappers restore first; the shared
+policy is removed last when it was absent before installation. Before each
+replacement, the command rechecks destination bytes and mode after preparing
+the temporary file. If an unrelated edit arrives after an earlier restore
+write, restore can be partial and the backup remains available for recovery.
 
 The operation lock serializes only other `apply-hook` and `restore-hook`
 operations using this same lock. The final content/mode comparison followed
 by rename is not an operating-system compare-and-swap; an unrelated writer can
-still race in that very small interval. Keep other writers of these two files
-inactive during installation or restore. A successful rerun recognizes the
-existing backup and does not create a new before-state snapshot.
+still race in that very small interval. Keep other writers of the selected
+files inactive during installation or restore. A successful rerun recognizes
+the matching backup and does not create a second before-state snapshot.
 
 ## Files
 

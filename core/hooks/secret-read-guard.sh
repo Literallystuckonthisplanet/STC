@@ -8,10 +8,9 @@
 # a native deny that never reaches the tool is faster, but this hook covers the
 # path where a harness ignores/has no permissions layer.
 #
-# Scope: only the secret-file patterns below. A deliberate override (you are
-# legitimately inspecting .env during infra work) is `// secret-exception:` in
-# the prompt, or just edit this file locally. Mirrors integration-docs-gate's
-# escape hatch convention.
+# Scope: only the secret-file patterns below. This hook has no prompt-marker
+# override; the old `// secret-exception:` comment described behavior that was
+# never implemented here.
 #
 # The secret VALUE is never printed — only the file pattern that fired.
 #
@@ -46,10 +45,10 @@ esac
 LANG_CODE="${USER_LANG:-en}"
 case "$LANG_CODE" in
   ru)
-    echo "🔒 secret-read-guard БЛОК — попытка чтения секрета ($SECRET_HIT). Секреты (env-файлы, PEM-ключи, id_rsa) нельзя читать напрямую — это утечка в контекст/логи. Если нужно значение — возьми его из \${VAR} в коде или .env через source, а не Read файла целиком. Легитимный разбор инфры — пометь // secret-exception: в промте." >&2
+    echo "🔒 secret-read-guard БЛОК — попытка чтения защищённого файла ($SECRET_HIT). Содержимое файла не выведено в контекст. Для диагностики используйте безопасные сведения без чтения значения." >&2
     ;;
   *)
-    echo "🔒 secret-read-guard BLOCK — attempt to read a secret ($SECRET_HIT). Secrets (env files, PEM keys, id_rsa) must not be read directly — that leaks them into context/logs. If you need a value, reference \${VAR} from code or source the .env, do not Read the whole file. Legitimate infra inspection — mark // secret-exception: in the prompt." >&2
+    echo "🔒 secret-read-guard BLOCK — attempt to read a protected file ($SECRET_HIT). File contents were not sent to context. Use safe diagnostic information without reading the value." >&2
     ;;
 esac
 exit 2

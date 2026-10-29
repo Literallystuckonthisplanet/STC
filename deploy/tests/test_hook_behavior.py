@@ -706,10 +706,101 @@ def test_codex_h21_apply_patch_plan_mode_does_not_read_claude_plans(tmp_path):
         default_marker.unlink(missing_ok=True)
 
 
+def test_codex_h17_allows_rg_query_word_when_target_is_plain_file(tmp_path):
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir()
+    target.write_text("credentials = 'sample'\n", encoding="utf-8")
+    result = _run(
+        "block-secret-read.sh",
+        _codex_event(
+            tmp_path,
+            tool_name="exec",
+            tool_input={"command": "rg -n 'credentials' src/app.py"},
+        ),
+        tmp_path,
+        HARNESS_NAME="codex",
+    )
+    assert result.returncode == 0
+
+
+def test_codex_h17_rejects_home_expansion_before_allow(tmp_path):
+    home = tmp_path / "home"
+    scan = home / "scan"
+    scan.mkdir(parents=True)
+    (scan / "credentials.json").write_text("synthetic only\n", encoding="utf-8")
+    ordinary = tmp_path / "src" / "app.py"
+    ordinary.parent.mkdir()
+    ordinary.write_text("credentials are ordinary query text\n", encoding="utf-8")
+
+    unsafe = _run(
+        "block-secret-read.sh",
+        _codex_event(tmp_path, tool_name="exec", tool_input={"command": "rg -n credentials ~/scan"}),
+        tmp_path,
+        HARNESS_NAME="codex",
+        HOME=str(home),
+    )
+    assert unsafe.returncode == 2
+    assert "safely analyze" in unsafe.stderr.lower()
+    assert "credentials" not in unsafe.stderr.lower()
+
+    safe = _run(
+        "block-secret-read.sh",
+        _codex_event(tmp_path, tool_name="exec", tool_input={"command": "rg -n credentials src/app.py"}),
+        tmp_path,
+        HARNESS_NAME="codex",
+        HOME=str(home),
+    )
+    assert safe.returncode == 0
+
+
+def test_codex_h17_parses_public_cmd_and_rejects_conflicts(tmp_path):
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir()
+    target.write_text("credentials are ordinary query text\n", encoding="utf-8")
+
+    public_cmd = _run(
+        "block-secret-read.sh",
+        _codex_event(tmp_path, tool_name="exec", tool_input={"cmd": "rg -n credentials src/app.py"}),
+        tmp_path,
+        HARNESS_NAME="codex",
+    )
+    assert public_cmd.returncode == 0
+
+    conflict = _run(
+        "block-secret-read.sh",
+        _codex_event(
+            tmp_path,
+            tool_name="exec",
+            tool_input={
+                "command": "rg -n ordinary src/app.py",
+                "cmd": "cat .env",
+            },
+        ),
+        tmp_path,
+        HARNESS_NAME="codex",
+    )
+    assert conflict.returncode == 2
+    assert "safely analyze" in conflict.stderr.lower()
+    assert ".env" not in conflict.stderr.lower()
+
+    neighboring_raw = _run(
+        "block-secret-read.sh",
+        _codex_event(
+            tmp_path,
+            tool_name="exec",
+            tool_input={"command": "rg -n ordinary src/app.py", "script": "cat .env"},
+        ),
+        tmp_path,
+        HARNESS_NAME="codex",
+    )
+    assert neighboring_raw.returncode == 2
+    assert ".env" in neighboring_raw.stderr.lower()
+
+
 def test_codex_h17_blocks_secret_reads_from_read_and_exec_tools_without_leaks(tmp_path):
     """H17 protects shell/unified-exec paths and emits only a pattern label."""
     cases = [
-        ("Bash", {"command": "cat .env && printf TOP_SECRET_SENTINEL"}, ".env"),
+        ("Bash", {"command": "cat .env && printf TOP_SECRET_SENTINEL"}, "safely analyze"),
         ("exec", {"command": 'python3 -c \'open("client.pem").read()\''}, "pem"),
         ("unifiedExec", {"input": "grep token credentials.json"}, "credentials"),
     ]
@@ -735,7 +826,18 @@ def test_codex_h17_blocks_secret_reads_from_read_and_exec_tools_without_leaks(tm
 
 
 def test_h17_rg_l_skips_only_pattern_and_keeps_targets_conservative(tmp_path):
-    """A simple rg pattern is data; targets and ambiguous shell stay guarded."""
+    """Search expressions are data; file paths and unfiltered directories stay guarded."""
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "README.md").write_text("credentials are ordinary query text\n", encoding="utf-8")
+    required_exclusions = [
+        "!**/.env*",
+        "!**/*.env*",
+        "!**/*.pem",
+        "!**/id_rsa*",
+        "!**/*credentials*",
+    ]
+    safe_globs = " ".join(f"-g '{pattern}'" for pattern in required_exclusions)
 
     def run(command, **extra_fields):
         tool_input = {"command": command, **extra_fields}
@@ -750,10 +852,12 @@ def test_h17_rg_l_skips_only_pattern_and_keeps_targets_conservative(tmp_path):
             HARNESS_NAME="codex",
         )
 
-    # The alternation and protected-class word are search data; src/ is the target.
+    # The protected-class word is search data; folder scans must exclude every
+    # protected class using the canonical negative glob list.
     pattern = "'guard refusal|credentials|helper'"
-    assert run(f"rg -l {pattern} src/").returncode == 0
-    assert run(f"rg -l -- {pattern} src/").returncode == 0
+    assert run(f"rg -l {safe_globs} {pattern} src/").returncode == 0
+    assert run(f"rg -l {safe_globs} -- {pattern} src/").returncode == 0
+    assert run(f"rg -l {pattern} src/").returncode == 2
 
     protected_targets = [
         ("src/credentials.json", "credentials"),
@@ -768,23 +872,26 @@ def test_h17_rg_l_skips_only_pattern_and_keeps_targets_conservative(tmp_path):
 
     assert run("rg -l -- 'dummy' src/README.md").returncode == 0
 
-    # Compound, substituted, redirected, unsupported, and target-less forms fall back.
+    # Compound, substituted, redirected, unsupported, and target-less forms
+    # with a protected-looking query fail closed without echoing that query.
     ambiguous = [
         "rg -l 'credentials' src/ && cat README.md",
         "rg -l 'credentials' src/$(printf src)",
         "rg -l 'credentials' src/ > result.txt",
-        "rg --hidden -l 'credentials' src/",
+        f"rg --hidden -l {safe_globs} 'credentials' src/",
         "rg -l -e 'credentials' src/",
         "rg -l 'credentials'",
     ]
     for command in ambiguous:
         blocked = run(command)
         assert blocked.returncode == 2
-        assert "credentials" in blocked.stderr.lower()
+        assert "safely analyze" in blocked.stderr.lower()
+        assert "credentials" not in blocked.stderr.lower()
 
     commented_no_target = run("rg -l 'credentials' # harmless trailing comment")
     assert commented_no_target.returncode == 2
-    assert "credentials" in commented_no_target.stderr.lower()
+    assert "safely analyze" in commented_no_target.stderr.lower()
+    assert "credentials" not in commented_no_target.stderr.lower()
 
     additional_target = run("rg -l 'credentials' src/", file_path=".env")
     assert additional_target.returncode == 2
@@ -807,7 +914,7 @@ def test_h17_parser_does_not_import_project_shadow_module(tmp_path):
         _codex_event(
             tmp_path,
             tool_name="exec",
-            tool_input={"command": "rg -l 'credentials' src/"},
+            tool_input={"command": "rg -n 'credentials' src/README.md"},
         ),
         tmp_path,
         HARNESS_NAME="codex",
@@ -815,6 +922,105 @@ def test_h17_parser_does_not_import_project_shadow_module(tmp_path):
     )
     assert not marker.exists()
     assert result.returncode == 0
+
+
+def test_h17_safe_directory_scan_and_symlink_targets_are_bounded(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("credentials are query text\n", encoding="utf-8")
+    (src / ".env.local").write_text("synthetic only\n", encoding="utf-8")
+    (src / "service.pem").write_text("synthetic only\n", encoding="utf-8")
+    exclusions = " ".join(
+        f"-g '{pattern}'"
+        for pattern in [
+            "!**/.env*",
+            "!**/*.env*",
+            "!**/*.pem",
+            "!**/id_rsa*",
+            "!**/*credentials*",
+        ]
+    )
+
+    safe_scan = _run(
+        "block-secret-read.sh",
+        _codex_event(
+            tmp_path,
+            tool_name="exec",
+            tool_input={"command": f"rg -n {exclusions} 'credentials' src/"},
+        ),
+        tmp_path,
+        HARNESS_NAME="codex",
+    )
+    assert safe_scan.returncode == 0
+
+    alias = tmp_path / "src" / "alias.txt"
+    alias.symlink_to(src / ".env.local")
+    symlink_read = _run(
+        "block-secret-read.sh",
+        _codex_event(
+            tmp_path,
+            tool_name="exec",
+            tool_input={"command": "rg -n 'dummy' src/alias.txt"},
+        ),
+        tmp_path,
+        HARNESS_NAME="codex",
+    )
+    assert symlink_read.returncode == 2
+    assert ".env" in symlink_read.stderr.lower()
+
+    (src / "query.txt").write_text("credentials\n", encoding="utf-8")
+    for command in (
+        "rg -n -i -C 2 -e 'credentials' src/app.py",
+        "rg -f src/query.txt src/app.py",
+    ):
+        result = _run(
+            "block-secret-read.sh",
+            _codex_event(tmp_path, tool_name="exec", tool_input={"command": command}),
+            tmp_path,
+            HARNESS_NAME="codex",
+        )
+        assert result.returncode == 0
+
+    protected_pattern_file = _run(
+        "block-secret-read.sh",
+        _codex_event(
+            tmp_path,
+            tool_name="exec",
+            tool_input={"command": "rg -f src/.env.local src/app.py"},
+        ),
+        tmp_path,
+        HARNESS_NAME="codex",
+    )
+    assert protected_pattern_file.returncode == 2
+    assert ".env" in protected_pattern_file.stderr.lower()
+
+
+def test_h17_structured_writes_are_outside_read_guard(tmp_path):
+    for tool_name in ("Write", "apply_patch"):
+        result = _run(
+            "block-secret-read.sh",
+            _codex_event(
+                tmp_path,
+                tool_name=tool_name,
+                tool_input={"file_path": ".env.synthetic", "content": "synthetic credentials"},
+            ),
+            tmp_path,
+            HARNESS_NAME="codex",
+        )
+        assert result.returncode == 0
+
+    structured_read = _run(
+        "block-secret-read.sh",
+        _codex_event(
+            tmp_path,
+            tool_name="Grep",
+            tool_input={"pattern": "credentials", "path": ".env.synthetic"},
+        ),
+        tmp_path,
+        HARNESS_NAME="codex",
+    )
+    assert structured_read.returncode == 2
+    assert ".env" in structured_read.stderr.lower()
 
 
 def _slice_layer(tmp_path, desc):
